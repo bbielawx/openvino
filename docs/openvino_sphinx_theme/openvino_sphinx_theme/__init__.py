@@ -8,7 +8,7 @@ from docutils.parsers import rst
 from pathlib import Path
 from bs4 import BeautifulSoup
 from sphinx.util import logging
-from pydata_sphinx_theme import index_toctree
+from pydata_sphinx_theme.toctree import index_toctree
 from .directives.code import DoxygenSnippet, Scrollbox, Nodescrollbox, visit_scrollbox, depart_scrollbox
 
 SPHINX_LOGGER = logging.getLogger(__name__)
