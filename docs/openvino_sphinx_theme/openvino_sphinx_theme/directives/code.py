@@ -1,6 +1,5 @@
 import os.path
-from pathlib import Path
-import sys
+
 from sphinx.directives.code import LiteralInclude, LiteralIncludeReader, container_wrapper
 from sphinx.util import logging
 from docutils.parsers.rst import Directive, directives
@@ -8,9 +7,6 @@ from typing import List, Tuple
 from docutils.nodes import Node
 from docutils import nodes
 from sphinx.util import parselinenos
-import requests
-import re
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +132,7 @@ class Scrollbox(Directive):
         if self.content:
             self.state.nested_parse(self.content, self.content_offset, node)
         return [node]
+<<<<<<< HEAD
 
 def visit_showcase(self, node):
     attrs = {}
@@ -250,3 +247,5 @@ class Showcase(Directive):
         if self.content:
             self.state.nested_parse(self.content, self.content_offset, node)
         return [node]
+=======
+>>>>>>> ba86d7460e (new bulild changes)
