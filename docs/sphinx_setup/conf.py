@@ -115,14 +115,9 @@ html_sidebars = {
 html_context = {
     'current_language': 'English',
     'languages': (('English', '/latest'), ('Chinese', '/cn/latest')),
-<<<<<<< HEAD
     'doxygen_mapping_file': '@DOXYGEN_MAPPING_FILE@',
     'doxygen_snippet_root': snippet_root,
     'default_mode': 'light'
-=======
-    'doxygen_mapping_file': r'C:\Users\bbielawx\OneDrive - Intel Corporation\Desktop\OpenVINO\build\mapping.json',
-    'doxygen_snippet_root': snippet_root,
->>>>>>> ba86d7460e (new bulild changes)
 }
 
 repositories = {
@@ -159,12 +154,7 @@ repositories = {
 }
 
 try:
-<<<<<<< HEAD
     doxygen_mapping_file = os.path.dirname(os.getcwd()) + '/mapping.json'
-=======
-    doxygen_mapping_file = '@DOXYGEN_MAPPING_FILE@'
-    doxygen_mapping_file = r'C:\Users\bbielawx\OneDrive - Intel Corporation\Desktop\OpenVINO\build\mapping.json'
->>>>>>> ba86d7460e (new bulild changes)
     with open(doxygen_mapping_file, 'r', encoding='utf-8') as f:
         doxygen_mapping_file = json.load(f)
 except JSONDecodeError:
