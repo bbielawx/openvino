@@ -61,6 +61,7 @@ __pycache__
 /tools/mo/*.svg
 /src/plugins/intel_cpu/tools/commit_slider/*.json
 /src/plugins/intel_cpu/tools/commit_slider/slider_cache/*
+/src/plugins/intel_cpu/thirdparty/ComputeLibrary/build/*
 .github/GITHUB_OUTPUT
 
 venv
