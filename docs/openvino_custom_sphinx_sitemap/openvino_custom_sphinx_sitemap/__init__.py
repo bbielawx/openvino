@@ -67,14 +67,8 @@ def create_sitemap(app, exception):
         version = app.builder.config.version + '/'
     else:
         version = ""
-    
-    while True:
-        try:
-            link = app.env.app.sitemap_links.get_nowait()
-            print(link)  # type: ignore
-        except queue.Empty:
-            break
 
+    for link in app.sitemap_links:
         url = ET.SubElement(root, "url")
         scheme = app.config.sitemap_url_scheme
         if app.builder.config.language:
