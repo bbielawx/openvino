@@ -132,7 +132,6 @@ class Scrollbox(Directive):
         if self.content:
             self.state.nested_parse(self.content, self.content_offset, node)
         return [node]
-<<<<<<< HEAD
 
 def visit_showcase(self, node):
     attrs = {}
@@ -247,5 +246,3 @@ class Showcase(Directive):
         if self.content:
             self.state.nested_parse(self.content, self.content_offset, node)
         return [node]
-=======
->>>>>>> ba86d7460e (new bulild changes)

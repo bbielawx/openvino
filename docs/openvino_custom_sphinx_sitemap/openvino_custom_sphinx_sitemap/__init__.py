@@ -1,12 +1,8 @@
 import xml.etree.ElementTree as ET
 import queue
 from pathlib import Path
-<<<<<<< HEAD
 from sphinx_sitemap import setup as base_setup, get_locales, hreflang_formatter, add_html_link, record_builder_type
 from sphinx.util.logging import getLogger
-=======
-from sphinx_sitemap import setup as base_setup, get_locales, hreflang_formatter
->>>>>>> ba86d7460e (new bulild changes)
 
 logger = getLogger(__name__)
 
@@ -41,7 +37,6 @@ def create_sitemap(app, exception):
     meta = app.builder.config.ov_sitemap_meta
 
     site_url = app.builder.config.site_url or app.builder.config.html_baseurl
-<<<<<<< HEAD
     if site_url:
         site_url.rstrip("/") + "/"
     else:
@@ -50,12 +45,6 @@ def create_sitemap(app, exception):
             type="sitemap",
             subtype="configuration",
         )
-=======
-    site_url = site_url.rstrip('/') + '/'
-    if not site_url:
-        print("sphinx-sitemap error: neither html_baseurl nor site_url "
-              "are set in conf.py. Sitemap not built.")
->>>>>>> ba86d7460e (new bulild changes)
         return
     if (not app.sitemap_links):
         print("sphinx-sitemap warning: No pages generated for %s" %
@@ -72,11 +61,7 @@ def create_sitemap(app, exception):
         for item in urlset:
             root.set(*item)
 
-<<<<<<< HEAD
     locales = get_locales(app, exception)
-=======
-    locales = get_locales(app)
->>>>>>> ba86d7460e (new bulild changes)
 
     if app.builder.config.version:
         version = app.builder.config.version + '/'
@@ -108,11 +93,7 @@ def create_sitemap(app, exception):
                 for tag_name, tag_value in values.items():
                     ET.SubElement(namespace_element, tag_name).text = tag_value
 
-<<<<<<< HEAD
         if len(app.locales) > 0:
-=======
-        if len(locales) > 0:
->>>>>>> ba86d7460e (new bulild changes)
             for lang in locales:
                 lang = lang + '/'
                 linktag = ET.SubElement(
