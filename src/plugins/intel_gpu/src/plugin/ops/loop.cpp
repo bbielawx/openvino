@@ -5,6 +5,7 @@
 #include "intel_gpu/plugin/common_utils.hpp"
 #include "intel_gpu/plugin/plugin.hpp"
 
+#include "openvino/op/add.hpp"
 #include "openvino/op/tensor_iterator.hpp"
 #include "openvino/op/loop.hpp"
 #include "openvino/op/constant.hpp"
@@ -29,8 +30,14 @@ namespace intel_gpu {
 template<class DATA_TYPE>
 static DATA_TYPE CreateScalarData(ProgramBuilder &p, const cldnn::primitive_id& id, ov::Shape& shape, cldnn::data_types dtype, int64_t num, int64_t rank) {
     auto mem = p.get_engine().allocate_memory({ shape, dtype, cldnn::format::get_default_format(rank) });
-    cldnn::mem_lock<int64_t> ptr{mem, p.get_engine().get_service_stream()};
-    *ptr.begin() = num;
+    if (dtype == cldnn::data_types::i32) {
+        cldnn::mem_lock<int32_t> ptr{mem, p.get_engine().get_service_stream()};
+        *ptr.begin() = static_cast<int32_t>(num);
+    } else {
+        cldnn::mem_lock<int64_t> ptr{mem, p.get_engine().get_service_stream()};
+        *ptr.begin() = num;
+    }
+
     return {id, mem};
 }
 

@@ -73,6 +73,9 @@ inline ov::element::Type convert_to_supported_device_type(ov::element::Type et) 
     }
 }
 
+bool is_supported(ov::element::Type_t et);
+bool data_types_are_supported(const ov::Node* node);
+
 using PrecisionMap = std::map<ov::element::Type_t, ov::element::Type>;
 
 std::vector<cldnn::optional_data_type> get_output_data_types(const ov::Node* op, PrecisionMap precision_map = {});
@@ -119,7 +122,10 @@ inline void ForceExit() {
     std::_Exit(-1);
 }
 
-void convert_and_copy(const ov::ITensor* src, cldnn::memory::ptr dst, cldnn::stream& stream);
+void convert_and_copy(const ov::ITensor* src,
+                      cldnn::memory::ptr dst,
+                      cldnn::stream& stream,
+                      const cldnn::layout& src_layout = cldnn::layout({}, ov::element::undefined, cldnn::format::bfyx, cldnn::padding()));
 void convert_and_copy(const cldnn::memory::ptr src, ov::ITensor const* dst, const cldnn::stream& stream);
 void convert_and_copy(const ov::ITensor* src, ov::ITensor const* dst, const cldnn::stream& stream);
 void convert_and_copy(const cldnn::memory::ptr src, cldnn::memory::ptr dst, cldnn::stream& stream);

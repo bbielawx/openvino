@@ -8,6 +8,7 @@
 #include "openvino/op/lstm_cell.hpp"
 #include "openvino/op/loop.hpp"
 
+#include "intel_gpu/plugin/common_utils.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "intel_gpu/runtime/itt.hpp"
 #include "intel_gpu/runtime/debug_configuration.hpp"
@@ -15,6 +16,7 @@
 #include "intel_gpu/primitives/data.hpp"
 #include "intel_gpu/op/fully_connected_compressed.hpp"
 #include "intel_gpu/op/placeholder.hpp"
+#include "openvino/util/pp.hpp"
 
 #ifdef __linux__
 # include <dlfcn.h>
@@ -102,6 +104,14 @@ ProgramBuilder::ProgramBuilder(std::shared_ptr<ov::Model> model, cldnn::engine& 
     CustomLayer::LoadFromFile(custom_layers_config, m_custom_layers, custom_layers_config.empty());
 
     auto ops = model->get_ordered_ops();
+    // In the case of dynamic models, because most of the layers are mapped to shape agnostic kernels,
+    // smaller # of kernels are built compared to static models.
+    // So having smaller batch size is even better for dynamic model as we can do more parallel build.
+    if (model->is_dynamic()) {
+        m_config.set_property(ov::intel_gpu::max_kernels_per_batch(4));
+    } else {
+        m_config.set_property(ov::intel_gpu::max_kernels_per_batch(8));
+    }
 
     m_program = build(ops, partial_build, is_inner_program);
 }
@@ -123,14 +133,14 @@ void ProgramBuilder::prepare_build() {
 
 void ProgramBuilder::cleanup_build() {
     m_topology.reset();
-    #if defined(__unix__) && !defined(__ANDROID__)
+#if defined(OPENVINO_GNU_LIBC) && !defined(__ANDROID__)
     //  NOTE: In linux, without malloc_trim, an amount of the memory used by compilation is not being returned to system thought they are freed.
     //  (It is at least 500 MB when we perform parallel compilation)
     //  It is observed that freeing the memory manually with malloc_trim saves significant amount of the memory.
     //  Also, this is not happening in Windows.
     //  So, added malloc_trim for linux build until we figure out a better solution.
     malloc_trim(0);
-    #endif
+#endif
 }
 
 std::shared_ptr<cldnn::program> ProgramBuilder::build(const std::vector<std::shared_ptr<ov::Node>>& ops, bool partial_build, bool is_inner_program) {
@@ -193,6 +203,9 @@ bool ProgramBuilder::is_op_supported(const std::shared_ptr<ov::Node>& op) {
         // 2. We also check parameters of each operation, which means we have more
         //    reliable results of QueryNetwork call.
         prepare_build();
+        if (!data_types_are_supported(op.get()))
+            return false;
+
         allow_new_shape_infer = requires_new_shape_infer(op);
         CreateSingleLayerPrimitive(op);
         cleanup_build();
@@ -335,9 +348,6 @@ bool ProgramBuilder::requires_new_shape_infer(const std::shared_ptr<ov::Node>& o
         if (op->get_output_partial_shape(i).is_dynamic())
             return true;
     }
-
-    if (ov::is_type<op::FullyConnectedCompressed>(op))
-        return true;
 
     for (size_t i = 0; i < op->get_output_size(); i++) {
         if (op->get_output_partial_shape(i).size() > 6)

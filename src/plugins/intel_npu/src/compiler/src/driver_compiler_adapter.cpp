@@ -6,6 +6,7 @@
 
 #include "graph_transformations.hpp"
 #include "intel_npu/al/config/common.hpp"
+#include "intel_npu/utils/zero/zero_api.hpp"
 #include "intel_npu/utils/zero/zero_result.hpp"
 #include "ze_intel_vpu_uuid.h"
 #include "zero_compiler_in_driver.hpp"
@@ -133,7 +134,10 @@ LevelZeroCompilerAdapter::LevelZeroCompilerAdapter() : _logger("LevelZeroCompile
 #if defined(NPU_PLUGIN_DEVELOPER_BUILD)
     auto adapterManualConfig = std::getenv("ADAPTER_MANUAL_CONFIG");
     if (adapterManualConfig != nullptr) {
-        if (strcmp(adapterManualConfig, "ZE_extension_graph_1_5") == 0) {
+        if (strcmp(adapterManualConfig, "ZE_extension_graph_1_6") == 0) {
+            _logger.info("With ADAPTER_MANUAL_CONFIG. Using ZE_GRAPH_EXT_VERSION_1_6");
+            targetVersion = ZE_GRAPH_EXT_VERSION_1_6;
+        } else if (strcmp(adapterManualConfig, "ZE_extension_graph_1_5") == 0) {
             _logger.info("With ADAPTER_MANUAL_CONFIG. Using ZE_GRAPH_EXT_VERSION_1_5");
             targetVersion = ZE_GRAPH_EXT_VERSION_1_5;
         } else if (strcmp(adapterManualConfig, "ZE_extension_graph_1_4") == 0) {
@@ -145,26 +149,13 @@ LevelZeroCompilerAdapter::LevelZeroCompilerAdapter() : _logger("LevelZeroCompile
         } else if (strcmp(adapterManualConfig, "ZE_extension_graph_1_2") == 0) {
             _logger.info("With ADAPTER_MANUAL_CONFIG. Using ZE_GRAPH_EXT_VERSION_1_2");
             targetVersion = ZE_GRAPH_EXT_VERSION_1_2;
-        } else if (strcmp(adapterManualConfig, "ZE_extension_graph_1_1") == 0) {
-            _logger.info("With ADAPTER_MANUAL_CONFIG. Using ZE_GRAPH_EXT_VERSION_1_1");
-            targetVersion = ZE_GRAPH_EXT_VERSION_1_1;
-        } else if (strcmp(adapterManualConfig, "ZE_extension_graph_1_0") == 0) {
-            _logger.info("With ADAPTER_MANUAL_CONFIG. Using ZE_GRAPH_EXT_VERSION_1_0");
-            targetVersion = ZE_GRAPH_EXT_VERSION_1_0;
         } else {
             OPENVINO_THROW("Using unsupported ADAPTER_MANUAL_CONFIG!");
         }
     }
 #endif
-    if (ZE_GRAPH_EXT_VERSION_1_1 == targetVersion) {
-        _logger.info("Using ZE_GRAPH_EXT_VERSION_1_1");
-        apiAdapter =
-            std::make_shared<LevelZeroCompilerInDriver<ze_graph_dditable_ext_1_1_t>>(graphExtName, _driverHandle);
-    } else if (ZE_GRAPH_EXT_VERSION_1_2 == targetVersion) {
-        _logger.info("Using ZE_GRAPH_EXT_VERSION_1_2");
-        apiAdapter =
-            std::make_shared<LevelZeroCompilerInDriver<ze_graph_dditable_ext_1_2_t>>(graphExtName, _driverHandle);
-    } else if (strcmp(graphExtName, ZE_GRAPH_EXT_NAME_1_3) == 0) {
+    if (ZE_GRAPH_EXT_VERSION_1_3 == targetVersion) {
+        _logger.info("Using ZE_GRAPH_EXT_VERSION_1_3");
         apiAdapter =
             std::make_shared<LevelZeroCompilerInDriver<ze_graph_dditable_ext_1_3_t>>(graphExtName, _driverHandle);
     } else if (ZE_GRAPH_EXT_VERSION_1_4 == targetVersion) {
@@ -175,52 +166,39 @@ LevelZeroCompilerAdapter::LevelZeroCompilerAdapter() : _logger("LevelZeroCompile
         _logger.info("Using ZE_GRAPH_EXT_VERSION_1_5");
         apiAdapter =
             std::make_shared<LevelZeroCompilerInDriver<ze_graph_dditable_ext_1_5_t>>(graphExtName, _driverHandle);
+    } else if (ZE_GRAPH_EXT_VERSION_1_6 == targetVersion) {
+        _logger.info("Using ZE_GRAPH_EXT_VERSION_1_6");
+        apiAdapter =
+            std::make_shared<LevelZeroCompilerInDriver<ze_graph_dditable_ext_1_6_t>>(graphExtName, _driverHandle);
     } else {
-        _logger.info("Using ZE_GRAPH_EXT_VERSION_1_0");
-        apiAdapter = std::make_shared<LevelZeroCompilerInDriver<ze_graph_dditable_ext_t>>(graphExtName, _driverHandle);
+        _logger.info("Using ZE_GRAPH_EXT_VERSION_1_2");
+        apiAdapter =
+            std::make_shared<LevelZeroCompilerInDriver<ze_graph_dditable_ext_1_2_t>>(graphExtName, _driverHandle);
     }
 }
 
 uint32_t LevelZeroCompilerAdapter::getSupportedOpsetVersion() const {
-    return apiAdapter->getSupportedOpset();
+    return apiAdapter->getSupportedOpsetVersion();
 }
 
 NetworkDescription LevelZeroCompilerAdapter::compile(const std::shared_ptr<const ov::Model>& model,
                                                      const Config& config) const {
     _logger.setLevel(config.get<LOG_LEVEL>());
-    _logger.debug("compileIR");
-    uint32_t supportedOpset = apiAdapter->getSupportedOpset();
-
-    auto IR = serializeToIR(model, supportedOpset);
-
-    return apiAdapter->compileIR(model, IR, config);
+    _logger.debug("compile");
+    return apiAdapter->compile(model, config);
 }
 
 ov::SupportedOpsMap LevelZeroCompilerAdapter::query(const std::shared_ptr<const ov::Model>& model,
                                                     const Config& config) const {
     _logger.setLevel(config.get<LOG_LEVEL>());
-    _logger.debug("queryResult");
-    ov::SupportedOpsMap result;
-    const std::string deviceName = "NPU";
-
-    auto IR = serializeToIR(model);
-    try {
-        const auto supportedLayers = apiAdapter->getQueryResult(IR, config);
-        for (auto&& layerName : supportedLayers) {
-            result.emplace(layerName, deviceName);
-        }
-        _logger.info("For given model, there are %d supported layers", supportedLayers.size());
-    } catch (std::exception& e) {
-        OPENVINO_THROW("Fail in calling querynetwork : ", e.what());
-    }
-
-    return result;
+    _logger.debug("query");
+    return apiAdapter->query(model, config);
 }
 
-NetworkMetadata LevelZeroCompilerAdapter::parse(const std::vector<uint8_t>& blob, const Config& config) const {
+NetworkMetadata LevelZeroCompilerAdapter::parse(const std::vector<uint8_t>& network, const Config& config) const {
     _logger.setLevel(config.get<LOG_LEVEL>());
-    _logger.debug("parseBlob");
-    return apiAdapter->parseBlob(blob, config);
+    _logger.debug("parse");
+    return apiAdapter->parse(network, config);
 }
 
 std::vector<ov::ProfilingInfo> LevelZeroCompilerAdapter::process_profiling_output(const std::vector<uint8_t>&,
