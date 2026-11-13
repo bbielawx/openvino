@@ -1,62 +1,101 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "reorder.h"
-#include <memory>
-#include <string>
-#include <dnnl_types.h>
+
 #include <dnnl_extension_utils.h>
-#include "openvino/core/parallel.hpp"
-#include "utils/general_utils.h"
-#include <cpu/x64/cpu_isa_traits.hpp>
-#include "nodes/common/cpu_memcpy.h"
-#include "nodes/common/cpu_convert.h"
-#include "nodes/common/reorder_prim.h"
-#include "convert.h"
-#include <common/primitive_hashing_utils.hpp>
+#include <oneapi/dnnl/dnnl_types.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <oneapi/dnnl/dnnl.hpp>
+#include <oneapi/dnnl/dnnl_common.hpp>
 #include <shape_inference/shape_inference_pass_through.hpp>
+#include <string>
+#include <vector>
 
+#include "cache/multi_cache.h"
 #include "convert.h"
-#include "cpu/x64/cpu_isa_traits.hpp"
+#include "cpu_memory.h"
+#include "cpu_types.h"
+#include "graph_context.h"
+#if defined(OPENVINO_ARCH_ARM)
+#    include "memory_desc/cpu_blocked_memory_desc.h"
+#endif
+#if defined(OV_CPU_WITH_ACL)
+#    include "memory_desc/blocked_memory_desc.h"
+#endif
+#include "memory_desc/cpu_memory_desc.h"
+#include "memory_desc/dnnl_memory_desc.h"
+#include "node.h"
 #include "nodes/common/cpu_convert.h"
 #include "nodes/common/cpu_memcpy.h"
 #include "nodes/common/reorder_prim.h"
-#include "openvino/core/parallel.hpp"
-#include "shape_inference/shape_inference_pass_through.hpp"
-#include "utils/precision_support.h"
-#include "nodes/executors/executor.hpp"
-#include "nodes/executors/transpose_list.hpp"
+#if defined(OPENVINO_ARCH_ARM)
+#    include "nodes/executors/transpose.hpp"
+#    include "nodes/executors/transpose_list.hpp"
+#endif
+#if defined(OV_CPU_WITH_ACL)
+#    include <arm_compute/core/CoreTypes.h>
+#    include <arm_compute/core/TensorInfo.h>
+#    include <arm_compute/core/TensorShape.h>
+#    include <arm_compute/runtime/NEON/functions/NECopy.h>
+#    include <arm_compute/runtime/Tensor.h>
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+#    include "nodes/executors/acl/acl_utils.hpp"
+#endif
+#include "nodes/node_config.h"
+#include "onednn/iml_type_mapper.h"
+#include "openvino/core/except.hpp"
+#include "openvino/core/node.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/runtime/system_conf.hpp"
+#include "thread_pool_imp.hpp"
+#include "utils/debug_capabilities.h"
+#include "utils/general_utils.h"
+
+namespace ov::intel_cpu::node {
+
+bool Reorder::neverExecute() const {
+    return isOptimized || Node::neverExecute();
+}
 
 bool Reorder::isExecutable() const {
-    return Node::isExecutable() && !isOptimized;
+    return !isOptimized && Node::isExecutable();
 }
 
-Reorder::Reorder(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context) :
-        Node(op, context, PassThroughShapeInferFactory()) {
-    THROW_CPU_NODE_ERR("could not create CPU node from Core node.");
+Reorder::Reorder(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context)
+    : Node(op, context, PassThroughShapeInferFactory()) {
+    CPU_NODE_THROW("could not create CPU node from Core node.");
 }
 
-Reorder::Reorder(const MemoryDesc& input, const MemoryDesc& output, const std::string& name, const GraphContext::CPtr context) :
-    Node("Reorder", {input.getShape()}, {output.getShape()}, {input.getPrecision()}, {output.getPrecision()}, name, context) {
+Reorder::Reorder(const MemoryDesc& input,
+                 const MemoryDesc& output,
+                 const std::string& name,
+                 const GraphContext::CPtr& context)
+    : Node("Reorder",
+           {input.getShape()},
+           {output.getShape()},
+           {input.getPrecision()},
+           {output.getPrecision()},
+           name,
+           context) {
     this->input = input.clone();
     this->output = output.clone();
 }
 
 void Reorder::getSupportedDescriptors() {
-    if (getParentEdges().size() != 1)
-        THROW_CPU_NODE_ERR("has incorrect number of input edges.");
-    if (getChildEdges().empty())
-        THROW_CPU_NODE_ERR("has incorrect number of output edges.");
+    CPU_NODE_ASSERT(getParentEdges().size() == 1, "has incorrect number of input edges.");
+    CPU_NODE_ASSERT(!getChildEdges().empty(), "has incorrect number of output edges.");
 }
 
 void Reorder::initSupportedPrimitiveDescriptors() {
-    if (!supportedPrimitiveDescriptors.empty())
+    if (!supportedPrimitiveDescriptors.empty()) {
         return;
+    }
 
     auto parent = getParentEdgeAt(0)->getParent();
     auto child = getChildEdgeAt(0)->getChild();
@@ -75,40 +114,44 @@ void Reorder::initSupportedPrimitiveDescriptors() {
     if (input && output) {
         config.inConfs[0].setMemDesc(input);
         config.outConfs[0].setMemDesc(output);
-    } else if (parent->getSelectedPrimitiveDescriptor() != nullptr &&
-               child->getSelectedPrimitiveDescriptor() != nullptr) {
+    } else if (none_of(nullptr, parent->getSelectedPrimitiveDescriptor(), child->getSelectedPrimitiveDescriptor())) {
         config.inConfs[0].setMemDesc(parent->getSelectedPrimitiveDescriptor()->getConfig().outConfs[0].getMemDesc());
         config.outConfs[0].setMemDesc(child->getSelectedPrimitiveDescriptor()->getConfig().inConfs[0].getMemDesc());
     } else {
-        THROW_CPU_NODE_ERR("could not initialize supported PDs.");
+        CPU_NODE_THROW("could not initialize supported PDs.");
     }
 
     supportedPrimitiveDescriptors.emplace_back(config, impl_desc_type::reorder);
 
     // must be to initialize here since shapes are unknown at the time of Reorder node creation
-    isDynamic = !(config.inConfs[0].getMemDesc()->isDefined() && config.outConfs[0].getMemDesc()->isDefined());
+    const bool input_defined = config.inConfs[0].getMemDesc()->isDefined();
+    const bool output_defined = config.outConfs[0].getMemDesc()->isDefined();
+    const bool both_defined = input_defined && output_defined;
+    isDynamic = !both_defined;
     if (isDynamicNode() && !shapeInference) {
         shapeInference = std::make_shared<ShapeInferPassThrough>();
     }
 
-    if (isDynamic && (config.inConfs[0].getMemDesc()->getShape().getRank() != config.outConfs[0].getMemDesc()->getShape().getRank()))
-        THROW_CPU_NODE_ERR("doesn't support case when input and output shapes have different rank and dynamic.");
+    if (isDynamic && (config.inConfs[0].getMemDesc()->getShape().getRank() !=
+                      config.outConfs[0].getMemDesc()->getShape().getRank())) {
+        CPU_NODE_THROW("doesn't support case when input and output shapes have different rank and dynamic.");
+    }
     if (!isOptimized) {
-        const auto &inShape = getInputShapeAtPort(0);
-        if (one_of(inShape.getRank(), 4u, 5u) &&
-                config.inConfs[0].getMemDesc()->hasLayoutType(LayoutType::nspc) &&
-                config.outConfs[0].getMemDesc()->hasLayoutType(LayoutType::ncsp) &&
-                config.inConfs[0].getMemDesc()->getPrecision() == ov::element::f32 &&
-                config.outConfs[0].getMemDesc()->getPrecision() == ov::element::f32) {
-            // oneDNN JIT reorder shows bad perf for nspc to ncsp reorder case so we fallback on simple c++ implementation
+        const auto& inShape = getInputShapeAtPort(0);
+        if (any_of(inShape.getRank(), 4U, 5U) && config.inConfs[0].getMemDesc()->hasLayoutType(LayoutType::nspc) &&
+            config.outConfs[0].getMemDesc()->hasLayoutType(LayoutType::ncsp) &&
+            config.inConfs[0].getMemDesc()->getPrecision() == ov::element::f32 &&
+            config.outConfs[0].getMemDesc()->getPrecision() == ov::element::f32) {
+            // oneDNN JIT reorder shows bad perf for nspc to ncsp reorder case so we fallback on simple c++
+            // implementation
             isNspc2NcspCase = true;
-        } else if (!dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx2) &&
-                   one_of(inShape.getRank(), 4u, 5u) &&
+        } else if (!ov::with_cpu_x86_avx2() && any_of(inShape.getRank(), 4U, 5U) &&
                    config.inConfs[0].getMemDesc()->hasLayoutType(LayoutType::ncsp) &&
                    config.outConfs[0].getMemDesc()->hasLayoutType(LayoutType::nspc) &&
                    config.inConfs[0].getMemDesc()->getPrecision() == config.outConfs[0].getMemDesc()->getPrecision() &&
                    config.inConfs[0].getMemDesc()->getPrecision().size() == 1) {
-            // oneDNN doesn't provide JIT reorder impl for non-avx2 targets so we fallback on simple c++ implementation which shows better perf
+            // oneDNN doesn't provide JIT reorder impl for non-avx2 targets so we fallback on simple c++ implementation
+            // which shows better perf
             isNcsp2NspcCase = true;
         }
     }
@@ -116,45 +159,48 @@ void Reorder::initSupportedPrimitiveDescriptors() {
 
 void Reorder::createPrimitive() {
     if (shapesDefined()) {
-        if (needPrepareParams())
+        if (needPrepareParams()) {
             prepareParams();
+        }
         updateLastInputDims();
     }
 }
 
-void Reorder::executeDynamicImpl(dnnl::stream strm) {
+void Reorder::executeDynamicImpl(const dnnl::stream& strm) {
     execute(strm);
 }
 
-void Reorder::prepareReorderAsTranspose(MemoryDescPtr parentDesc, MemoryDescPtr childDesc) {
-    auto getOrderAndBlockedDims = [](const MemoryDesc& lhs, const MemoryDesc& rhs) -> std::pair<std::vector<size_t>, std::vector<size_t>> {
+#if defined(OPENVINO_ARCH_ARM)
+void Reorder::prepareReorderAsTranspose(const MemoryDescPtr& parentDesc, const MemoryDescPtr& childDesc) {
+    auto getOrderAndBlockedDims = [](const MemoryDesc& lhs,
+                                     const MemoryDesc& rhs) -> std::pair<std::vector<size_t>, std::vector<size_t>> {
         const auto& in = lhs.as<BlockedMemoryDesc>()->getBlockDims();
         const auto rank = lhs.getShape().getRank();
 
         if (lhs.hasLayoutType(LayoutType::ncsp) && rhs.hasLayoutType(LayoutType::nspc)) {
-            if (rank == 4)
+            if (rank == 4) {
                 return {{0, 2, 3, 1}, {in[0], in[2], in[3], in[1]}};
-            else
-                return {{0, 2, 1}, {in[0], in[2], in[1]}};
-
-        } else if (lhs.hasLayoutType(LayoutType::nspc) && rhs.hasLayoutType(LayoutType::ncsp)) {
-            if (rank == 4)
-                return {{0, 3, 1, 2}, {in[0], in[3], in[1], in[2]}};
-            else
-                return {{0, 2, 1}, {in[0], in[2], in[1]}};
-        } else {
-            if (rank == 4)
-                return {{0, 1, 2, 3}, in};
-            else
-                return {{0, 1, 2}, in};
+            }
+            return {{0, 2, 1}, {in[0], in[2], in[1]}};
         }
+        if (lhs.hasLayoutType(LayoutType::nspc) && rhs.hasLayoutType(LayoutType::ncsp)) {
+            if (rank == 4) {
+                return {{0, 3, 1, 2}, {in[0], in[3], in[1], in[2]}};
+            }
+            return {{0, 2, 1}, {in[0], in[2], in[1]}};
+        }
+        if (rank == 4) {
+            return {{0, 1, 2, 3}, in};
+        }
+        return {{0, 1, 2}, in};
     };
 
     auto order = getOrderAndBlockedDims(*parentDesc, *childDesc);
     const auto& transposeOrder = order.first;
     const auto& transposedBlockDims = order.second;
 
-    auto transposedDesc = std::make_shared<CpuBlockedMemoryDesc>(parentDesc->getPrecision(), Shape{transposedBlockDims});
+    auto transposedDesc =
+        std::make_shared<CpuBlockedMemoryDesc>(parentDesc->getPrecision(), Shape{transposedBlockDims});
 
     TransposeParams transposeParams;
     transposeParams.permuteParams.src_block_dims = parentDesc->as<BlockedMemoryDesc>()->getBlockDims();
@@ -170,26 +216,61 @@ void Reorder::prepareReorderAsTranspose(MemoryDescPtr parentDesc, MemoryDescPtr 
                                                               std::vector<MemoryDescPtr>{transposedDesc},
                                                               transpose_context);
     dnnl::primitive_attr attr;
-    transposeExecutor = factory->makeExecutor(transposeParams,
-                                              {parentDesc},
-                                              {transposedDesc},
-                                              attr);
+    transposeExecutor = factory->makeExecutor(transposeParams, {parentDesc}, {transposedDesc}, attr);
     getSelectedPrimitiveDescriptor()->setImplementationType(transposeExecutor->implType());
-    return;
 }
+#endif
+
+#if defined(OV_CPU_WITH_ACL)
+bool Reorder::prepareAclCopy(const MemoryDescPtr& parentDesc, const MemoryDescPtr& childDesc) {
+    if (!parentDesc->isCompatible(*childDesc)) {
+        return false;
+    }
+
+    const auto aclPrecision = precisionToAclDataType(parentDesc->getPrecision());
+    if (aclPrecision == arm_compute::DataType::UNKNOWN) {
+        return false;
+    }
+
+    const auto* parentBlocked = parentDesc->as<BlockedMemoryDesc>();
+    if (parentBlocked == nullptr) {
+        return false;
+    }
+
+    const auto elemCount = parentBlocked->getPaddedElementsCount();
+    if (elemCount == 0) {
+        return false;
+    }
+
+    const arm_compute::TensorInfo tensorInfo(arm_compute::TensorShape(elemCount), 1, aclPrecision);
+    const auto status = arm_compute::NECopy::validate(&tensorInfo, &tensorInfo);
+    if (!status) {
+        DEBUG_LOG("NECopy validation failed: ", status.error_description());
+        return false;
+    }
+
+    aclSrcTensor.allocator()->init(tensorInfo);
+    aclDstTensor.allocator()->init(tensorInfo);
+    aclCopy = std::make_unique<arm_compute::NECopy>();
+    configureThreadSafe([&] {
+        aclCopy->configure(&aclSrcTensor, &aclDstTensor);
+    });
+    useAclCopy = true;
+    getSelectedPrimitiveDescriptor()->setImplementationType(impl_desc_type::acl);
+    return true;
+}
+#endif
 
 void Reorder::prepareParams() {
-    if (isOptimized)
+    if (isOptimized) {
         return;
+    }
 
     auto srcMemPtr = getSrcMemoryAtPort(0);
     auto dstMemPtr = getDstMemoryAtPort(0);
-    if (!dstMemPtr || !dstMemPtr->isAllocated())
-        THROW_CPU_NODE_ERR("has unallocated destination memory object.");
-    if (!srcMemPtr || !srcMemPtr->isAllocated())
-        THROW_CPU_NODE_ERR("has unallocated input memory object.");
-    if (getSelectedPrimitiveDescriptor() == nullptr)
-        THROW_CPU_NODE_ERR("does not have preferable primitive descriptor.");
+    CPU_NODE_ASSERT(dstMemPtr && dstMemPtr->isDefined(), "has undefined destination memory object.");
+    CPU_NODE_ASSERT(srcMemPtr && srcMemPtr->isDefined(), "has undefined input memory object.");
+    CPU_NODE_ASSERT(getSelectedPrimitiveDescriptor(), "does not have preferable primitive descriptor.");
 
     auto isSupportedDesc = [](const MemoryDesc& desc) {
         if (!desc.isDefined()) {
@@ -198,78 +279,77 @@ void Reorder::prepareParams() {
         if (!(desc.getType() & MemoryDescType::Blocked)) {
             return false;
         }
-        if ((desc.getType() & MemoryDescType::Dnnl) && !desc.as<const DnnlMemoryDesc>()->hasEmptyExtraData()) {
-            return false;
-        }
-        return true;
+        return (desc.getType() & MemoryDescType::Dnnl) == 0 || desc.as<const DnnlMemoryDesc>()->hasEmptyExtraData();
     };
 
-    const auto&  parentDesc = srcMemPtr->getDescPtr();
-    const auto&  childDesc = dstMemPtr->getDescPtr();
+    const auto& parentDesc = srcMemPtr->getDescPtr();
+    const auto& childDesc = dstMemPtr->getDescPtr();
 
-#if defined(OPENVINO_ARCH_ARM) || defined(OPENVINO_ARCH_ARM64)
-    // @todo current oneDNN v3.2 lacks optimized jit implementation for fp16 reorders.
-    // Use transpose executor as a temporary WA.
-    if (everyone_is(ov::element::f16, parentDesc->getPrecision(), childDesc->getPrecision()) &&
+#if defined(OPENVINO_ARCH_ARM)
+    if (all_of(ov::element::f16, parentDesc->getPrecision(), childDesc->getPrecision()) &&
         ((parentDesc->hasLayoutType(LayoutType::ncsp) && childDesc->hasLayoutType(LayoutType::nspc)) ||
          (parentDesc->hasLayoutType(LayoutType::nspc) && childDesc->hasLayoutType(LayoutType::ncsp))) &&
-        one_of(parentDesc->getShape().getRank(), 3u, 4u)) {
-        return prepareReorderAsTranspose(parentDesc, childDesc);
+        any_of(parentDesc->getShape().getRank(), 3U, 4U)) {
+        prepareReorderAsTranspose(parentDesc, childDesc);
+        return;
+    }
+#endif
+
+#if defined(OV_CPU_WITH_ACL)
+    if (prepareAclCopy(parentDesc, childDesc)) {
+        return;
     }
 #endif
 
     if ((isNspc2NcspCase || isNcsp2NspcCase) && isSupportedDesc(*childDesc) && isSupportedDesc(*parentDesc)) {
-        const auto &inDims = srcMemPtr->getStaticDims();
+        const auto& inDims = srcMemPtr->getStaticDims();
         // Check that child strides are consistent with parent dims if the child is inplace.
         // The strides must be dense except for the channel one (since the child num channels might differ)
         const auto childSubBlocksAreDense = [&]() {
             const auto& dstStrides = childDesc->as<BlockedMemoryDesc>()->getStrides();
             const auto& dstOrder = childDesc->as<BlockedMemoryDesc>()->getOrder();
             const size_t channelDim = 1;
-            if (dstStrides.back() != 1)
+            if (dstStrides.back() != 1) {
                 return false;
-            for (int i = inDims.size() - 1; i > 0; i--) {
-                if (dstStrides[i-1] != dstStrides[i] * inDims[dstOrder[i]] && dstOrder[i] != channelDim)
+            }
+            for (int i = static_cast<int>(inDims.size()) - 1; i > 0; i--) {
+                if (dstStrides[i - 1] != dstStrides[i] * inDims[dstOrder[i]] && dstOrder[i] != channelDim) {
                     return false;
+                }
             }
             return true;
         };
         if (isNspc2NcspCase) {
             canUseNspc2Ncsp = inDims[1] <= 64 && inDims[1] >= 16 &&
-                (parentDesc->as<BlockedMemoryDesc>()->getPaddedElementsCount() / inDims[1]) >= 128 &&
-                childSubBlocksAreDense();
+                              (parentDesc->as<BlockedMemoryDesc>()->getPaddedElementsCount() / inDims[1]) >= 128 &&
+                              childSubBlocksAreDense();
         } else if (isNcsp2NspcCase) {
             canUseNcsp2Nspc = childSubBlocksAreDense();
         }
     }
     if (!canUseNcsp2Nspc && !canUseNspc2Ncsp) {
-        if (!dstMemPtr || !dstMemPtr->isAllocated())
-            THROW_CPU_NODE_ERR("has unallocated destination memory object.");
-        if (!srcMemPtr || !srcMemPtr->isAllocated())
-            THROW_CPU_NODE_ERR("has unallocated input memory object.");
-        if (getSelectedPrimitiveDescriptor() == nullptr)
-            THROW_CPU_NODE_ERR("does not have preferable primitive descriptor.");
+        CPU_NODE_ASSERT(dstMemPtr && dstMemPtr->isDefined(), "has undefined destination memory object.");
+        CPU_NODE_ASSERT(srcMemPtr && srcMemPtr->isDefined(), "has undefined input memory object.");
+        CPU_NODE_ASSERT(getSelectedPrimitiveDescriptor(), "does not have preferable primitive descriptor.");
 
-        createReorderPrimitive(srcMemPtr->getDescWithType<DnnlMemoryDesc>()->getDnnlDesc(), srcMemPtr->getData(),
-                               dstMemPtr->getDescWithType<DnnlMemoryDesc>()->getDnnlDesc(), dstMemPtr->getData());
+        createReorderPrimitive(srcMemPtr->getDescWithType<DnnlMemoryDesc>(),
+                               dstMemPtr->getDescWithType<DnnlMemoryDesc>());
     }
 }
 
-void Reorder::createReorderPrimitive(const dnnl::memory::desc& srcDesc,
-                                     void* srcPtr,
-                                     const dnnl::memory::desc& dstDesc,
-                                     void* dstPtr) {
-    auto selectedPD = getSelectedPrimitiveDescriptor();
-    if (!selectedPD)
-        THROW_CPU_NODE_ERR("does not have preferable primitive descriptor.");
+void Reorder::createReorderPrimitive(const DnnlMemoryDescPtr& srcDesc, const DnnlMemoryDescPtr& dstDesc) {
+    auto* selectedPD = getSelectedPrimitiveDescriptor();
+    CPU_NODE_ASSERT(selectedPD, "does not have preferable primitive descriptor.");
 
     const auto engine = getEngine();
-    src_blocked = std::make_shared<Memory>(engine, DnnlExtensionUtils::makeDescriptor(srcDesc), srcPtr, false);
-
-    dst_blocked = std::make_shared<Memory>(engine, DnnlExtensionUtils::makeDescriptor(dstDesc), dstPtr, false);
-
-    auto src_desc = src_blocked->getPrimitive().get_desc();
+    auto src_desc = srcDesc->getDnnlDesc();
     if (!src_permutation.empty()) {
+        CPU_NODE_ASSERT(src_permutation.size() == static_cast<size_t>(src_desc.get_ndims()),
+                        "src_permutation size (",
+                        src_permutation.size(),
+                        ") doesn't match with src_desc ndims(",
+                        src_desc.get_ndims(),
+                        ")");
         // reorder requires exact matching of logical dimensions between src & dst
         // sometime we have to permute source's logical dimensions to satisfy
         // this requirement, this dosn't affect plugin's node input memory desc.
@@ -278,7 +358,7 @@ void Reorder::createReorderPrimitive(const dnnl::memory::desc& srcDesc,
         src_desc = src_desc.permute_axes(src_permutation);
     }
 
-    auto dst_desc = dst_blocked->getPrimitive().get_desc();
+    auto dst_desc = dstDesc->getDnnlDesc();
 
     // TODO: We should keep shape consistency for const and expected shape for node.
     //       If it requires reshape operation it should explicitly injected into graph.
@@ -291,25 +371,21 @@ void Reorder::createReorderPrimitive(const dnnl::memory::desc& srcDesc,
     // perform such conversion if the source tensor can be reshaped to the destination rank. This is
     // useful in situations when rank in IR does not much rank that is required by the oneDNN primitive,
     // but the input tensor can be reshaped (e.g. weights for grouped convolutions, biases etc.)
-    if (src_blocked->getDesc().hasLayoutType(LayoutType::ncsp) &&
-        src_blocked->getShape().getRank() != dst_blocked->getShape().getRank()) {
-        const auto newDims = dst_blocked->getStaticDims();
+    if (srcDesc->hasLayoutType(LayoutType::ncsp) && srcDesc->getShape().getRank() != dstDesc->getShape().getRank()) {
+        const auto& newDims = dstDesc->getShape().getStaticDims();
         const auto newFormat = DnnlExtensionUtils::GetPlainFormatByRank(newDims.size());
 
-        auto newDesc = dnnl::memory::desc(DnnlExtensionUtils::convertToDnnlDims(newDims),
-                                            src_blocked->getDataType(),
-                                            newFormat);
-        src_blocked = std::make_shared<Memory>(getEngine(), DnnlExtensionUtils::makeDescriptor(newDesc), srcPtr, false);
-
-        src_desc = src_blocked->getPrimitive().get_desc();
+        src_desc = dnnl::memory::desc(DnnlExtensionUtils::convertToDnnlDims(newDims),
+                                      DnnlExtensionUtils::ElementTypeToDataType(srcDesc->getPrecision()),
+                                      newFormat);
     }
 
-    auto result = getReorderPrim(context->getParamsCache(), getEngine(), src_desc, dst_desc);
-    if (!result) {
-        DEBUG_LOG("src desc: ", src_desc, " dst_desc: ", dst_desc);
-        THROW_CPU_NODE_ERR("could not create reorder primitive: unsupported reorder case.");
-    }
-    prim = result;
+    DEBUG_LOG("CreateReorderPrimitive is called for node", getName(), " src desc: ", src_desc, " dst_desc: ", dst_desc);
+    CPU_NODE_ASSERT(src_desc.get_ndims() == dst_desc.get_ndims(),
+                    "OneDNN doesn't support reorder with different ranks.");
+
+    prim = getReorderPrim(context->getParamsCache(), getEngine(), src_desc, dst_desc);
+    CPU_NODE_ASSERT(prim, "could not create reorder primitive: unsupported reorder case.");
 
     selectedPD->setImplementationType(
         parse_impl_name(DnnlExtensionUtils::query_impl_info_str(prim.get_primitive_desc())));
@@ -320,7 +396,7 @@ void Reorder::createReorderPrimitive(const dnnl::memory::desc& srcDesc,
 
 #ifdef CPU_DEBUG_CAPS
     if (prim) {
-        auto pd = prim.get_primitive_desc();
+        const auto* pd = prim.get_primitive_desc();
         DEBUG_LOG("verbose##", getName(), "##", DnnlExtensionUtils::query_pd_info(pd), "\n");
     }
 #endif
@@ -337,6 +413,7 @@ bool Reorder::created() const {
 }
 
 void Reorder::optimizedNcsp2Nspc() {
+    const auto& cpu_parallel = context->getCpuParallel();
     auto parentEdge = getParentEdgeAt(0);
     auto childEdge = getChildEdgeAt(0);
 
@@ -349,16 +426,16 @@ void Reorder::optimizedNcsp2Nspc() {
     const size_t DIM3 = inDims[ndims - 2];
     const size_t DIM4 = inDims[ndims - 1];
 
-    auto src_data = parentEdge->getMemoryPtr()->getDataAs<const uint8_t>();
-    auto dst_data = childEdge->getMemoryPtr()->getDataAs<uint8_t>();
+    const auto* src_data = parentEdge->getMemoryPtr()->getDataAs<const uint8_t>();
+    auto* dst_data = childEdge->getMemoryPtr()->getDataAs<uint8_t>();
 
     const size_t src_batch_stride = DIM1 * DIM2 * DIM3 * DIM4;
     const size_t dst_batch_stride = dstStrides[0];
-    const size_t dst_channel_stride = dstStrides[ndims-2];
+    const size_t dst_channel_stride = dstStrides[ndims - 2];
     const size_t stride1 = DIM2 * DIM3 * DIM4;
     const size_t stride2 = DIM2 * DIM3;
 
-    parallel_for3d(DIM0, DIM1, stride2, [&](size_t dim0, size_t dim1, size_t j) {
+    cpu_parallel->parallel_for3d(DIM0, DIM1, stride2, [&](size_t dim0, size_t dim1, size_t j) {
         size_t src_off = dim0 * src_batch_stride + j * DIM4 + dim1 * stride1;
         size_t dst_off = dim0 * dst_batch_stride + j * DIM4 * dst_channel_stride + dim1;
 
@@ -371,6 +448,7 @@ void Reorder::optimizedNcsp2Nspc() {
 }
 
 void Reorder::optimizedNspc2Ncsp() {
+    const auto& cpu_parallel = context->getCpuParallel();
     auto parentEdge = getParentEdgeAt(0);
     auto childEdge = getChildEdgeAt(0);
 
@@ -382,14 +460,14 @@ void Reorder::optimizedNspc2Ncsp() {
     const size_t DIM3 = inDims[ndims - 2];
     const size_t DIM4 = inDims[ndims - 1];
 
-    auto src_data = parentEdge->getMemoryPtr()->getDataAs<const float>();
-    auto dst_data = childEdge->getMemoryPtr()->getDataAs<float>();
+    const auto* src_data = parentEdge->getMemoryPtr()->getDataAs<const float>();
+    auto* dst_data = childEdge->getMemoryPtr()->getDataAs<float>();
 
     const auto dstStrides = childEdge->getMemoryPtr()->getDescWithType<BlockedMemoryDesc>()->getStrides();
     const size_t block_size = DIM2 * DIM3 * DIM4;
     const size_t src_batch_stride = block_size * DIM1;
     const size_t dst_batch_stride = dstStrides[0];
-    parallel_for2d(DIM0, block_size, [&](size_t b, size_t j) {
+    cpu_parallel->parallel_for2d(DIM0, block_size, [&](size_t b, size_t j) {
         auto src_off = b * src_batch_stride + j * DIM1;
         auto dst_off = b * dst_batch_stride + j;
         for (size_t dim1 = 0; dim1 < DIM1; ++dim1) {
@@ -400,19 +478,39 @@ void Reorder::optimizedNspc2Ncsp() {
     });
 }
 
-void Reorder::execute(dnnl::stream strm) {
-#if defined(OPENVINO_ARCH_ARM) || defined(OPENVINO_ARCH_ARM64)
+void Reorder::execute(const dnnl::stream& strm) {
+#if defined(OPENVINO_ARCH_ARM)
     if (transposeExecutor) {
         auto dstMemPtr = getDstMemoryAtPort(0);
         auto srcMemPtr = getSrcMemoryAtPort(0);
-        return transposeExecutor->exec({srcMemPtr}, {dstMemPtr});
+        transposeExecutor->exec({srcMemPtr}, {dstMemPtr});
+        return;
+    }
+#endif
+
+#if defined(OV_CPU_WITH_ACL)
+    if (useAclCopy) {
+        auto dstMemPtr = getDstMemoryAtPort(0);
+        auto srcMemPtr = getSrcMemoryAtPort(0);
+        aclSrcTensor.allocator()->import_memory(srcMemPtr->getData());
+        aclDstTensor.allocator()->import_memory(dstMemPtr->getData());
+        aclCopy->run();
+        aclSrcTensor.allocator()->free();
+        aclDstTensor.allocator()->free();
+        return;
     }
 #endif
 
     if (isOptimized) {
-        DEBUG_LOG("#", getExecIndex(), " Reorder ", getName(), "  is Optimized.",
-                   " input @", getSrcDataAtPort(0),
-                   " output @", getDstDataAtPort(0));
+        DEBUG_LOG("#",
+                  getExecIndex(),
+                  " Reorder ",
+                  getName(),
+                  "  is Optimized.",
+                  " input @",
+                  getSrcDataAtPort(0),
+                  " output @",
+                  getDstDataAtPort(0));
         return;
     }
 
@@ -424,29 +522,33 @@ void Reorder::execute(dnnl::stream strm) {
         if (prim) {
             prim.execute(strm, primArgs);
         } else {
-            THROW_CPU_NODE_ERR("doesn't have an initialized primitive.");
+            CPU_NODE_THROW("doesn't have an initialized primitive.");
         }
     }
 }
 
-std::string Reorder::getReorderArgs(const MemoryDesc &parentDesc, const MemoryDesc &childDesc) {
-    std::string inArgs, outArgs;
+std::string Reorder::getReorderArgs(const MemoryDesc& parentDesc, const MemoryDesc& childDesc) {
+    std::string inArgs;
+    std::string outArgs;
     if (parentDesc.getPrecision() != childDesc.getPrecision()) {
-        inArgs += (inArgs.empty() ? "" : "_") + std::string(parentDesc.getPrecision().get_type_name());
-        outArgs += (outArgs.empty() ? "" : "_") + std::string(childDesc.getPrecision().get_type_name());
+        inArgs += (inArgs.empty() ? "" : "_") + static_cast<std::string>(parentDesc.getPrecision().get_type_name());
+        outArgs += (outArgs.empty() ? "" : "_") + static_cast<std::string>(childDesc.getPrecision().get_type_name());
     }
     auto formatSrc = parentDesc.serializeFormat();
     auto formatDst = childDesc.serializeFormat();
-    if (formatSrc != formatDst || one_of(std::string("undef"), formatSrc, formatDst)) {
+    if (formatSrc != formatDst || intel_cpu::any_of(std::string("undef"), formatSrc, formatDst)) {
         inArgs += (inArgs.empty() ? "" : "_") + formatSrc;
         outArgs += (outArgs.empty() ? "" : "_") + formatDst;
     }
     return inArgs + "_" + outArgs;
 }
 
-void Reorder::reorderData(const IMemory &input, const IMemory &output, MultiCachePtr cache) {
-    if (!input.getDesc().isDefined() || !output.getDesc().isDefined())
-        OPENVINO_THROW("Can't reorder data with dynamic shapes");
+void Reorder::reorderData(const IMemory& input,
+                          const IMemory& output,
+                          const MultiCachePtr& cache,
+                          const std::shared_ptr<ThreadPool>& threadPool) {
+    OPENVINO_ASSERT(input.getDesc().isDefined() && output.getDesc().isDefined(),
+                    "Can't reorder data with dynamic shapes");
 
     if (input.getShape().hasZeroDims() || output.getShape().hasZeroDims()) {
         return;
@@ -454,12 +556,12 @@ void Reorder::reorderData(const IMemory &input, const IMemory &output, MultiCach
 
     if (input.getDesc().isCompatible(output.getDesc())) {
         if (input.getDesc().getPrecision() == element::string) {
-            auto srcPtr = input.getDataAs<StringMemory::OvString>();
-            auto dstPtr = output.getDataAs<StringMemory::OvString>();
+            auto* srcPtr = input.getDataAs<StringMemory::OvString>();
+            auto* dstPtr = output.getDataAs<StringMemory::OvString>();
             std::copy(srcPtr, srcPtr + output.getShape().getElementsCount(), dstPtr);
         } else {
-            auto srcPtr = static_cast<uint8_t*>(input.getData());
-            auto dstPtr = static_cast<uint8_t*>(output.getData());
+            auto* srcPtr = static_cast<uint8_t*>(input.getData());
+            auto* dstPtr = static_cast<uint8_t*>(output.getData());
 
             auto copySize = output.getSize();
             cpu_memcpy(dstPtr, srcPtr, copySize);
@@ -477,7 +579,7 @@ void Reorder::reorderData(const IMemory &input, const IMemory &output, MultiCach
         auto engine = dstMemory.get_engine();
 
         if (srcMemoryDesc.get_ndims() != dstMemoryDesc.get_ndims()) {
-            //rank mismatch, try to reshape source mem descriptor
+            // rank mismatch, try to reshape source mem descriptor
             constexpr bool allowEmpty = true;
             auto reshapedSrcMemDesc = srcMemoryDesc.reshape(dstMemoryDesc.get_dims(), allowEmpty);
             if (reshapedSrcMemDesc) {
@@ -492,30 +594,32 @@ void Reorder::reorderData(const IMemory &input, const IMemory &output, MultiCach
             // try precision conversion then do the reorder
             if (output.getDataType() != input.getDataType() && Convert::isSupportedDesc(input.getDesc()) &&
                 Convert::isSupportedDesc(output.getDesc())) {
-                //we probably could not make the reorder because there is no one supporting this precision conversion
-                //lets try to convert data first using cpu_convert
-                auto data = static_cast<const uint8_t *>(input.getData());
-                tmpBuff.resize(input.getSize());
+                // we probably could not make the reorder because there is no one supporting this precision conversion
+                // lets try to convert data first using cpu_convert
+                const auto* data = static_cast<const uint8_t*>(input.getData());
+                tmpBuff.resize(output.getSize());
 
                 const auto outPrc = DnnlExtensionUtils::DataTypeToElementType(output.getDataType());
-                cpu_convert(data, tmpBuff.data(), DnnlExtensionUtils::DataTypeToElementType(input.getDataType()),
-                            outPrc, input.getSize() / input.getDesc().getPrecision().size());
+                cpu_parallel_convert(data,
+                                     tmpBuff.data(),
+                                     DnnlExtensionUtils::DataTypeToElementType(input.getDataType()),
+                                     outPrc,
+                                     input.getDesc().getShape().getElementsCount());
 
                 auto tmpDesc = input.getDesc().cloneWithNewPrecision(outPrc);
-                Memory tmpMem(engine, std::move(tmpDesc), tmpBuff.data());
+                Memory tmpMem(engine, tmpDesc, tmpBuff.data());
 
                 srcMemory = tmpMem.getPrimitive();
                 reorder = getReorderPrim(cache, dstMemory.get_engine(), srcMemory.get_desc(), dstMemory.get_desc());
             }
-            if (!reorder) {
-                OPENVINO_THROW("No reorder available for the following tensor descriptors: ",
-                               input.getDesc().serializeFormat(),
-                               " and ",
-                               output.getDesc().serializeFormat());
-            }
+            OPENVINO_ASSERT(reorder,
+                            "No reorder available for the following tensor descriptors: ",
+                            input.getDesc().serializeFormat(),
+                            " and ",
+                            output.getDesc().serializeFormat());
         }
         if (reorder) {
-            dnnl::stream loc_stream(engine, dnnl::stream::flags::in_order);
+            dnnl::stream loc_stream = make_stream(engine, threadPool);
             reorder.execute(loc_stream, {{DNNL_ARG_FROM, srcMemory}, {DNNL_ARG_TO, dstMemory}});
         } else {
             OPENVINO_THROW("Could not make onednn reorder.");
@@ -523,6 +627,4 @@ void Reorder::reorderData(const IMemory &input, const IMemory &output, MultiCach
     }
 }
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

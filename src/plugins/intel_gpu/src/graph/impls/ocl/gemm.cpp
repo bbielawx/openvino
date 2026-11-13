@@ -1,14 +1,16 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "intel_gpu/graph/kernel_impl_params.hpp"
-#include "multi_stage_primitive.hpp"
+#include "intel_gpu/op/gemm.hpp"
 
-#include "kv_cache_inst.h"
-#include "gemm_inst.h"
 #include "gemm/gemm_kernel_base.h"
 #include "gemm/gemm_kernel_selector.h"
+#include "gemm_inst.h"
+#include "intel_gpu/graph/kernel_impl_params.hpp"
+#include "intel_gpu/plugin/common_utils.hpp"
+#include "kv_cache_inst.h"
+#include "multi_stage_primitive.hpp"
 
 namespace cldnn {
 namespace ocl {
@@ -30,7 +32,7 @@ struct gemm_impl : multi_stage_primitive<gemm> {
     const uint32_t indirect_gemm = 1;
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<gemm_impl>(*this);
+        return make_deep_copy<gemm_impl, kernel_params_t>(*this);
     }
 
     gemm_impl() = default;
@@ -96,8 +98,9 @@ protected:
             kernel_offset += _kernels_data[s].kernels.size();
         }
         for (size_t kd_idx = 0; kd_idx < _kernels_data[stage].kernels.size(); ++kd_idx) {
-            if (_kernels_data[stage].kernels[kd_idx].skip_execution)
+            if (_kernels_data[stage].kernels[kd_idx].skip_execution) {
                 continue;
+            }
 
             size_t idx_final = kernel_offset + kd_idx;
             // If any user of the prim's users is CPU implementation or network's output, set prim as a output event (event won't be nullptr)
@@ -125,25 +128,30 @@ protected:
                 tmp_events = {ev};
             }
             all_events.push_back(ev);
+            kernel_dump_info.add_entry_point(_kernels[idx_final]->get_id());
         }
 
-        return aggregate_events(all_events, stream, all_events.size() > 1);
+        return stream.aggregate_events(all_events, all_events.size() > 1);
     }
 
     bool need_indirect_load(const gemm_inst& inst) const {
         auto desc = inst.get_typed_desc<gemm>();
-        if (!desc->indirect_a && !desc->indirect_b)
+        if (!desc->indirect_a && !desc->indirect_b) {
             return false;
+        }
 
         const auto& params = *inst.get_impl_params();
-        if (params.input_layouts[get_beam_table_id(desc)].get_partial_shape()[0].get_length() == 1)
+        const auto indirect_axis = desc->indirect_axis;
+        if (params.input_layouts[get_beam_table_id(desc)].get_partial_shape()[indirect_axis].get_length() == 1) {
             return false;
+        }
 
         const auto& deps = inst.dependencies();
 
         const auto& indirect_dep = deps[desc->indirect_a ? 0 : 1].first;
-        if (dynamic_cast<const kv_cache_inst*>(indirect_dep) == nullptr)
+        if (dynamic_cast<const kv_cache_inst*>(indirect_dep) == nullptr) {
             return true;
+        }
 
         auto state_layout = indirect_dep->get_impl_params()->get_input_layout(0);
         bool is_prefill = state_layout.count() == 0;
@@ -151,10 +159,26 @@ protected:
     }
 
     event::ptr execute_impl(const std::vector<event::ptr>& events, gemm_inst& instance) override {
-        if (need_indirect_load(instance))
+        kernel_dump_info.clear_entries();
+
+        if (instance.get_input_layout(0).count() == 0 || instance.get_input_layout(1).count() == 0) {
+            stream& stream = instance.get_network().get_stream();
+            stream.enqueue_barrier();
+            return instance.output_memory_ptr()->fill(stream, {}, false);
+        }
+
+        if (need_indirect_load(instance)) {
+            for (auto& kernel : _kernels_data[default_gemm].kernels) {
+                kernel.skip_execution = true;
+            }
             return execute_stage(events, instance, indirect_gemm);
-        else
-            return execute_stage(events, instance, default_gemm);
+        }
+        if (_kernels_data.size() == 2) {
+            for (auto& kernel : _kernels_data[indirect_gemm].kernels) {
+                kernel.skip_execution = true;
+            }
+        }
+        return execute_stage(events, instance, default_gemm);
     }
 
 public:
@@ -173,24 +197,61 @@ public:
         params.beta = primitive->beta;
         params.transpose_input0 = primitive->transpose_input0;
         params.transpose_input1 = primitive->transpose_input1;
-        params.input0_target_shape = primitive->input0_broadcast_target_shape;
-        params.input1_target_shape = primitive->input1_broadcast_target_shape;
-        params.input0_output_pattern = primitive->input0_reshape_pattern;
-        params.input1_output_pattern = primitive->input0_reshape_pattern;
         params.input0_order = primitive->input0_transpose_order;
         params.input1_order = primitive->input1_transpose_order;
         params.output_order = primitive->output_transpose_order;
 
+        auto input0_pshape = impl_param.input_layouts[0].get_partial_shape();
+        auto input1_pshape = impl_param.input_layouts[1].get_partial_shape();
+        const auto is_broadcastable = input0_pshape.rank().is_static() && input1_pshape.rank().is_static() && input0_pshape.size() > 1 &&
+                                      input1_pshape.size() > 1 && (primitive->input_rank == primitive->weight_rank);
+        if (is_broadcastable) {
+            auto transpose_pshape = [](const ov::PartialShape pshape, const std::vector<int64_t>& order) {
+                if (order.size() < pshape.size()) {
+                    auto transposed_pshape = pshape;
+                    auto rank_diff = pshape.size() - order.size();
+                    for (size_t i = 0; i < order.size(); i++) {
+                        transposed_pshape[i + rank_diff] = pshape[rank_diff + order[i]];
+                    }
+                    return transposed_pshape;
+                }
+                auto transposed_pshape = ov::PartialShape::dynamic(pshape.rank());
+                for (size_t i = 0; i < order.size(); i++) {
+                    transposed_pshape[i] = pshape[order[i]];
+                }
+                return transposed_pshape;
+            };
+            size_t max_rank = input0_pshape.size();
+            auto default_order = ov::intel_gpu::op::Gemm::default_order(max_rank);
+            auto input0_trans_pshape =
+                (primitive->input0_transpose_order != default_order) ? transpose_pshape(input0_pshape, primitive->input0_transpose_order) : input0_pshape;
+            auto input1_trans_pshape =
+                (primitive->input1_transpose_order != default_order) ? transpose_pshape(input1_pshape, primitive->input1_transpose_order) : input1_pshape;
+            for (size_t i = 0; i < max_rank - 2; ++i) {
+                if (input0_trans_pshape[i].is_static() && input1_trans_pshape[i].is_static()) {
+                    if (input1_trans_pshape[i].get_length() > input0_trans_pshape[i].get_length()) {
+                        params.input0_reshape_axes = primitive->input0_transpose_order[i];
+                        params.input0_broadcast_val = input1_trans_pshape[i].get_length() / input0_trans_pshape[i].get_length();
+                    } else if (input0_trans_pshape[i].get_length() > input1_trans_pshape[i].get_length()) {
+                        params.input1_reshape_axes = primitive->input1_transpose_order[i];
+                        params.input1_broadcast_val = input0_trans_pshape[i].get_length() / input1_trans_pshape[i].get_length();
+                    }
+                }
+            }
+        }
+
         params.indirect_input0 = primitive->indirect_a && indirect;
         params.indirect_input1 = primitive->indirect_b && indirect;
+        params.indirect_axis = primitive->indirect_axis;
         if (indirect && (primitive->indirect_a || primitive->indirect_b)) {
             OPENVINO_ASSERT(impl_param.input_layouts.size() >= 3, "[GPU] Actual inputs count: ", impl_param.input_layouts.size());
             params.inputs.push_back(convert_data_tensor(impl_param.input_layouts[get_beam_table_id(primitive)]));
         }
 
         bool is_quantized = true;
-        for (auto& input : impl_param.input_layouts)
+        for (const auto& input : impl_param.input_layouts) {
             is_quantized &= data_type_traits::is_quantized(input.data_type);
+        }
 
         if (is_quantized) {
             params.quantization = kernel_selector::QuantizationType::SYMMETRIC;
@@ -202,12 +263,14 @@ public:
         if ((primitive->indirect_a || primitive->indirect_b) && !indirect) {
             // Need to adjust regular gemm kernel offset to skip beam table input
             for (auto& fd : params.fused_ops) {
-                if (!fd.has_outer_dep())
+                if (!fd.has_outer_dep()) {
                     continue;
+                }
                 auto& fused_op_inputs = fd.tensors;
                 for (auto& fused_input : fused_op_inputs) {
-                    if (fused_input.is_dynamic())
+                    if (fused_input.is_dynamic()) {
                         fused_input.SetDynamicShapeOffset(fused_input.get_dynamic_shape_offset() + kernel_selector::DataTensor::max_rank());
+                    }
                 }
             }
             for (auto& out : params.outputs) {
@@ -223,7 +286,8 @@ public:
         const auto& primitive = impl_params.typed_desc<gemm>();
         auto updated_impl_params = canonicalize_fused_shapes(impl_params);
 
-        updated_impl_params.input_layouts = gemm_inst::transform_input_layouts(primitive, impl_params.input_layouts);
+        updated_impl_params.input_layouts =
+            gemm_inst::transform_input_layouts(primitive, impl_params.input_layouts, impl_params.get_program().is_new_shape_infer());
         updated_impl_params.output_layouts[0] = gemm_inst::transform_output_layout(primitive, updated_impl_params.input_layouts, impl_params.output_layouts[0]);
 
         for (auto& input_layout : updated_impl_params.input_layouts) {
@@ -254,16 +318,23 @@ public:
             indirect_kernel_params.is_shape_agnostic = params.is_dynamic();
             kernels_data.push_back(kernel_selector.get_best_kernel(indirect_kernel_params));
         }
-        return cldnn::make_unique<gemm_impl>(kernels_data);
+        return std::make_unique<gemm_impl>(kernels_data);
     }
 
     void update_dispatch_data(const kernel_impl_params& impl_param) override {
-        auto kernel_params = get_kernel_params(impl_param, true, false);
-        (_kernels_data[default_gemm].update_dispatch_data_func)(kernel_params, _kernels_data[default_gemm]);
+        // If model loaded from cache, params are not initialized, so we create a new object and reuse it in the future
+        if (_kernels_data[default_gemm].params == nullptr) {
+            _kernels_data[default_gemm].params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true, false));
+        }
+        update_shapes(*_kernels_data[default_gemm].params, impl_param);
+        (_kernels_data[default_gemm].update_dispatch_data_func)(*_kernels_data[default_gemm].params, _kernels_data[default_gemm]);
 
         if (_kernels_data.size() == 2) {
-            auto kernel_params = get_kernel_params(impl_param, true, true);
-            (_kernels_data[indirect_gemm].update_dispatch_data_func)(kernel_params, _kernels_data[indirect_gemm]);
+            if (_kernels_data[indirect_gemm].params == nullptr) {
+                _kernels_data[indirect_gemm].params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true, true));
+            }
+            update_shapes(*_kernels_data[indirect_gemm].params, impl_param);
+            (_kernels_data[indirect_gemm].update_dispatch_data_func)(*_kernels_data[indirect_gemm].params, _kernels_data[indirect_gemm]);
         }
     }
 };
@@ -271,13 +342,9 @@ public:
 namespace detail {
 
 attach_gemm_impl::attach_gemm_impl() {
-    const std::vector<data_types> types{data_types::f16,
-                                        data_types::f32,
-                                        data_types::i8,
-                                        data_types::u8,
-                                        data_types::i32};
+    const std::vector<data_types> types{data_types::f16, data_types::f32, data_types::i8, data_types::u8, data_types::i32};
 
-    const std::vector<format::type> formats {
+    const std::vector<format::type> formats{
         format::bfyx,
         format::b_fs_yx_fsv16,
         format::b_fs_yx_fsv32,
@@ -296,15 +363,13 @@ attach_gemm_impl::attach_gemm_impl() {
 
     implementation_map<gemm>::add(impl_types::ocl, shape_types::static_shape, gemm_impl::create, types, formats);
 
-    const std::vector<format::type> dyn_formats {
+    const std::vector<format::type> dyn_formats{
         format::bfyx,
         format::bfzyx,
         format::bfwzyx,
     };
 
-    implementation_map<gemm>::add(impl_types::ocl,
-                                  shape_types::dynamic_shape,
-                                  gemm_impl::create, types, dyn_formats);
+    implementation_map<gemm>::add(impl_types::ocl, shape_types::dynamic_shape, gemm_impl::create, types, dyn_formats);
 }
 
 }  // namespace detail

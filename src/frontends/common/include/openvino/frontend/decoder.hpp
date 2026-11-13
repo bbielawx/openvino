@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,8 +8,7 @@
 #include "openvino/frontend/exception.hpp"
 #include "openvino/frontend/visibility.hpp"
 
-namespace ov {
-namespace frontend {
+namespace ov::frontend {
 
 // Extendable type system which reflects Framework data types
 // Type nestings are built with the help of ov::Any
@@ -18,6 +17,12 @@ namespace type {
 struct Tensor {
     Tensor() = default;
     explicit Tensor(const Any& _element_type) : element_type(_element_type) {}
+    Any element_type;
+};
+
+struct Complex {
+    Complex() = default;
+    explicit Complex(const Any& _element_type) : element_type(_element_type) {}
     Any element_type;
 };
 
@@ -49,9 +54,9 @@ struct Union;
 }  // namespace type
 
 /// Plays a role of node, block and module decoder
-class IDecoder {
+class FRONTEND_API IDecoder {
 public:
-    virtual ~IDecoder() = default;
+    virtual ~IDecoder();
 };
 
 class FRONTEND_API DecoderBase : public IDecoder {
@@ -87,5 +92,4 @@ public:
     virtual ~DecoderBase();
 };
 
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend

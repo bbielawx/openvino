@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -28,7 +28,6 @@
 #include "low_precision/reshape.hpp"
 #include "low_precision/relu.hpp"
 #include "low_precision/squeeze.hpp"
-#include "low_precision/subtract.hpp"
 #include "low_precision/strided_slice.hpp"
 #include "low_precision/transpose.hpp"
 #include "low_precision/unsqueeze.hpp"
@@ -176,7 +175,7 @@ TEST_P(TransformationsAfterSplitTransformation, Run) {
     SimpleLowPrecisionTransformer transformer;
     getTransformerWithTransformationByName(transformer, params, layerName);
 
-    ASSERT_NO_THROW(transformer.transform(model));
+    OV_ASSERT_NO_THROW(transformer.transform(model));
 }
 
 const std::vector<std::string> transformationNames = {

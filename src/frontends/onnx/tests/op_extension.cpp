@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,8 +17,6 @@
 using namespace ov::frontend;
 
 using ONNXOpExtensionTest = FrontEndOpExtensionTest;
-
-static const std::string translator_name = "Relu";
 
 class Relu1 : public Relu {
 public:

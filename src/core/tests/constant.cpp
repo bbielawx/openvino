@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,14 +7,44 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <optional>
+#include <string_view>
+#include <variant>
 
+#include "common_test_utils/test_assertions.hpp"
 #include "common_test_utils/type_prop.hpp"
 #include "openvino/core/except.hpp"
 #include "openvino/runtime/aligned_buffer.hpp"
 #include "openvino/runtime/shared_buffer.hpp"
 
-using namespace ov;
-using namespace std;
+namespace ov {
+namespace test {
+
+struct TestDType {
+    TestDType(float v) : value{v} {}
+
+    template <typename I>
+    explicit TestDType(I v) : value{static_cast<float>(v)} {}
+
+    operator float() const {
+        return value;
+    }
+
+    // To print values in tests
+    friend std::ostream& operator<<(std::ostream& os, const TestDType& obj) {
+        os << obj.value;
+        return os;
+    }
+
+    float value;
+};
+
+using std::string;
+using std::vector;
+
+using testing::Each;
+using testing::ElementsAre;
+using testing::HasSubstr;
 
 //
 // boolean
@@ -42,6 +72,8 @@ TEST(constant, boolean_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+
+    EXPECT_EQ(c.get_strides(), Strides({1}));
 }
 
 TEST(constant, boolean_string_broadcast) {
@@ -71,7 +103,7 @@ TEST(constant, boolean_vector) {
     EXPECT_EQ(v[2], 1);
     EXPECT_EQ(v[3], 0);
 
-    const char* p = c.get_data_ptr<char>();
+    const auto p = c.get_vector<char>();
     EXPECT_EQ(p[0], 1);
     EXPECT_EQ(p[1], 0);
     EXPECT_EQ(p[2], 1);
@@ -121,6 +153,8 @@ TEST(constant, float_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+
+    EXPECT_EQ(c.get_strides(), Strides({4}));
 }
 
 TEST(constant, float_string_broadcast) {
@@ -200,6 +234,7 @@ TEST(constant, double_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::f64.size()}));
 }
 
 TEST(constant, double_string_broadcast) {
@@ -269,13 +304,14 @@ TEST(constant, int4_string) {
 
     const auto p = c.get_data_ptr<uint8_t>();
     EXPECT_EQ(0x01, p[0]);
-    EXPECT_EQ(0x0F, p[1] & 0x0F);
+    EXPECT_EQ(0x0F, p[1]);
 
     EXPECT_EQ(input, c.get_value_strings());
 
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_THROW(c.get_strides(), Exception);
 }
 
 TEST(constant, int4_string_broadcast_negative_number) {
@@ -289,7 +325,7 @@ TEST(constant, int4_string_broadcast_negative_number) {
 
     const auto p = c.get_data_ptr<uint8_t>();
     EXPECT_EQ(0xFF, p[0]);
-    EXPECT_EQ(0xF0, p[1] & 0xF0);
+    EXPECT_EQ(0x0F, p[1]);
 
     EXPECT_EQ(std::vector<std::string>(3, "-1"), c.get_value_strings());
 }
@@ -305,7 +341,7 @@ TEST(constant, int4_string_broadcast_positive_number) {
 
     const auto p = c.get_data_ptr<uint8_t>();
     EXPECT_EQ(0x11, p[0]);
-    EXPECT_EQ(0x10, p[1] & 0xF0);
+    EXPECT_EQ(0x01, p[1]);
 
     EXPECT_EQ(std::vector<std::string>(3, "1"), c.get_value_strings());
 }
@@ -321,7 +357,7 @@ TEST(constant, int4_vector_negative_number) {
 
     const auto p = c.get_data_ptr<uint8_t>();
     EXPECT_EQ(0xEF, p[0]);
-    EXPECT_EQ(0x0F, p[1] & 0x0F);
+    EXPECT_EQ(0x0F, p[1]);
 }
 
 TEST(constant, int4_vector_positive_number) {
@@ -335,7 +371,7 @@ TEST(constant, int4_vector_positive_number) {
 
     const auto p = c.get_data_ptr<uint8_t>();
     EXPECT_EQ(0x21, p[0]);
-    EXPECT_EQ(0x05, p[1] & 0x0F);
+    EXPECT_EQ(0x05, p[1]);
 }
 
 TEST(constant, int4_vector_broadcast_negative_number) {
@@ -349,7 +385,7 @@ TEST(constant, int4_vector_broadcast_negative_number) {
 
     const auto p = c.get_data_ptr<uint8_t>();
     EXPECT_EQ(0xFF, p[0]);
-    EXPECT_EQ(0xF0, p[1] & 0xF0);
+    EXPECT_EQ(0x0F, p[1]);
 }
 
 TEST(constant, int4_vector_broadcast_positive_number) {
@@ -361,9 +397,9 @@ TEST(constant, int4_vector_broadcast_positive_number) {
     EXPECT_EQ(v[1], int8_t(3));
     EXPECT_EQ(v[2], int8_t(3));
 
-    const auto p = c.get_data_ptr<uint8_t>();
+    const auto p = c.get_vector<uint8_t>();
     EXPECT_EQ(0x33, p[0]);
-    EXPECT_EQ(0x30, p[1] & 0xF0);
+    EXPECT_EQ(0x03, p[1]);
 }
 
 TEST(constant, int4_input_value_validation) {
@@ -381,6 +417,16 @@ TEST(constant, int4_input_value_validation) {
     EXPECT_THROW(ov::op::v0::Constant c(element::i4, shape, std::vector<std::string>{"8", "1"}), ::ov::AssertFailure);
 }
 
+TEST(constant, int4_write_then_cast_custom_type) {
+    Shape shape{3};
+    std::vector<TestDType> input{{1.0f}, {-2.0f}, {7.0f}};
+    ov::op::v0::Constant c(element::i4, shape, input);
+
+    auto v = c.cast_vector<TestDType>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_EQ(v, input);
+}
 //
 // int8
 //
@@ -404,11 +450,10 @@ TEST(constant, int8_string) {
 
     EXPECT_EQ(input, c.get_value_strings());
 
-    EXPECT_EQ(input, c.get_value_strings());
-
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::i8.size()}));
 }
 
 TEST(constant, int8_string_broadcast) {
@@ -490,6 +535,7 @@ TEST(constant, int16_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::i16.size()}));
 }
 
 TEST(constant, int16_string_broadcast) {
@@ -740,13 +786,14 @@ TEST(constant, uint1_string) {
     EXPECT_EQ(v[3], 0);
 
     const auto p = c.get_data_ptr<uint8_t>();
-    EXPECT_EQ(p[0], 0b10100000);
+    EXPECT_EQ(p[0] & 0xF0, 0b10100000);
 
     EXPECT_EQ(input, c.get_value_strings());
 
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_THROW(c.get_strides(), Exception);
 }
 
 TEST(constant, uint1_string_broadcast) {
@@ -804,6 +851,223 @@ TEST(constant, uint1_vector_broadcast) {
     EXPECT_EQ(0xE0, p[0] & 0xE0);
 }
 
+TEST(constant, uint1_write_then_cast_custom_type) {
+    Shape shape{3};
+    std::vector<TestDType> input{{1.0f}, {0.0f}, {12.0f}};
+    ov::op::v0::Constant c(element::u1, shape, input);
+
+    auto v = c.cast_vector<TestDType>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_EQ(v, std::vector<TestDType>({1.0f, 0.0f, 1.0f}));
+}
+
+//
+// uint2
+//
+
+TEST(constant, uint2_string) {
+    const auto shape = Shape{4};
+
+    op::v0::Constant c(element::u2, shape, vector<string>{"2", "1", "0", "3"});
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, ElementsAre(2, 1, 0, 3));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0b11000110);
+
+    EXPECT_EQ(c.convert_value_to_string(1), "1");
+    EXPECT_THAT(c.get_value_strings(), ElementsAre("2", "1", "0", "3"));
+    EXPECT_THROW(c.get_strides(), Exception);
+}
+
+TEST(constant, uint2_string_broadcast) {
+    const auto shape = Shape{5};
+
+    op::v0::Constant c(element::u2, shape, vector<string>{"1"});
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(1));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0b01010101);
+    EXPECT_EQ(p[1], 0b00000001);
+}
+
+TEST(constant, uint2_vector_less_than_single_byte) {
+    const auto shape = Shape{3};
+    const auto input = std::vector<uint8_t>{2, 3, 1};
+
+    op::v0::Constant c(element::u2, shape, input);
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, ElementsAre(2, 3, 1));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0b00011110);
+}
+
+TEST(constant, uint2_vector_bigger_than_single_byte) {
+    const auto shape = Shape{7};
+    const auto input = std::vector<uint8_t>{2, 3, 1, 0, 1, 2, 0};
+
+    op::v0::Constant c(element::u2, shape, input);
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, ElementsAre(2, 3, 1, 0, 1, 2, 0));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0b00011110);
+    EXPECT_EQ(p[1], 0b00001001);
+}
+
+TEST(constant, uint2_vector_broadcast) {
+    const auto shape = Shape{5};
+    // Use dynamic allocation to check not used bits have deterministic value
+    auto constant = std::make_shared<ov::op::v0::Constant>(element::u2, shape, vector<int8_t>{2});
+    const auto& c = *constant;
+
+    auto v = c.cast_vector<uint8_t>();
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(2));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0b10101010);
+    EXPECT_EQ(p[1], 0b00000010);
+
+    const auto gv = c.get_vector<uint8_t>();
+    EXPECT_EQ(gv[0], 0b10101010);
+    EXPECT_EQ(gv[1], 0b00000010);
+}
+
+TEST(constant, uint2_write_then_cast_custom_type) {
+    Shape shape{3};
+    std::vector<TestDType> input{{1.0f}, {3.0f}, {2.0f}};
+    ov::op::v0::Constant c(element::u2, shape, input);
+
+    auto v = c.cast_vector<TestDType>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_EQ(v, input);
+}
+
+//
+// uint3
+//
+
+TEST(constant, uint3_string) {
+    const auto shape = Shape{8};
+
+    op::v0::Constant c(element::u3, shape, vector<string>{"3", "0", "1", "2", "4", "7", "5", "6"});
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, ElementsAre(3, 0, 1, 2, 4, 7, 5, 6));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0b01000011);
+    EXPECT_EQ(p[1], 0b11000100);
+    EXPECT_EQ(p[2], 0b11010111);
+
+    EXPECT_EQ(c.convert_value_to_string(6), "5");
+    EXPECT_THAT(c.get_value_strings(), ElementsAre("3", "0", "1", "2", "4", "7", "5", "6"));
+    EXPECT_THROW(c.get_strides(), Exception);
+}
+
+TEST(constant, uint3_string_broadcast) {
+    const auto shape = Shape{5};
+
+    op::v0::Constant c(element::u3, shape, vector<string>{"5"});
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(5));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0b01101101);
+    EXPECT_EQ(p[1], 0b01011011);
+}
+
+TEST(constant, uint3_vector_with_tail_bits) {
+    const auto shape = Shape{3};
+    const auto input = std::vector<uint8_t>{5, 3, 1};
+
+    op::v0::Constant c(element::u3, shape, input);
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, ElementsAre(5, 3, 1));
+
+    const auto p = c.get_vector<uint8_t>();
+    EXPECT_EQ(p[0], 0b01011101);
+    EXPECT_EQ(p[1], 0);
+}
+
+TEST(constant, uint3_vector_multiple_bytes_with_tail_bits) {
+    const auto shape = Shape{10};
+    const auto input = std::vector<uint8_t>{2, 3, 1, 0, 4, 5, 6, 7, 5, 2};
+
+    op::v0::Constant c(element::u3, shape, input);
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, ElementsAre(2, 3, 1, 0, 4, 5, 6, 7, 5, 2));
+
+    const auto p = c.get_vector<uint8_t>();
+    EXPECT_EQ(p[0], 0b01011010);
+    EXPECT_EQ(p[1], 0b11000000);
+    EXPECT_EQ(p[2], 0b11111010);
+    EXPECT_EQ(p[3], 0b00010101);
+}
+
+TEST(constant, uint3_vector_broadcast) {
+    const auto shape = Shape{8};
+    op::v0::Constant c(element::u3, shape, vector<int8_t>{2});
+
+    auto v = c.cast_vector<uint8_t>();
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(2));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0b10010010);
+    EXPECT_EQ(p[1], 0b00100100);
+    EXPECT_EQ(p[2], 0b01001001);
+}
+
+TEST(constant, uint3_single_element) {
+    op::v0::Constant c(element::u3, Shape{1}, std::vector<uint8_t>{7});
+
+    ASSERT_EQ(c.get_byte_size(), 1);
+    EXPECT_EQ(c.get_data_ptr<uint8_t>()[0], 0b00000111);
+    EXPECT_THAT(c.cast_vector<uint8_t>(), ElementsAre(7));
+}
+
+TEST(constant, uint3_unused_tail_bits_are_zeroed) {
+    // 5 values * 3 bits = 15 bits -> 2 bytes, the most significant bit of the last byte is unused.
+    op::v0::Constant c(element::u3, Shape{5}, std::vector<uint8_t>{7, 7, 7, 7, 7});
+
+    ASSERT_EQ(c.get_byte_size(), 2);
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0xff);
+    EXPECT_EQ(p[1], 0x7f);
+}
+
+TEST(constant, uint3_write_then_cast_custom_type) {
+    Shape shape{5};
+    std::vector<TestDType> input{{1.0f}, {3.0f}, {2.0f}, {6.1f}, {3.5f}};
+    ov::op::v0::Constant c(element::u3, shape, input);
+
+    auto v = c.cast_vector<TestDType>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_EQ(v, std::vector<TestDType>({1.0f, 3.0f, 2.0f, 6.0f, 3.0f}));
+}
+
 //
 // uint4
 //
@@ -828,6 +1092,7 @@ TEST(constant, uint4_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_THROW(c.get_strides(), Exception);
 }
 
 TEST(constant, uint4_string_broadcast) {
@@ -855,7 +1120,7 @@ TEST(constant, uint4_vector) {
     EXPECT_EQ(v[2], 1);
     EXPECT_EQ(v[3], 0);
 
-    const auto p = c.get_data_ptr<uint8_t>();
+    const auto p = c.get_vector<uint8_t>();
     EXPECT_EQ(p[0], 0x01);
     EXPECT_EQ(p[1], 0x01);
 }
@@ -871,24 +1136,157 @@ TEST(constant, uint4_vector_broadcast) {
 
     const auto p = c.get_data_ptr<uint8_t>();
     const auto first_byte = p[0];
-    const auto second_byte = p[1] & 0xF0;
+    const auto second_byte = p[1];
     EXPECT_EQ(0x11, first_byte);
-    EXPECT_EQ(0x10, second_byte);
+    EXPECT_EQ(0x01, second_byte);
+
+    const auto vector = c.get_vector<uint8_t>();
+    EXPECT_EQ(vector[0], 0x11);
+    EXPECT_EQ(vector[1], 0x01);
 }
 
-TEST(constant, uint4_input_value_validation) {
-    Shape shape{2};
-    EXPECT_THROW(ov::op::v0::Constant c(element::u4, shape, 16), ::ov::AssertFailure);
-    EXPECT_THROW(ov::op::v0::Constant c(element::u4, shape, -1), ::ov::AssertFailure);
+TEST(constant, uint4_get_vector_from_one_element) {
+    auto c = std::make_shared<op::v0::Constant>(element::u4, Shape{1}, 9);
+    auto v = c->get_vector<uint8_t>();
 
-    EXPECT_THROW(ov::op::v0::Constant c(element::u4, shape, std::vector<int>{-1}), ::ov::AssertFailure);
-    EXPECT_THROW(ov::op::v0::Constant c(element::u4, shape, std::vector<int>{16}), ::ov::AssertFailure);
+    ASSERT_EQ(v.size(), 1);
+    EXPECT_EQ(v[0], 0x09);
+}
 
-    EXPECT_THROW(ov::op::v0::Constant c(element::u4, shape, std::vector<int>{-1, 1}), ::ov::AssertFailure);
-    EXPECT_THROW(ov::op::v0::Constant c(element::u4, shape, std::vector<int>{16, 2}), ::ov::AssertFailure);
+TEST(constant, uint4_get_vector_from_scalar) {
+    auto c = std::make_shared<op::v0::Constant>(element::u4, Shape{}, 8);
+    auto v = c->get_vector<uint8_t>();
 
-    EXPECT_THROW(ov::op::v0::Constant c(element::u4, shape, std::vector<std::string>{"-1", "1"}), ::ov::AssertFailure);
-    EXPECT_THROW(ov::op::v0::Constant c(element::u4, shape, std::vector<std::string>{"16", "1"}), ::ov::AssertFailure);
+    ASSERT_EQ(v.size(), 1);
+    EXPECT_EQ(v[0], 0x08);
+}
+
+TEST(constant, uint4_write_then_cast_custom_type) {
+    Shape shape{3};
+    std::vector<TestDType> input{{1.0f}, {3.0f}, {12.0f}};
+    ov::op::v0::Constant c(element::u4, shape, input);
+
+    auto v = c.cast_vector<TestDType>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_EQ(v, input);
+}
+
+//
+// uint6
+//
+
+TEST(constant, uint6_string) {
+    const auto shape = Shape{4};
+
+    op::v0::Constant c(element::u6, shape, vector<string>{"4", "9", "15", "16"});
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, ElementsAre(4, 9, 15, 16));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0x44);
+    EXPECT_EQ(p[1], 0xf2);
+    EXPECT_EQ(p[2], 0x40);
+
+    EXPECT_EQ(c.convert_value_to_string(2), "15");
+    EXPECT_THAT(c.get_value_strings(), ElementsAre("4", "9", "15", "16"));
+    EXPECT_THROW(c.get_strides(), Exception);
+}
+
+TEST(constant, uint6_string_broadcast) {
+    const auto shape = Shape{4};
+
+    op::v0::Constant c(element::u6, shape, vector<string>{"5"});
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(5));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0x45);
+    EXPECT_EQ(p[1], 0x51);
+    EXPECT_EQ(p[2], 0x14);
+}
+
+TEST(constant, uint6_vector_with_tail_bits) {
+    const auto shape = Shape{3};
+    const auto input = std::vector<uint8_t>{5, 23, 1};
+
+    op::v0::Constant c(element::u6, shape, input);
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, ElementsAre(5, 23, 1));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0xc5);
+    EXPECT_EQ(p[1], 0x15);
+    EXPECT_EQ(p[2], 0);
+}
+
+TEST(constant, uint6_vector_multiple_bytes_with_tail_bits) {
+    const auto shape = Shape{6};
+    const auto input = std::vector<uint8_t>{25, 3, 1, 0, 45, 5};
+
+    op::v0::Constant c(element::u6, shape, input);
+    auto v = c.cast_vector<uint8_t>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, ElementsAre(25, 3, 1, 0, 45, 5));
+
+    const auto p = c.get_vector<uint8_t>();
+    EXPECT_EQ(p[0], 0xd9);
+    EXPECT_EQ(p[1], 0x10);
+    EXPECT_EQ(p[2], 0x00);
+    EXPECT_EQ(p[3], 0x6d);
+    EXPECT_EQ(p[4], 0x01);
+}
+
+TEST(constant, uint6_vector_broadcast) {
+    const auto shape = Shape{4};
+    op::v0::Constant c(element::u6, shape, vector<int8_t>{45});
+
+    auto v = c.cast_vector<uint8_t>();
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(45));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0x6d);
+    EXPECT_EQ(p[1], 0xdb);
+    EXPECT_EQ(p[2], 0xb6);
+}
+
+TEST(constant, uint6_single_element) {
+    op::v0::Constant c(element::u6, Shape{1}, std::vector<uint8_t>{63});
+
+    ASSERT_EQ(c.get_byte_size(), 1);
+    EXPECT_EQ(c.get_data_ptr<uint8_t>()[0], 0b00111111);
+    EXPECT_THAT(c.cast_vector<uint8_t>(), ElementsAre(63));
+}
+
+TEST(constant, uint6_unused_tail_bits_are_zeroed) {
+    // 5 values * 6 bits = 30 bits -> 4 bytes, the two most significant bits of the last byte are unused.
+    op::v0::Constant c(element::u6, Shape{5}, std::vector<uint8_t>{63, 63, 63, 63, 63});
+
+    ASSERT_EQ(c.get_byte_size(), 4);
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0xff);
+    EXPECT_EQ(p[1], 0xff);
+    EXPECT_EQ(p[2], 0xff);
+    EXPECT_EQ(p[3], 0x3f);
+}
+
+TEST(constant, uint6_write_then_cast_custom_type) {
+    Shape shape{5};
+    std::vector<TestDType> input{{1.0f}, {3.0f}, {2.0f}, {6.1f}, {3.5f}};
+    ov::op::v0::Constant c(element::u6, shape, input);
+
+    auto v = c.cast_vector<TestDType>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_EQ(v, std::vector<TestDType>({1.0f, 3.0f, 2.0f, 6.0f, 3.0f}));
 }
 
 //
@@ -917,6 +1315,7 @@ TEST(constant, uint8_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::u8.size()}));
 }
 
 TEST(constant, uint8_string_broadcast) {
@@ -996,6 +1395,7 @@ TEST(constant, uint16_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::u16.size()}));
 }
 
 TEST(constant, uint16_string_broadcast) {
@@ -1075,6 +1475,7 @@ TEST(constant, uint32_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::u32.size()}));
 }
 
 TEST(constant, uint32_string_broadcast) {
@@ -1154,6 +1555,7 @@ TEST(constant, uint64_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::u64.size()}));
 }
 
 TEST(constant, uint64_string_broadcast) {
@@ -1233,6 +1635,21 @@ TEST(constant, uint64_string_max) {
 }
 
 //
+// nf4
+//
+TEST(constant, nf4_write_custom_type) {
+    Shape shape{3};
+    std::vector<TestDType> input{{-1.1f}, {-.5f}, {2.0f}};
+    ov::op::v0::Constant c(element::nf4, shape, input);
+
+    auto p = c.get_data_ptr<uint8_t>();
+
+    EXPECT_EQ(p[0], 0x20);
+    EXPECT_EQ(p[1], 0x0f);
+    EXPECT_THROW(c.get_strides(), Exception);
+}
+
+//
 // bfloat16
 //
 
@@ -1258,6 +1675,7 @@ TEST(constant, bfloat16_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::bf16.size()}));
 }
 
 TEST(constant, bfloat16_string_broadcast) {
@@ -1337,6 +1755,7 @@ TEST(constant, float16_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::f16.size()}));
 }
 
 TEST(constant, float16_string_broadcast) {
@@ -1394,6 +1813,7 @@ TEST(constant, float8_e4m3_vector) {
 
     ov::op::v0::Constant const_op_from_ptr(ov::element::f8e4m3, data_shape, data_vec.data());
     EXPECT_EQ(data_vec, const_op_from_ptr.get_vector<ov::float8_e4m3>());
+    EXPECT_EQ(const_op_from_ptr.get_strides(), Strides({element::f8e4m3.size()}));
 }
 
 TEST(constant, float8_e5m3_vector) {
@@ -1417,6 +1837,30 @@ TEST(constant, float8_e5m3_vector) {
 
     ov::op::v0::Constant const_op_from_ptr(ov::element::f8e5m2, data_shape, data_vec.data());
     EXPECT_EQ(data_vec, const_op_from_ptr.get_vector<ov::float8_e5m2>());
+    EXPECT_EQ(const_op_from_ptr.get_strides(), Strides({element::f8e5m2.size()}));
+}
+
+TEST(constant, float8_e8m0_vector) {
+    const auto data_vec = std::vector<ov::float8_e8m0>{std::numeric_limits<ov::float8_e8m0>::lowest(),
+                                                       -std::numeric_limits<ov::float8_e8m0>::min(),
+                                                       std::numeric_limits<ov::float8_e8m0>::min(),
+                                                       std::numeric_limits<ov::float8_e8m0>::max(),
+                                                       std::numeric_limits<ov::float8_e8m0>::min(),
+                                                       -1.5f,
+                                                       -1.f,
+                                                       -0.5f,
+                                                       0.f,
+                                                       0.5f,
+                                                       1.f,
+                                                       1.5f};
+    Shape data_shape{data_vec.size()};
+    EXPECT_EQ(data_vec.size(), shape_size(data_shape));
+
+    ov::op::v0::Constant const_op_from_vec(ov::element::f8e8m0, data_shape, data_vec);
+    EXPECT_EQ(data_vec, const_op_from_vec.get_vector<ov::float8_e8m0>());
+
+    ov::op::v0::Constant const_op_from_ptr(ov::element::f8e8m0, data_shape, data_vec.data());
+    EXPECT_EQ(data_vec, const_op_from_ptr.get_vector<ov::float8_e8m0>());
 }
 
 TEST(constant, float16_vector_broadcast) {
@@ -1438,8 +1882,8 @@ TEST(constant, float16_vector_broadcast) {
 
 TEST(constant, shared_data) {
     Shape shape{100, 200};
-    auto c1 = make_shared<ov::op::v0::Constant>(element::f16, shape, vector<float16>{123});
-    auto c2 = static_pointer_cast<ov::op::v0::Constant>(c1->clone_with_new_inputs({}));
+    auto c1 = std::make_shared<ov::op::v0::Constant>(element::f16, shape, vector<float16>{123});
+    auto c2 = std::static_pointer_cast<ov::op::v0::Constant>(c1->clone_with_new_inputs({}));
     const int16_t* p1 = c1->get_data_ptr<int16_t>();
     const int16_t* p2 = c2->get_data_ptr<int16_t>();
     EXPECT_EQ(p1, p2);
@@ -1471,6 +1915,7 @@ TEST(constant, ov_string) {
     for (unsigned i = 0; i != input.size(); ++i) {
         EXPECT_EQ(input[i], c.convert_value_to_string(i));
     }
+    EXPECT_EQ(c.get_strides(), Strides({element::string.size()}));
 }
 
 TEST(constant, ov_string_broadcast) {
@@ -1492,8 +1937,8 @@ TEST(constant, ov_string_broadcast) {
 
 TEST(constant, ov_string_shared_data) {
     Shape shape{100, 200};
-    auto c1 = make_shared<ov::op::v0::Constant>(element::string, shape, vector<std::string>{"123"});
-    auto c2 = static_pointer_cast<ov::op::v0::Constant>(c1->clone_with_new_inputs({}));
+    auto c1 = std::make_shared<ov::op::v0::Constant>(element::string, shape, vector<std::string>{"123"});
+    auto c2 = std::static_pointer_cast<ov::op::v0::Constant>(c1->clone_with_new_inputs({}));
     const int16_t* p1 = c1->get_data_ptr<int16_t>();
     const int16_t* p2 = c2->get_data_ptr<int16_t>();
     EXPECT_EQ(p1, p2);
@@ -1508,11 +1953,176 @@ TEST(constant, ov_string_from_non_string_vector) {
                  Exception);
 }
 
+//
+// f4e2m1
+//
+TEST(constant, f4e2m1_string) {
+    vector<string> input{"1", "0", "1.5", "2"};
+    ov::op::v0::Constant c(element::f4e2m1, Shape{4}, input);
+    auto v = c.cast_vector<float4_e2m1>();
+    ASSERT_EQ(v.size(), shape_size(c.get_shape()));
+    EXPECT_THAT(v, ElementsAre(1.0f, 0.0f, 1.5f, 2.0f));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0x02);
+    EXPECT_EQ(p[1], 0x43);
+
+    EXPECT_EQ(input, c.get_value_strings());
+
+    for (unsigned i = 0; i != input.size(); ++i) {
+        EXPECT_EQ(input[i], c.convert_value_to_string(i));
+    }
+}
+
+TEST(constant, f4e2m1_string_broadcast) {
+    Shape shape{4};
+    op::v0::Constant c(element::f4e2m1, shape, std::vector<string>{"1.5"});
+    auto v = c.cast_vector<float>();
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(1.5f));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0x33);
+    EXPECT_EQ(p[1], 0x33);
+}
+
+TEST(constant, f4e2m1_vector) {
+    op::v0::Constant c(element::f4e2m1, Shape{5}, std::vector<float4_e2m1>{-1.5f, 4.0f, -2.0f, 1.5f, -3.0f});
+    auto v = c.cast_vector<float>();
+    EXPECT_THAT(v, ElementsAre(-1.5f, 4.0f, -2.0f, 1.5f, -3.0f));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0x6b);
+    EXPECT_EQ(p[1], 0x3c);
+    EXPECT_EQ(p[2], 0x0d);
+}
+
+TEST(constant, f4e2m1_from_float_vector) {
+    op::v0::Constant c(element::f4e2m1, Shape{5}, std::vector<float>{-1.5f, 4.0f, -2.0f, 1.5f, -3.0f});
+    auto v = c.cast_vector<float>();
+    EXPECT_THAT(v, ElementsAre(-1.5f, 4.0f, -2.0f, 1.5f, -3.0f));
+
+    const auto p = c.get_vector<uint8_t>();
+    EXPECT_EQ(p[0], 0x6b);
+    EXPECT_EQ(p[1], 0x3c);
+    EXPECT_EQ(p[2], 0x0d);
+}
+
+TEST(constant, f4e2m1_vector_broadcast) {
+    Shape shape{3};
+    op::v0::Constant c(element::f4e2m1, shape, std::vector<float4_e2m1>{1.5f});
+    auto v = c.cast_vector<float>();
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(1.5f));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(0x33, p[0]);
+    EXPECT_EQ(0x03, p[1]);
+}
+
+TEST(constant, f4e2m1_write_then_cast_custom_type) {
+    Shape shape{3};
+    std::vector<TestDType> input{1.5f, 3.0f, 6.0f};
+    op::v0::Constant c(element::f4e2m1, shape, input);
+
+    auto v = c.cast_vector<TestDType>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_EQ(v, input);
+}
+
+//
+// f8e8m0
+//
+TEST(constant, f8e8m0_string) {
+    vector<string> input{"1", "0", "4", "0.5"};
+    vector<string> output{"1", "5.87747e-39", "4", "0.5"};
+    ov::op::v0::Constant c(element::f8e8m0, Shape{4}, input);
+    auto v = c.cast_vector<float8_e8m0>();
+    ASSERT_EQ(v.size(), shape_size(c.get_shape()));
+    EXPECT_THAT(v, ElementsAre(1.0f, std::numeric_limits<float>::min() / 2, 4.0f, 0.5f));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0x7f);
+    EXPECT_EQ(p[1], 0x00);
+    EXPECT_EQ(p[2], 0x81);
+    EXPECT_EQ(p[3], 0x7e);
+
+    EXPECT_EQ(output, c.get_value_strings());
+
+    for (unsigned i = 0; i != input.size(); ++i) {
+        EXPECT_EQ(output[i], c.convert_value_to_string(i));
+    }
+}
+
+TEST(constant, f8e8m0_string_broadcast) {
+    Shape shape{4};
+    op::v0::Constant c(element::f8e8m0, shape, std::vector<string>{"1.5"});
+    auto v = c.cast_vector<float>();
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(2.0f));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0x80);
+    EXPECT_EQ(p[1], 0x80);
+    EXPECT_EQ(p[2], 0x80);
+    EXPECT_EQ(p[3], 0x80);
+}
+
+TEST(constant, f8e8m0_vector) {
+    op::v0::Constant c(element::f8e8m0, Shape{5}, std::vector<float8_e8m0>{-1.5f, 4.0f, 2.0f, 1.5f, 3.0f});
+    auto v = c.cast_vector<float>();
+    EXPECT_THAT(v, ElementsAre(std::numeric_limits<float>::min() / 2, 4.0f, 2.0f, 2.0f, 2.0f));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(p[0], 0x00);
+    EXPECT_EQ(p[1], 0x81);
+    EXPECT_EQ(p[2], 0x80);
+    EXPECT_EQ(p[3], 0x80);
+    EXPECT_EQ(p[4], 0x80);
+}
+
+TEST(constant, f8e8m0_from_float_vector) {
+    op::v0::Constant c(element::f8e8m0, Shape{5}, std::vector<float>{-1.5f, 4.0f, 2.0f, 1.5f, 2.0f});
+    auto v = c.cast_vector<float>();
+    EXPECT_THAT(v, ElementsAre(std::numeric_limits<float>::min() / 2, 4.0f, 2.0f, 2.0f, 2.0f));
+
+    const auto p = c.get_vector<uint8_t>();
+    EXPECT_EQ(p[0], 0x00);
+    EXPECT_EQ(p[1], 0x81);
+    EXPECT_EQ(p[2], 0x80);
+    EXPECT_EQ(p[3], 0x80);
+    EXPECT_EQ(p[4], 0x80);
+}
+
+TEST(constant, f8e8m0_vector_broadcast) {
+    Shape shape{3};
+    op::v0::Constant c(element::f8e8m0, shape, std::vector<float8_e8m0>{1.5f});
+    auto v = c.cast_vector<float>();
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_THAT(v, Each(2.0f));
+
+    const auto p = c.get_data_ptr<uint8_t>();
+    EXPECT_EQ(0x80, p[0]);
+    EXPECT_EQ(0x80, p[1]);
+}
+
+TEST(constant, f8e8m0_write_then_cast_custom_type) {
+    Shape shape{3};
+    std::vector<TestDType> input{1.5f, 3.0f, 6.0f};
+    std::vector<TestDType> expected{2.0f, 2.0f, 8.0f};
+    op::v0::Constant c(element::f8e8m0, shape, input);
+
+    auto v = c.cast_vector<TestDType>();
+
+    ASSERT_EQ(v.size(), shape_size(shape));
+    EXPECT_EQ(v, expected);
+}
+
 template <typename T1, typename T2>
-::testing::AssertionResult test_convert() {
+::testing::AssertionResult test_convert(vector<T1> expected = {1, 2, 3, 4, 6}) {
     Shape shape{5};
-    vector<T1> expected{1, 2, 3, 4, 5};
-    auto c1 = make_shared<ov::op::v0::Constant>(ov::element::from<T2>(), shape, expected);
+    auto c1 = std::make_shared<ov::op::v0::Constant>(ov::element::from<T2>(), shape, expected);
     vector<T1> actual = c1->template cast_vector<T1>();
     ::testing::AssertionResult rc =
         (actual == expected ? ::testing::AssertionSuccess() : ::testing::AssertionFailure());
@@ -1523,7 +2133,7 @@ template <typename T1, typename T2>
 TEST(constant, convert_input_ov_string) {
     Shape shape{5};
     vector<std::string> expected{"1", "2", "3", "4", "5"};
-    auto c1 = make_shared<ov::op::v0::Constant>(ov::element::from<std::string>(), shape, expected);
+    auto c1 = std::make_shared<ov::op::v0::Constant>(ov::element::from<std::string>(), shape, expected);
     vector<std::string> actual = c1->template cast_vector<std::string>();
 
     EXPECT_EQ(actual, expected);
@@ -1542,6 +2152,8 @@ TEST(constant, convert_input) {
     EXPECT_TRUE((test_convert<float, uint16_t>()));
     EXPECT_TRUE((test_convert<float, uint32_t>()));
     EXPECT_TRUE((test_convert<float, uint64_t>()));
+    EXPECT_TRUE((test_convert<float, float4_e2m1>()));
+    EXPECT_TRUE((test_convert<float, float8_e8m0>({1, 2, 4, 8, 16})));
 
     EXPECT_TRUE((test_convert<double, float>()));
     EXPECT_TRUE((test_convert<double, double>()));
@@ -1555,6 +2167,8 @@ TEST(constant, convert_input) {
     EXPECT_TRUE((test_convert<double, uint16_t>()));
     EXPECT_TRUE((test_convert<double, uint32_t>()));
     EXPECT_TRUE((test_convert<double, uint64_t>()));
+    EXPECT_TRUE((test_convert<double, float4_e2m1>()));
+    EXPECT_TRUE((test_convert<double, float8_e8m0>({1, 2, 4, 8, 16})));
 
     EXPECT_TRUE((test_convert<float16, float>()));
     EXPECT_TRUE((test_convert<float16, double>()));
@@ -1568,6 +2182,8 @@ TEST(constant, convert_input) {
     EXPECT_TRUE((test_convert<float16, uint16_t>()));
     EXPECT_TRUE((test_convert<float16, uint32_t>()));
     EXPECT_TRUE((test_convert<float16, uint64_t>()));
+    EXPECT_TRUE((test_convert<float16, float4_e2m1>()));
+    EXPECT_TRUE((test_convert<float16, float8_e8m0>({1, 2, 4, 8, 16})));
 
     EXPECT_TRUE((test_convert<bfloat16, float>()));
     EXPECT_TRUE((test_convert<bfloat16, double>()));
@@ -1581,6 +2197,8 @@ TEST(constant, convert_input) {
     EXPECT_TRUE((test_convert<bfloat16, uint16_t>()));
     EXPECT_TRUE((test_convert<bfloat16, uint32_t>()));
     EXPECT_TRUE((test_convert<bfloat16, uint64_t>()));
+    EXPECT_TRUE((test_convert<bfloat16, float4_e2m1>()));
+    EXPECT_TRUE((test_convert<bfloat16, float8_e8m0>({1, 2, 4, 8, 16})));
 
     EXPECT_TRUE((test_convert<int8_t, float>()));
     EXPECT_TRUE((test_convert<int8_t, double>()));
@@ -1690,8 +2308,8 @@ TEST(constant, convert_input) {
 template <typename T1, typename T2>
 ::testing::AssertionResult test_uniform_ctor() {
     Shape shape{5};
-    vector<T1> expected{3, 3, 3, 3, 3};
-    auto c1 = make_shared<ov::op::v0::Constant>(ov::element::from<T2>(), shape, 3);
+    vector<T1> expected{2, 2, 2, 2, 2};
+    auto c1 = std::make_shared<ov::op::v0::Constant>(ov::element::from<T2>(), shape, 2);
     vector<T1> actual = c1->template cast_vector<T1>();
     ::testing::AssertionResult rc =
         (actual == expected ? ::testing::AssertionSuccess() : ::testing::AssertionFailure());
@@ -1712,6 +2330,8 @@ TEST(constant, construct_uniform) {
     EXPECT_TRUE((test_uniform_ctor<float, uint16_t>()));
     EXPECT_TRUE((test_uniform_ctor<float, uint32_t>()));
     EXPECT_TRUE((test_uniform_ctor<float, uint64_t>()));
+    EXPECT_TRUE((test_uniform_ctor<float, float4_e2m1>()));
+    EXPECT_TRUE((test_uniform_ctor<float, float8_e8m0>()));
 
     EXPECT_TRUE((test_uniform_ctor<double, float>()));
     EXPECT_TRUE((test_uniform_ctor<double, double>()));
@@ -1725,6 +2345,8 @@ TEST(constant, construct_uniform) {
     EXPECT_TRUE((test_uniform_ctor<double, uint16_t>()));
     EXPECT_TRUE((test_uniform_ctor<double, uint32_t>()));
     EXPECT_TRUE((test_uniform_ctor<double, uint64_t>()));
+    EXPECT_TRUE((test_uniform_ctor<double, float4_e2m1>()));
+    EXPECT_TRUE((test_uniform_ctor<double, float8_e8m0>()));
 
     EXPECT_TRUE((test_uniform_ctor<float16, float>()));
     EXPECT_TRUE((test_uniform_ctor<float16, double>()));
@@ -1738,6 +2360,8 @@ TEST(constant, construct_uniform) {
     EXPECT_TRUE((test_uniform_ctor<float16, uint16_t>()));
     EXPECT_TRUE((test_uniform_ctor<float16, uint32_t>()));
     EXPECT_TRUE((test_uniform_ctor<float16, uint64_t>()));
+    EXPECT_TRUE((test_uniform_ctor<float16, float4_e2m1>()));
+    EXPECT_TRUE((test_uniform_ctor<float16, float8_e8m0>()));
 
     EXPECT_TRUE((test_uniform_ctor<bfloat16, float>()));
     EXPECT_TRUE((test_uniform_ctor<bfloat16, double>()));
@@ -1751,6 +2375,8 @@ TEST(constant, construct_uniform) {
     EXPECT_TRUE((test_uniform_ctor<bfloat16, uint16_t>()));
     EXPECT_TRUE((test_uniform_ctor<bfloat16, uint32_t>()));
     EXPECT_TRUE((test_uniform_ctor<bfloat16, uint64_t>()));
+    EXPECT_TRUE((test_uniform_ctor<bfloat16, float4_e2m1>()));
+    EXPECT_TRUE((test_uniform_ctor<bfloat16, float8_e8m0>()));
 
     EXPECT_TRUE((test_uniform_ctor<int8_t, float>()));
     EXPECT_TRUE((test_uniform_ctor<int8_t, double>()));
@@ -1902,6 +2528,8 @@ TEST(constant, hold_tensor) {
     }
     const void* constDataPtr = constOp->get_data_ptr();
     ASSERT_EQ(constDataPtr, hostDataPtr);
+    EXPECT_EQ(constOp->get_strides(), Strides({72, 36, 12, 4}));
+    EXPECT_EQ(constOp->get_tensor_view().get_strides(), Strides({72, 36, 12, 4}));
 }
 
 TEST(constant, hold_tensor_ov_string) {
@@ -1915,6 +2543,129 @@ TEST(constant, hold_tensor_ov_string) {
     }
     const void* constDataPtr = constOp->get_data_ptr();
     ASSERT_EQ(constDataPtr, hostDataPtr);
+}
+
+TEST(constant, hold_tensor_custom_strides) {
+    const auto shape = Shape{1, 2, 3, 4};
+    const auto strides = Strides{192, 96, 32, 8};
+    void* shared_data_ptr = nullptr;
+    std::shared_ptr<op::v0::Constant> const_op;
+    auto storage = std::vector<float>(shape_size(shape));
+    {
+        auto strided_view = Tensor(element::f32, shape, storage.data(), strides);
+        shared_data_ptr = strided_view.data();
+        const_op = std::make_shared<op::v0::Constant>(strided_view);
+    }
+
+    ASSERT_EQ(const_op->get_data_ptr(), shared_data_ptr);
+    EXPECT_EQ(const_op->get_strides(), strides);
+    EXPECT_EQ(const_op->get_tensor_view().get_strides(), strides);
+}
+
+TEST(constant, hold_tensor_custom_strides_revalidate) {
+    const auto shape = Shape{1, 2, 3, 4};
+    const auto strides = Strides{192, 96, 32, 8};
+    void* shared_data_ptr = nullptr;
+    std::shared_ptr<op::v0::Constant> const_op;
+    auto storage = std::vector<float>(shape_size(shape));
+    {
+        auto strided_view = Tensor(element::f32, shape, storage.data(), strides);
+        shared_data_ptr = strided_view.data();
+        const_op = std::make_shared<op::v0::Constant>(strided_view);
+    }
+
+    ASSERT_EQ(const_op->get_data_ptr(), shared_data_ptr);
+    EXPECT_EQ(const_op->get_strides(), strides);
+    EXPECT_EQ(const_op->get_tensor_view().get_strides(), strides);
+
+    const_op->revalidate_and_infer_types();
+
+    ASSERT_EQ(const_op->get_data_ptr(), shared_data_ptr);
+    EXPECT_EQ(const_op->get_strides(), strides);
+    EXPECT_EQ(const_op->get_tensor_view().get_strides(), strides);
+}
+
+TEST(constant, hold_shared_memory_same_size) {
+    auto storage =
+        std::make_shared<std::vector<int32_t>>(std::initializer_list<int32_t>{1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1});
+    {
+        auto c = op::v0::Constant(element::i32, Shape{storage->size()}, storage->data(), {});
+        std::fill_n(storage->begin() + 3, 4, 0);
+
+        EXPECT_EQ(storage.use_count(), 1);
+        EXPECT_EQ(c.get_data_ptr(), storage->data());
+        EXPECT_EQ(c.get_vector<int32_t>(), std::vector<int32_t>({1, 2, 3, 0, 0, 0, 0, 4, 3, 2, 1}));
+        EXPECT_EQ(c.cast_vector<int32_t>(), std::vector<int32_t>({1, 2, 3, 0, 0, 0, 0, 4, 3, 2, 1}));
+    }
+    EXPECT_EQ(storage.use_count(), 1);
+}
+
+TEST(constant, hold_shared_memory_shape_within_memory_size) {
+    auto storage = std::vector<uint8_t>{1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1};
+    auto c = op::v0::Constant(element::u8, Shape{2, 3}, storage.data(), {});
+
+    EXPECT_EQ(c.get_data_ptr(), storage.data());
+    EXPECT_EQ(c.get_vector<uint8_t>(), std::vector<uint8_t>({1, 2, 3, 4, 5, 6}));
+    EXPECT_EQ(c.cast_vector<uint8_t>(), std::vector<uint8_t>({1, 2, 3, 4, 5, 6}));
+}
+
+TEST(constant, hold_shared_memory_different_precision) {
+    auto storage = std::vector<uint32_t>{1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1};
+    auto c = op::v0::Constant(element::u8, Shape{2, 3, 1}, storage.data(), {});
+
+    EXPECT_EQ(c.get_data_ptr(), storage.data());
+    EXPECT_EQ(c.get_vector<uint8_t>(), std::vector<uint8_t>({1, 0, 0, 0, 2, 0}));
+    EXPECT_EQ(c.cast_vector<uint8_t>(), std::vector<uint8_t>({1, 0, 0, 0, 2, 0}));
+    EXPECT_EQ(c.get_byte_size(), 6);
+}
+
+TEST(constant, own_shared_memory) {
+    struct CustomStorage {
+        CustomStorage(std::initializer_list<int16_t> values) : values{std::move(values)} {
+            ON_CALL(*this, dtor_impl).WillByDefault(testing::Return());
+        }
+
+        ~CustomStorage() {
+            dtor_impl();
+        }
+
+        MOCK_METHOD(void, dtor_impl, ());
+
+        constexpr ov::element::Type get_element_type() const {
+            return ov::element::i16;
+        }
+
+        std::vector<int16_t> values{};
+    };
+
+    {
+        auto storage = std::make_shared<CustomStorage>(std::initializer_list<int16_t>{1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1});
+        auto c =
+            std::make_shared<op::v0::Constant>(storage->get_element_type(), Shape{2}, storage->values.data(), storage);
+
+        EXPECT_EQ(storage.use_count(), 2);
+
+        c = nullptr;
+        EXPECT_EQ(storage.use_count(), 1);
+        EXPECT_CALL(*storage, dtor_impl).Times(1);
+    }
+
+    {
+        std::shared_ptr<op::v0::Constant> c;
+        CustomStorage* s_ptr;
+        {
+            auto storage = std::make_shared<testing::StrictMock<CustomStorage>>(
+                std::initializer_list<int16_t>{1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1});
+            s_ptr = storage.get();
+            c = std::make_shared<op::v0::Constant>(storage->get_element_type(),
+                                                   Shape{2},
+                                                   storage->values.data(),
+                                                   storage);
+        }
+
+        EXPECT_CALL(*s_ptr, dtor_impl).Times(1);
+        c = nullptr;
+    }
 }
 
 // Test verifies 2 things:
@@ -1977,22 +2728,10 @@ TEST(constant, lazy_bitwise_identical) {
 }
 
 TEST(constant, cast_vector) {
-    std::vector<element::Type_t> types = {element::boolean,
-                                          element::bf16,
-                                          element::f16,
-                                          element::f32,
-                                          element::f64,
-                                          element::i4,
-                                          element::i8,
-                                          element::i16,
-                                          element::i32,
-                                          element::i64,
-                                          element::u1,
-                                          element::u4,
-                                          element::u8,
-                                          element::u16,
-                                          element::u32,
-                                          element::u64};
+    std::vector<element::Type_t> types = {
+        element::boolean, element::bf16, element::f16, element::f32, element::f64, element::i4,     element::i8,
+        element::i16,     element::i32,  element::i64, element::u1,  element::u2,  element::u3,     element::u4,
+        element::u6,      element::u8,   element::u16, element::u32, element::u64, element::f4e2m1, element::f8e8m0};
     std::vector<int64_t> data = {0, 1, 0, 0, 1, 1, 0, 1};
     std::vector<int64_t> expected_partial_data = {0, 1, 0, 0, 1, 1};
 
@@ -2049,3 +2788,1246 @@ TEST(constant, get_values_as) {
     EXPECT_EQ(c.get_axis_vector_val(), AxisVector({2, 0, 1, 0, 1, 5}));
     EXPECT_EQ(c.get_axis_set_val(), AxisSet({0, 1, 2, 5}));
 }
+
+TEST(constant, dynamic_type_no_data_creation) {
+    EXPECT_NO_THROW({ ov::op::v0::Constant c(element::dynamic, Shape{2}); });
+}
+
+TEST(constant, dynamic_type_no_data_access_throws) {
+    ov::op::v0::Constant c(element::dynamic, Shape{2});
+
+    EXPECT_THROW(c.get_data_ptr<int64_t>(), ov::Exception);
+}
+
+TEST(constant, dynamic_type_with_data_throws_on_creation) {
+    EXPECT_THROW({ ov::op::v0::Constant c(element::dynamic, Shape{2}, std::vector<int64_t>{1, 2}); }, ov::Exception);
+}
+
+TEST(constant, dynamic_type_string_data_throws_on_creation) {
+    EXPECT_THROW(
+        { ov::op::v0::Constant c(element::dynamic, Shape{2}, std::vector<std::string>{"1", "2"}); },
+        ov::Exception);
+}
+
+TEST(constant, dynamic_type_get_vector_throws) {
+    ov::op::v0::Constant c(element::dynamic, Shape{2});
+    EXPECT_THROW(c.get_vector<int64_t>(), ov::Exception);
+}
+
+TEST(constant, dynamic_type_cast_vector_throws) {
+    ov::op::v0::Constant c(element::dynamic, Shape{2});
+    EXPECT_THROW(c.cast_vector<int64_t>(), ov::Exception);
+}
+
+TEST(constant, create_with_incorrect_buffer_size_or_shape_and_precision) {
+    auto buffer = std::make_shared<ov::AlignedBuffer>(100);
+    EXPECT_THROW(std::ignore = ov::op::v0::Constant(element::u8, Shape{10}, buffer), ov::Exception);
+}
+
+TEST(constant, default_constructed_members_do_not_crash) {
+    ov::op::v0::Constant c;
+    EXPECT_EQ(c.get_byte_size(), 0u);
+    EXPECT_EQ(c.get_data_ptr(), nullptr);
+    EXPECT_FALSE(c.get_tensor_view());
+
+    ov::TensorVector outputs;
+    EXPECT_FALSE(c.evaluate_lower(outputs));
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_FALSE(outputs[0]);
+
+    outputs.clear();
+    EXPECT_FALSE(c.evaluate_upper(outputs));
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_FALSE(outputs[0]);
+}
+
+TEST(constant, create_with_zero_dim_shape) {
+    auto c = ov::op::v0::Constant(element::u8, Shape{10, 0});
+
+    EXPECT_EQ(c.get_byte_size(), 0);
+}
+
+using ConstantInputValue = std::variant<bool,
+                                        char,
+                                        signed char,
+                                        unsigned char,
+                                        int16_t,
+                                        uint16_t,
+                                        int32_t,
+                                        uint32_t,
+                                        int64_t,
+                                        uint64_t,
+                                        float,
+                                        double,
+                                        ov::float4_e2m1,
+                                        ov::float8_e4m3,
+                                        ov::float8_e5m2,
+                                        ov::float8_e8m0,
+                                        ov::float16,
+                                        ov::bfloat16>;
+
+struct RangeParam {
+    element::Type_t et;
+    ConstantInputValue value;
+    std::optional<std::string_view> expected_error;
+};
+
+class ConstantRangeTest : public testing::TestWithParam<RangeParam> {};
+
+TEST_P(ConstantRangeTest, check_range) {
+    const auto& [et, value, expected_error] = GetParam();
+    const auto make_constant = [et = et](const auto& v) {
+        using T = std::decay_t<decltype(v)>;
+        op::v0::Constant(et, Shape{1}, std::vector<T>{v});
+    };
+    if (expected_error) {
+        OV_EXPECT_THROW(std::visit(make_constant, value), AssertFailure, HasSubstr(*expected_error));
+    } else {
+        OV_ASSERT_NO_THROW(std::visit(make_constant, value));
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(in_t_range_sub_byte,
+                         ConstantRangeTest,
+                         testing::Values(RangeParam{element::u1, int32_t{-1}, {}},
+                                         RangeParam{element::u1, int32_t{100}, {}},
+                                         RangeParam{element::u2, int32_t{0}, {}},
+                                         RangeParam{element::u2, int32_t{3}, {}},
+                                         RangeParam{element::u2, int32_t{-1}, "out of range for u2"},
+                                         RangeParam{element::u2, int32_t{4}, "out of range for u2"},
+                                         RangeParam{element::u3, int32_t{0}, {}},
+                                         RangeParam{element::u3, int32_t{7}, {}},
+                                         RangeParam{element::u3, int32_t{-1}, "out of range for u3"},
+                                         RangeParam{element::u3, int32_t{8}, "out of range for u3"},
+                                         RangeParam{element::u4, int32_t{0}, {}},
+                                         RangeParam{element::u4, int32_t{15}, {}},
+                                         RangeParam{element::u4, int32_t{-1}, "out of range for u4"},
+                                         RangeParam{element::u4, int32_t{16}, "out of range for u4"},
+                                         RangeParam{element::nf4, int32_t{0}, {}},
+                                         RangeParam{element::nf4, int32_t{15}, {}},
+                                         RangeParam{element::nf4, int32_t{-1}, "out of range for nf4"},
+                                         RangeParam{element::nf4, int32_t{16}, "out of range for nf4"},
+                                         RangeParam{element::u6, int32_t{0}, {}},
+                                         RangeParam{element::u6, int32_t{63}, {}},
+                                         RangeParam{element::u6, int32_t{-1}, "out of range for u6"},
+                                         RangeParam{element::u6, int32_t{64}, "out of range for u6"},
+                                         RangeParam{element::i4, int32_t{-8}, {}},
+                                         RangeParam{element::i4, int32_t{7}, {}},
+                                         RangeParam{element::i4, int32_t{-9}, "out of range for i4"},
+                                         RangeParam{element::i4, int32_t{8}, "out of range for i4"},
+                                         RangeParam{element::f4e2m1, int32_t{-100}, {}},
+                                         RangeParam{element::f4e2m1, int32_t{100}, {}}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_u8_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::u8, false, {}},
+                    RangeParam{element::u8, true, {}},
+
+                    RangeParam{element::u8, char{0}, {}},
+                    RangeParam{element::u8, char{127}, {}},
+                    RangeParam{element::u8, char{-1}, "out of range for u8"},
+
+                    RangeParam{element::u8, int8_t{0}, {}},
+                    RangeParam{element::u8, std::numeric_limits<int8_t>::max(), {}},
+                    RangeParam{element::u8, int8_t{-1}, "out of range for u8"},
+
+                    RangeParam{element::u8, int16_t{0}, {}},
+                    RangeParam{element::u8, int16_t{255}, {}},
+                    RangeParam{element::u8, int16_t{-1}, "out of range for u8"},
+                    RangeParam{element::u8, int16_t{256}, "out of range for u8"},
+
+                    RangeParam{element::u8, uint16_t{0}, {}},
+                    RangeParam{element::u8, uint16_t{255}, {}},
+                    RangeParam{element::u8, uint16_t{256}, "out of range for u8"},
+
+                    RangeParam{element::u8, int32_t{0}, {}},
+                    RangeParam{element::u8, int32_t{255}, {}},
+                    RangeParam{element::u8, int32_t{-1}, "out of range for u8"},
+                    RangeParam{element::u8, int32_t{256}, "out of range for u8"},
+
+                    RangeParam{element::u8, uint32_t{0}, {}},
+                    RangeParam{element::u8, uint32_t{255}, {}},
+                    RangeParam{element::u8, uint32_t{256}, "out of range for u8"},
+
+                    RangeParam{element::u8, int64_t{0}, {}},
+                    RangeParam{element::u8, int64_t{255}, {}},
+                    RangeParam{element::u8, int64_t{-1}, "out of range for u8"},
+                    RangeParam{element::u8, int64_t{256}, "out of range for u8"},
+
+                    RangeParam{element::u8, uint64_t{0}, {}},
+                    RangeParam{element::u8, uint64_t{255}, {}},
+                    RangeParam{element::u8, std::numeric_limits<uint64_t>::max(), "out of range for u8"},
+                    RangeParam{element::u8, uint64_t{256}, "out of range for u8"},
+
+                    RangeParam{element::u8, float{0.0f}, {}},
+                    RangeParam{element::u8, float{255.9f}, {}},
+                    RangeParam{element::u8, float{-1.0f}, "out of range for u8"},
+                    RangeParam{element::u8, float{256.0f}, "out of range for u8"},
+
+                    RangeParam{element::u8, double{0.0}, {}},
+                    RangeParam{element::u8, double{255.9}, {}},
+                    RangeParam{element::u8, double{-1.0}, "out of range for u8"},
+                    RangeParam{element::u8, double{256.0}, "out of range for u8"},
+
+                    RangeParam{element::u8, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::u8, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::u8, ov::float4_e2m1{-1.0f}, "out of range for u8"},
+
+                    RangeParam{element::u8, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::u8, ov::float8_e4m3{128.0f}, {}},
+                    RangeParam{element::u8, ov::float8_e4m3{-1.0f}, "out of range for u8"},
+                    RangeParam{element::u8, std::numeric_limits<ov::float8_e4m3>::max(), "out of range for u8"},
+
+                    RangeParam{element::u8, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::u8, ov::float8_e5m2{128.0f}, {}},
+                    RangeParam{element::u8, ov::float8_e5m2{-1.0f}, "out of range for u8"},
+                    RangeParam{element::u8, std::numeric_limits<ov::float8_e5m2>::max(), "out of range for u8"},
+
+                    RangeParam{element::u8, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::u8, ov::float8_e8m0{128.0f}, {}},
+                    RangeParam{element::u8, std::numeric_limits<ov::float8_e8m0>::max(), "out of range for u8"},
+
+                    RangeParam{element::u8, ov::float16{0.0f}, {}},
+                    RangeParam{element::u8, ov::float16{200.0f}, {}},
+                    RangeParam{element::u8, ov::float16{-1.0f}, "out of range for u8"},
+                    RangeParam{element::u8, ov::float16{256.0f}, "out of range for u8"},
+
+                    RangeParam{element::u8, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::u8, ov::bfloat16{200.0f}, {}},
+                    RangeParam{element::u8, ov::bfloat16{-1.0f}, "out of range for u8"},
+                    RangeParam{element::u8, ov::bfloat16{256.0f}, "out of range for u8"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_i8_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::i8, false, {}},
+                    RangeParam{element::i8, true, {}},
+
+                    RangeParam{element::i8, char{0}, {}},
+                    RangeParam{element::i8, char{-1}, {}},
+                    RangeParam{element::i8, char{-128}, {}},
+                    RangeParam{element::i8, char{127}, {}},
+
+                    RangeParam{element::i8, int8_t{0}, {}},
+                    RangeParam{element::i8, std::numeric_limits<int8_t>::lowest(), {}},
+                    RangeParam{element::i8, std::numeric_limits<int8_t>::max(), {}},
+
+                    RangeParam{element::i8, uint8_t{0}, {}},
+                    RangeParam{element::i8, uint8_t{127}, {}},
+                    RangeParam{element::i8, uint8_t{128}, "out of range for i8"},
+
+                    RangeParam{element::i8, int16_t{0}, {}},
+                    RangeParam{element::i8, int16_t{-128}, {}},
+                    RangeParam{element::i8, int16_t{127}, {}},
+                    RangeParam{element::i8, int16_t{-129}, "out of range for i8"},
+                    RangeParam{element::i8, int16_t{128}, "out of range for i8"},
+
+                    RangeParam{element::i8, uint16_t{0}, {}},
+                    RangeParam{element::i8, uint16_t{127}, {}},
+                    RangeParam{element::i8, uint16_t{128}, "out of range for i8"},
+
+                    RangeParam{element::i8, int32_t{0}, {}},
+                    RangeParam{element::i8, int32_t{-128}, {}},
+                    RangeParam{element::i8, int32_t{127}, {}},
+                    RangeParam{element::i8, int32_t{-129}, "out of range for i8"},
+                    RangeParam{element::i8, int32_t{128}, "out of range for i8"},
+
+                    RangeParam{element::i8, uint32_t{0}, {}},
+                    RangeParam{element::i8, uint32_t{127}, {}},
+                    RangeParam{element::i8, uint32_t{128}, "out of range for i8"},
+
+                    RangeParam{element::i8, int64_t{0}, {}},
+                    RangeParam{element::i8, int64_t{-128}, {}},
+                    RangeParam{element::i8, int64_t{127}, {}},
+                    RangeParam{element::i8, int64_t{-129}, "out of range for i8"},
+                    RangeParam{element::i8, int64_t{128}, "out of range for i8"},
+
+                    RangeParam{element::i8, uint64_t{0}, {}},
+                    RangeParam{element::i8, uint64_t{127}, {}},
+                    RangeParam{element::i8, uint64_t{128}, "out of range for i8"},
+
+                    RangeParam{element::i8, float{0.0f}, {}},
+                    RangeParam{element::i8, float{-128.0f}, {}},
+                    RangeParam{element::i8, float{127.9f}, {}},
+                    RangeParam{element::i8, float{-129.0f}, "out of range for i8"},
+                    RangeParam{element::i8, float{128.0f}, "out of range for i8"},
+
+                    RangeParam{element::i8, double{0.0}, {}},
+                    RangeParam{element::i8, double{-128.0}, {}},
+                    RangeParam{element::i8, double{127.9}, {}},
+                    RangeParam{element::i8, double{-129.0}, "out of range for i8"},
+                    RangeParam{element::i8, double{128.0}, "out of range for i8"},
+
+                    RangeParam{element::i8, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::i8, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::i8, ov::float4_e2m1{-1.0f}, {}},
+
+                    RangeParam{element::i8, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::i8, ov::float8_e4m3{96.0f}, {}},
+                    RangeParam{element::i8, ov::float8_e4m3{-128.0f}, {}},
+                    RangeParam{element::i8, ov::float8_e4m3{128.0f}, "out of range for i8"},
+                    RangeParam{element::i8, std::numeric_limits<ov::float8_e4m3>::lowest(), "out of range for i8"},
+
+                    RangeParam{element::i8, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::i8, ov::float8_e5m2{96.0f}, {}},
+                    RangeParam{element::i8, ov::float8_e5m2{-128.0f}, {}},
+                    RangeParam{element::i8, ov::float8_e5m2{128.0f}, "out of range for i8"},
+                    RangeParam{element::i8, std::numeric_limits<ov::float8_e5m2>::lowest(), "out of range for i8"},
+
+                    RangeParam{element::i8, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::i8, ov::float8_e8m0{64.0f}, {}},
+                    RangeParam{element::i8, ov::float8_e8m0{128.0f}, "out of range for i8"},
+
+                    RangeParam{element::i8, ov::float16{0.0f}, {}},
+                    RangeParam{element::i8, ov::float16{-128.0f}, {}},
+                    RangeParam{element::i8, ov::float16{100.0f}, {}},
+                    RangeParam{element::i8, ov::float16{-129.0f}, "out of range for i8"},
+                    RangeParam{element::i8, ov::float16{128.0f}, "out of range for i8"},
+
+                    RangeParam{element::i8, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::i8, ov::bfloat16{-128.0f}, {}},
+                    RangeParam{element::i8, ov::bfloat16{100.0f}, {}},
+                    RangeParam{element::i8, ov::bfloat16{-129.0f}, "out of range for i8"},
+                    RangeParam{element::i8, ov::bfloat16{128.0f}, "out of range for i8"}));
+
+INSTANTIATE_TEST_SUITE_P(in_t_range_u16_ct,
+                         ConstantRangeTest,
+                         testing::Values(RangeParam{element::u16, false, {}},
+                                         RangeParam{element::u16, true, {}},
+
+                                         RangeParam{element::u16, char{0}, {}},
+                                         RangeParam{element::u16, char{127}, {}},
+                                         RangeParam{element::u16, char{-1}, "out of range for u16"},
+
+                                         RangeParam{element::u16, int8_t{0}, {}},
+                                         RangeParam{element::u16, std::numeric_limits<int8_t>::max(), {}},
+                                         RangeParam{element::u16, int8_t{-1}, "out of range for u16"},
+
+                                         RangeParam{element::u16, uint8_t{0}, {}},
+                                         RangeParam{element::u16, std::numeric_limits<uint8_t>::max(), {}},
+
+                                         RangeParam{element::u16, int16_t{0}, {}},
+                                         RangeParam{element::u16, std::numeric_limits<int16_t>::max(), {}},
+                                         RangeParam{element::u16, int16_t{-1}, "out of range for u16"},
+
+                                         RangeParam{element::u16, uint16_t{0}, {}},
+                                         RangeParam{element::u16, std::numeric_limits<uint16_t>::max(), {}},
+
+                                         RangeParam{element::u16, int32_t{0}, {}},
+                                         RangeParam{element::u16, int32_t{65535}, {}},
+                                         RangeParam{element::u16, int32_t{-1}, "out of range for u16"},
+                                         RangeParam{element::u16, int32_t{65536}, "out of range for u16"},
+
+                                         RangeParam{element::u16, uint32_t{0}, {}},
+                                         RangeParam{element::u16, uint32_t{65535}, {}},
+                                         RangeParam{element::u16, uint32_t{65536}, "out of range for u16"},
+
+                                         RangeParam{element::u16, int64_t{0}, {}},
+                                         RangeParam{element::u16, int64_t{65535}, {}},
+                                         RangeParam{element::u16, int64_t{-1}, "out of range for u16"},
+                                         RangeParam{element::u16, int64_t{65536}, "out of range for u16"},
+
+                                         RangeParam{element::u16, uint64_t{0}, {}},
+                                         RangeParam{element::u16, uint64_t{65535}, {}},
+                                         RangeParam{element::u16, uint64_t{65536}, "out of range for u16"},
+
+                                         RangeParam{element::u16, float{0.0f}, {}},
+                                         RangeParam{element::u16, float{65535.0f}, {}},
+                                         RangeParam{element::u16, float{-1.0f}, "out of range for u16"},
+                                         RangeParam{element::u16, float{65536.0f}, "out of range for u16"},
+
+                                         RangeParam{element::u16, double{0.0}, {}},
+                                         RangeParam{element::u16, double{65535.0}, {}},
+                                         RangeParam{element::u16, double{-1.0}, "out of range for u16"},
+                                         RangeParam{element::u16, double{65536.0}, "out of range for u16"},
+
+                                         RangeParam{element::u16, ov::float4_e2m1{0.0f}, {}},
+                                         RangeParam{element::u16, ov::float4_e2m1{1.0f}, {}},
+                                         RangeParam{element::u16, ov::float4_e2m1{-1.0f}, "out of range for u16"},
+
+                                         RangeParam{element::u16, ov::float8_e4m3{0.0f}, {}},
+                                         RangeParam{element::u16, ov::float8_e4m3{128.0f}, {}},
+                                         RangeParam{element::u16, ov::float8_e4m3{-1.0f}, "out of range for u16"},
+
+                                         RangeParam{element::u16, ov::float8_e5m2{0.0f}, {}},
+                                         RangeParam{element::u16, ov::float8_e5m2{128.0f}, {}},
+                                         RangeParam{element::u16, ov::float8_e5m2{-1.0f}, "out of range for u16"},
+
+                                         RangeParam{element::u16, ov::float8_e8m0{1.0f}, {}},
+                                         RangeParam{element::u16, ov::float8_e8m0{32768.0f}, {}},
+                                         RangeParam{element::u16, ov::float8_e8m0{65536.0f}, "out of range for u16"},
+
+                                         RangeParam{element::u16, ov::float16{0.0f}, {}},
+                                         RangeParam{element::u16, std::numeric_limits<ov::float16>::max(), {}},
+                                         RangeParam{element::u16, ov::float16{-1.0f}, "out of range for u16"},
+
+                                         RangeParam{element::u16, ov::bfloat16{0.0f}, {}},
+                                         RangeParam{element::u16, ov::bfloat16{32768.0f}, {}},
+                                         RangeParam{element::u16, ov::bfloat16{-1.0f}, "out of range for u16"},
+                                         RangeParam{element::u16, ov::bfloat16{65536.0f}, "out of range for u16"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_u32_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::u32, false, {}},
+                    RangeParam{element::u32, true, {}},
+
+                    RangeParam{element::u32, char{0}, {}},
+                    RangeParam{element::u32, char{127}, {}},
+                    RangeParam{element::u32, char{-1}, "out of range for u32"},
+
+                    RangeParam{element::u32, int8_t{0}, {}},
+                    RangeParam{element::u32, std::numeric_limits<int8_t>::max(), {}},
+                    RangeParam{element::u32, int8_t{-1}, "out of range for u32"},
+
+                    RangeParam{element::u32, uint8_t{0}, {}},
+                    RangeParam{element::u32, std::numeric_limits<uint8_t>::max(), {}},
+
+                    RangeParam{element::u32, int16_t{0}, {}},
+                    RangeParam{element::u32, std::numeric_limits<int16_t>::max(), {}},
+                    RangeParam{element::u32, int16_t{-1}, "out of range for u32"},
+
+                    RangeParam{element::u32, uint16_t{0}, {}},
+                    RangeParam{element::u32, std::numeric_limits<uint16_t>::max(), {}},
+
+                    RangeParam{element::u32, int32_t{0}, {}},
+                    RangeParam{element::u32, std::numeric_limits<int32_t>::max(), {}},
+                    RangeParam{element::u32, int32_t{-1}, "out of range for u32"},
+
+                    RangeParam{element::u32, uint32_t{0}, {}},
+                    RangeParam{element::u32, std::numeric_limits<uint32_t>::max(), {}},
+
+                    RangeParam{element::u32, int64_t{0}, {}},
+                    RangeParam{element::u32, int64_t{2147483647}, {}},
+                    RangeParam{element::u32, int64_t{-1}, "out of range for u32"},
+
+                    RangeParam{element::u32, uint64_t{0}, {}},
+                    RangeParam{element::u32, uint64_t{4294967295}, {}},
+
+                    RangeParam{element::u32, int64_t{4294967295}, {}},
+                    RangeParam{element::u32, int64_t{4294967296}, "out of range for u32"},
+
+                    RangeParam{element::u32, uint64_t{4294967296}, "out of range for u32"},
+
+                    RangeParam{element::u32, float{0.0f}, {}},
+                    RangeParam{element::u32, float{1.0e9f}, {}},
+                    RangeParam{element::u32, float{-1.0f}, "out of range for u32"},
+                    RangeParam{element::u32, float{4294967296.0f}, "out of range for u32"},
+
+                    RangeParam{element::u32, double{0.0}, {}},
+                    RangeParam{element::u32, double{1.0e9}, {}},
+                    RangeParam{element::u32, double{-1.0}, "out of range for u32"},
+                    RangeParam{element::u32, double{4294967296.0}, "out of range for u32"},
+
+                    RangeParam{element::u32, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::u32, ov::float4_e2m1{1.0f}, {}},
+
+                    RangeParam{element::u32, ov::float4_e2m1{-1.0f}, "out of range for u32"},
+                    RangeParam{element::u32, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::u32, ov::float8_e4m3{128.0f}, {}},
+                    RangeParam{element::u32, ov::float8_e4m3{-1.0f}, "out of range for u32"},
+
+                    RangeParam{element::u32, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::u32, ov::float8_e5m2{128.0f}, {}},
+                    RangeParam{element::u32, ov::float8_e5m2{-1.0f}, "out of range for u32"},
+
+                    RangeParam{element::u32, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::u32, ov::float8_e8m0{65536.0f}, {}},
+                    RangeParam{element::u32, ov::float8_e8m0{4294967296.0f}, "out of range for u32"},
+
+                    RangeParam{element::u32, ov::float16{0.0f}, {}},
+                    RangeParam{element::u32, std::numeric_limits<ov::float16>::max(), {}},
+                    RangeParam{element::u32, ov::float16{-1.0f}, "out of range for u32"},
+                    RangeParam{element::u32, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::u32, ov::bfloat16{65536.0f}, {}},
+                    RangeParam{element::u32, ov::bfloat16{-1.0f}, "out of range for u32"},
+                    RangeParam{element::u32, ov::bfloat16{4294967296.0f}, "out of range for u32"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_u64_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::u64, false, {}},
+                    RangeParam{element::u64, true, {}},
+
+                    RangeParam{element::u64, char{0}, {}},
+                    RangeParam{element::u64, char{127}, {}},
+                    RangeParam{element::u64, char{-1}, "out of range for u64"},
+
+                    RangeParam{element::u64, int8_t{0}, {}},
+                    RangeParam{element::u64, std::numeric_limits<int8_t>::max(), {}},
+                    RangeParam{element::u64, int8_t{-1}, "out of range for u64"},
+
+                    RangeParam{element::u64, uint8_t{0}, {}},
+                    RangeParam{element::u64, std::numeric_limits<uint8_t>::max(), {}},
+
+                    RangeParam{element::u64, int16_t{0}, {}},
+                    RangeParam{element::u64, std::numeric_limits<int16_t>::max(), {}},
+                    RangeParam{element::u64, int16_t{-1}, "out of range for u64"},
+
+                    RangeParam{element::u64, uint16_t{0}, {}},
+                    RangeParam{element::u64, std::numeric_limits<uint16_t>::max(), {}},
+
+                    RangeParam{element::u64, int32_t{0}, {}},
+                    RangeParam{element::u64, std::numeric_limits<int32_t>::max(), {}},
+                    RangeParam{element::u64, int32_t{-1}, "out of range for u64"},
+
+                    RangeParam{element::u64, uint32_t{0}, {}},
+                    RangeParam{element::u64, std::numeric_limits<uint32_t>::max(), {}},
+
+                    RangeParam{element::u64, int64_t{0}, {}},
+                    RangeParam{element::u64, std::numeric_limits<int64_t>::max(), {}},
+                    RangeParam{element::u64, int64_t{-1}, "out of range for u64"},
+
+                    RangeParam{element::u64, uint64_t{0}, {}},
+                    RangeParam{element::u64, std::numeric_limits<uint64_t>::max(), {}},
+
+                    RangeParam{element::u64, float{0.0f}, {}},
+                    RangeParam{element::u64, float{1.0e9f}, {}},
+                    RangeParam{element::u64, float{-1.0f}, "out of range for u64"},
+                    RangeParam{element::u64, float{2.0e19f}, "out of range for u64"},
+
+                    RangeParam{element::u64, double{0.0}, {}},
+                    RangeParam{element::u64, double{1.0e18}, {}},
+                    RangeParam{element::u64, double{-1.0}, "out of range for u64"},
+                    RangeParam{element::u64, double{2.0e19}, "out of range for u64"},
+
+                    RangeParam{element::u64, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::u64, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::u64, ov::float4_e2m1{-1.0f}, "out of range for u64"},
+                    RangeParam{element::u64, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::u64, ov::float8_e4m3{128.0f}, {}},
+                    RangeParam{element::u64, ov::float8_e4m3{-1.0f}, "out of range for u64"},
+
+                    RangeParam{element::u64, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::u64, ov::float8_e5m2{128.0f}, {}},
+                    RangeParam{element::u64, ov::float8_e5m2{-1.0f}, "out of range for u64"},
+
+                    RangeParam{element::u64, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::u64, ov::float8_e8m0{65536.0f}, {}},
+                    RangeParam{element::u64, std::numeric_limits<ov::float8_e8m0>::max(), "out of range for u64"},
+
+                    RangeParam{element::u64, ov::float16{0.0f}, {}},
+                    RangeParam{element::u64, std::numeric_limits<ov::float16>::max(), {}},
+                    RangeParam{element::u64, ov::float16{-1.0f}, "out of range for u64"},
+
+                    RangeParam{element::u64, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::u64, ov::bfloat16{65536.0f}, {}},
+                    RangeParam{element::u64, ov::bfloat16{-1.0f}, "out of range for u64"},
+                    RangeParam{element::u64, std::numeric_limits<ov::bfloat16>::max(), "out of range for u64"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_i16_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::i16, false, {}},
+                    RangeParam{element::i16, true, {}},
+
+                    RangeParam{element::i16, char{0}, {}},
+                    RangeParam{element::i16, char{-1}, {}},
+                    RangeParam{element::i16, char{127}, {}},
+
+                    RangeParam{element::i16, int8_t{0}, {}},
+                    RangeParam{element::i16, std::numeric_limits<int8_t>::lowest(), {}},
+                    RangeParam{element::i16, std::numeric_limits<int8_t>::max(), {}},
+
+                    RangeParam{element::i16, uint8_t{0}, {}},
+                    RangeParam{element::i16, std::numeric_limits<uint8_t>::max(), {}},
+
+                    RangeParam{element::i16, int16_t{0}, {}},
+                    RangeParam{element::i16, std::numeric_limits<int16_t>::lowest(), {}},
+                    RangeParam{element::i16, std::numeric_limits<int16_t>::max(), {}},
+
+                    RangeParam{element::i16, uint16_t{0}, {}},
+                    RangeParam{element::i16, uint16_t{32767}, {}},
+                    RangeParam{element::i16, uint16_t{32768}, "out of range for i16"},
+
+                    RangeParam{element::i16, int32_t{0}, {}},
+                    RangeParam{element::i16, int32_t{-32768}, {}},
+                    RangeParam{element::i16, int32_t{32767}, {}},
+                    RangeParam{element::i16, int32_t{-32769}, "out of range for i16"},
+                    RangeParam{element::i16, int32_t{32768}, "out of range for i16"},
+
+                    RangeParam{element::i16, uint32_t{0}, {}},
+                    RangeParam{element::i16, uint32_t{32767}, {}},
+                    RangeParam{element::i16, uint32_t{32768}, "out of range for i16"},
+
+                    RangeParam{element::i16, int64_t{0}, {}},
+                    RangeParam{element::i16, int64_t{-32768}, {}},
+                    RangeParam{element::i16, int64_t{32767}, {}},
+                    RangeParam{element::i16, int64_t{-32769}, "out of range for i16"},
+                    RangeParam{element::i16, int64_t{32768}, "out of range for i16"},
+
+                    RangeParam{element::i16, uint64_t{0}, {}},
+                    RangeParam{element::i16, uint64_t{32767}, {}},
+                    RangeParam{element::i16, uint64_t{32768}, "out of range for i16"},
+
+                    RangeParam{element::i16, float{0.0f}, {}},
+                    RangeParam{element::i16, float{-32768.0f}, {}},
+                    RangeParam{element::i16, float{32767.0f}, {}},
+                    RangeParam{element::i16, float{-32769.0f}, "out of range for i16"},
+                    RangeParam{element::i16, float{32768.0f}, "out of range for i16"},
+
+                    RangeParam{element::i16, double{0.0}, {}},
+                    RangeParam{element::i16, double{-32768.0}, {}},
+                    RangeParam{element::i16, double{32767.0}, {}},
+                    RangeParam{element::i16, double{-32769.0}, "out of range for i16"},
+                    RangeParam{element::i16, double{32768.0}, "out of range for i16"},
+
+                    RangeParam{element::i16, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::i16, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::i16, ov::float4_e2m1{-1.0f}, {}},
+
+                    RangeParam{element::i16, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::i16, std::numeric_limits<ov::float8_e4m3>::max(), {}},
+                    RangeParam{element::i16, std::numeric_limits<ov::float8_e4m3>::lowest(), {}},
+
+                    RangeParam{element::i16, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::i16, ov::float8_e5m2{-32768.0f}, {}},
+                    RangeParam{element::i16, ov::float8_e5m2{16384.0f}, {}},
+                    RangeParam{element::i16, ov::float8_e5m2{32768.0f}, "out of range for i16"},
+                    RangeParam{element::i16, std::numeric_limits<ov::float8_e5m2>::lowest(), "out of range for i16"},
+
+                    RangeParam{element::i16, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::i16, ov::float8_e8m0{16384.0f}, {}},
+                    RangeParam{element::i16, ov::float8_e8m0{32768.0f}, "out of range for i16"},
+
+                    RangeParam{element::i16, ov::float16{0.0f}, {}},
+                    RangeParam{element::i16, ov::float16{-32768.0f}, {}},
+                    RangeParam{element::i16, ov::float16{16384.0f}, {}},
+                    RangeParam{element::i16, ov::float16{32768.0f}, "out of range for i16"},
+                    RangeParam{element::i16, std::numeric_limits<ov::float16>::lowest(), "out of range for i16"},
+
+                    RangeParam{element::i16, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::i16, ov::bfloat16{-32768.0f}, {}},
+                    RangeParam{element::i16, ov::bfloat16{16384.0f}, {}},
+                    RangeParam{element::i16, ov::bfloat16{32768.0f}, "out of range for i16"},
+                    RangeParam{element::i16, std::numeric_limits<ov::bfloat16>::lowest(), "out of range for i16"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_i32_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::i32, false, {}},
+                    RangeParam{element::i32, true, {}},
+
+                    RangeParam{element::i32, char{0}, {}},
+                    RangeParam{element::i32, char{-1}, {}},
+                    RangeParam{element::i32, char{127}, {}},
+
+                    RangeParam{element::i32, int8_t{0}, {}},
+                    RangeParam{element::i32, std::numeric_limits<int8_t>::lowest(), {}},
+                    RangeParam{element::i32, std::numeric_limits<int8_t>::max(), {}},
+
+                    RangeParam{element::i32, uint8_t{0}, {}},
+                    RangeParam{element::i32, std::numeric_limits<uint8_t>::max(), {}},
+
+                    RangeParam{element::i32, int16_t{0}, {}},
+                    RangeParam{element::i32, std::numeric_limits<int16_t>::lowest(), {}},
+                    RangeParam{element::i32, std::numeric_limits<int16_t>::max(), {}},
+
+                    RangeParam{element::i32, uint16_t{0}, {}},
+                    RangeParam{element::i32, std::numeric_limits<uint16_t>::max(), {}},
+
+                    RangeParam{element::i32, int32_t{0}, {}},
+                    RangeParam{element::i32, std::numeric_limits<int32_t>::lowest(), {}},
+                    RangeParam{element::i32, std::numeric_limits<int32_t>::max(), {}},
+
+                    RangeParam{element::i32, uint32_t{0}, {}},
+                    RangeParam{element::i32, uint32_t{2147483647}, {}},
+                    RangeParam{element::i32, uint32_t{2147483648}, "out of range for i32"},
+
+                    RangeParam{element::i32, int64_t{0}, {}},
+                    RangeParam{element::i32, int64_t{2147483647}, {}},
+                    RangeParam{element::i32, int64_t{std::numeric_limits<int32_t>::lowest()}, {}},
+
+                    RangeParam{element::i32, uint64_t{0}, {}},
+                    RangeParam{element::i32, uint64_t{2147483647}, {}},
+                    RangeParam{element::i32, uint64_t{2147483648}, "out of range for i32"},
+
+                    RangeParam{element::i32, int64_t{-2147483648LL}, {}},
+                    RangeParam{element::i32, int64_t{2147483648}, "out of range for i32"},
+                    RangeParam{element::i32, int64_t{-2147483649LL}, "out of range for i32"},
+
+                    RangeParam{element::i32, float{0.0f}, {}},
+                    RangeParam{element::i32, float{-2147483648.0f}, {}},
+                    RangeParam{element::i32, float{1.0e9f}, {}},
+                    RangeParam{element::i32, float{2147483648.0f}, "out of range for i32"},
+                    RangeParam{element::i32, std::numeric_limits<float>::lowest(), "out of range for i32"},
+
+                    RangeParam{element::i32, double{0.0}, {}},
+                    RangeParam{element::i32, double{-2147483648.0}, {}},
+                    RangeParam{element::i32, double{2147483647.0}, {}},
+                    RangeParam{element::i32, double{2147483648.0}, "out of range for i32"},
+                    RangeParam{element::i32, double{-2147483649.0}, "out of range for i32"},
+
+                    RangeParam{element::i32, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::i32, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::i32, ov::float4_e2m1{-1.0f}, {}},
+
+                    RangeParam{element::i32, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::i32, std::numeric_limits<ov::float8_e4m3>::max(), {}},
+                    RangeParam{element::i32, std::numeric_limits<ov::float8_e4m3>::lowest(), {}},
+
+                    RangeParam{element::i32, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::i32, std::numeric_limits<ov::float8_e5m2>::max(), {}},
+                    RangeParam{element::i32, std::numeric_limits<ov::float8_e5m2>::lowest(), {}},
+
+                    RangeParam{element::i32, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::i32, ov::float8_e8m0{65536.0f}, {}},
+                    RangeParam{element::i32, std::numeric_limits<ov::float8_e8m0>::max(), "out of range for i32"},
+
+                    RangeParam{element::i32, ov::float16{0.0f}, {}},
+                    RangeParam{element::i32, std::numeric_limits<ov::float16>::max(), {}},
+                    RangeParam{element::i32, std::numeric_limits<ov::float16>::lowest(), {}},
+
+                    RangeParam{element::i32, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::i32, ov::bfloat16{-2147483648.0f}, {}},
+                    RangeParam{element::i32, ov::bfloat16{1.0e9f}, {}},
+                    RangeParam{element::i32, ov::bfloat16{2147483648.0f}, "out of range for i32"},
+                    RangeParam{element::i32, std::numeric_limits<ov::bfloat16>::lowest(), "out of range for i32"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_i64_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::i64, false, {}},
+                    RangeParam{element::i64, true, {}},
+
+                    RangeParam{element::i64, char{0}, {}},
+                    RangeParam{element::i64, char{-1}, {}},
+                    RangeParam{element::i64, char{127}, {}},
+
+                    RangeParam{element::i64, int8_t{0}, {}},
+                    RangeParam{element::i64, std::numeric_limits<int8_t>::lowest(), {}},
+                    RangeParam{element::i64, std::numeric_limits<int8_t>::max(), {}},
+
+                    RangeParam{element::i64, uint8_t{0}, {}},
+                    RangeParam{element::i64, std::numeric_limits<uint8_t>::max(), {}},
+
+                    RangeParam{element::i64, int16_t{0}, {}},
+                    RangeParam{element::i64, std::numeric_limits<int16_t>::lowest(), {}},
+                    RangeParam{element::i64, std::numeric_limits<int16_t>::max(), {}},
+
+                    RangeParam{element::i64, uint16_t{0}, {}},
+                    RangeParam{element::i64, std::numeric_limits<uint16_t>::max(), {}},
+
+                    RangeParam{element::i64, int32_t{0}, {}},
+                    RangeParam{element::i64, std::numeric_limits<int32_t>::lowest(), {}},
+                    RangeParam{element::i64, std::numeric_limits<int32_t>::max(), {}},
+
+                    RangeParam{element::i64, uint32_t{0}, {}},
+                    RangeParam{element::i64, std::numeric_limits<uint32_t>::max(), {}},
+
+                    RangeParam{element::i64, int64_t{0}, {}},
+                    RangeParam{element::i64, std::numeric_limits<int64_t>::lowest(), {}},
+                    RangeParam{element::i64, std::numeric_limits<int64_t>::max(), {}},
+
+                    RangeParam{element::i64, uint64_t{0}, {}},
+                    RangeParam{element::i64, uint64_t{std::numeric_limits<int64_t>::max()}, {}},
+                    RangeParam{element::i64, std::numeric_limits<uint64_t>::max(), "out of range for i64"},
+
+                    RangeParam{element::i64, float{0.0f}, {}},
+                    RangeParam{element::i64, float{1.0e9f}, {}},
+                    RangeParam{element::i64, float{-1.0f}, {}},
+                    RangeParam{element::i64, float{1.0e19f}, "out of range for i64"},
+                    RangeParam{element::i64, std::numeric_limits<float>::lowest(), "out of range for i64"},
+
+                    RangeParam{element::i64, double{0.0}, {}},
+                    RangeParam{element::i64, double{1.0e18}, {}},
+                    RangeParam{element::i64, double{-1.0e18}, {}},
+                    RangeParam{element::i64, double{1.0e19}, "out of range for i64"},
+                    RangeParam{element::i64, std::numeric_limits<double>::lowest(), "out of range for i64"},
+
+                    RangeParam{element::i64, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::i64, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::i64, ov::float4_e2m1{-1.0f}, {}},
+
+                    RangeParam{element::i64, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::i64, std::numeric_limits<ov::float8_e4m3>::max(), {}},
+                    RangeParam{element::i64, std::numeric_limits<ov::float8_e4m3>::lowest(), {}},
+
+                    RangeParam{element::i64, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::i64, std::numeric_limits<ov::float8_e5m2>::max(), {}},
+                    RangeParam{element::i64, std::numeric_limits<ov::float8_e5m2>::lowest(), {}},
+
+                    RangeParam{element::i64, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::i64, ov::float8_e8m0{65536.0f}, {}},
+                    RangeParam{element::i64, std::numeric_limits<ov::float8_e8m0>::max(), "out of range for i64"},
+
+                    RangeParam{element::i64, ov::float16{0.0f}, {}},
+                    RangeParam{element::i64, std::numeric_limits<ov::float16>::max(), {}},
+                    RangeParam{element::i64, std::numeric_limits<ov::float16>::lowest(), {}},
+
+                    RangeParam{element::i64, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::i64, ov::bfloat16{1.0e9f}, {}},
+                    RangeParam{element::i64, ov::bfloat16{-1.0e9f}, {}},
+                    RangeParam{element::i64, std::numeric_limits<ov::bfloat16>::max(), "out of range for i64"},
+                    RangeParam{element::i64, std::numeric_limits<ov::bfloat16>::lowest(), "out of range for i64"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_f8e4m3_ct,
+    ConstantRangeTest,
+    testing::Values(
+        RangeParam{element::f8e4m3, false, {}},
+        RangeParam{element::f8e4m3, true, {}},
+
+        RangeParam{element::f8e4m3, char{0}, {}},
+        RangeParam{element::f8e4m3, char{-1}, {}},
+        RangeParam{element::f8e4m3, char{127}, {}},
+
+        RangeParam{element::f8e4m3, int8_t{0}, {}},
+        RangeParam{element::f8e4m3, std::numeric_limits<int8_t>::lowest(), {}},
+        RangeParam{element::f8e4m3, std::numeric_limits<int8_t>::max(), {}},
+
+        RangeParam{element::f8e4m3, uint8_t{0}, {}},
+        RangeParam{element::f8e4m3, std::numeric_limits<uint8_t>::max(), {}},
+
+        RangeParam{element::f8e4m3, int16_t{0}, {}},
+        RangeParam{element::f8e4m3, int16_t{448}, {}},
+        RangeParam{element::f8e4m3, int16_t{-448}, {}},
+        RangeParam{element::f8e4m3, int16_t{449}, "out of range for f8e4m3"},
+        RangeParam{element::f8e4m3, int16_t{-449}, "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, uint16_t{0}, {}},
+        RangeParam{element::f8e4m3, uint16_t{448}, {}},
+        RangeParam{element::f8e4m3, uint16_t{449}, "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, int32_t{0}, {}},
+        RangeParam{element::f8e4m3, int32_t{448}, {}},
+        RangeParam{element::f8e4m3, int32_t{-448}, {}},
+        RangeParam{element::f8e4m3, int32_t{449}, "out of range for f8e4m3"},
+        RangeParam{element::f8e4m3, int32_t{-449}, "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, uint32_t{0}, {}},
+        RangeParam{element::f8e4m3, uint32_t{448}, {}},
+        RangeParam{element::f8e4m3, uint32_t{449}, "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, int64_t{0}, {}},
+        RangeParam{element::f8e4m3, int64_t{448}, {}},
+        RangeParam{element::f8e4m3, int64_t{-448}, {}},
+        RangeParam{element::f8e4m3, int64_t{449}, "out of range for f8e4m3"},
+        RangeParam{element::f8e4m3, int64_t{-449}, "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, uint64_t{0}, {}},
+        RangeParam{element::f8e4m3, uint64_t{448}, {}},
+        RangeParam{element::f8e4m3, uint64_t{449}, "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, float{0.0f}, {}},
+        RangeParam{element::f8e4m3, float{448.0f}, {}},
+        RangeParam{element::f8e4m3, float{-448.0f}, {}},
+        RangeParam{element::f8e4m3, float{449.0f}, "out of range for f8e4m3"},
+        RangeParam{element::f8e4m3, float{-449.0f}, "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, double{0.0}, {}},
+        RangeParam{element::f8e4m3, double{448.0}, {}},
+        RangeParam{element::f8e4m3, double{-448.0}, {}},
+        RangeParam{element::f8e4m3, double{449.0}, "out of range for f8e4m3"},
+        RangeParam{element::f8e4m3, double{-449.0}, "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, ov::float4_e2m1{0.0f}, {}},
+        RangeParam{element::f8e4m3, ov::float4_e2m1{1.0f}, {}},
+        RangeParam{element::f8e4m3, ov::float4_e2m1{-1.0f}, {}},
+
+        RangeParam{element::f8e4m3, ov::float8_e4m3{0.0f}, {}},
+        RangeParam{element::f8e4m3, std::numeric_limits<ov::float8_e4m3>::max(), {}},
+        RangeParam{element::f8e4m3, std::numeric_limits<ov::float8_e4m3>::lowest(), {}},
+
+        RangeParam{element::f8e4m3, ov::float8_e5m2{0.0f}, {}},
+        RangeParam{element::f8e4m3, ov::float8_e5m2{448.0f}, {}},
+        RangeParam{element::f8e4m3, ov::float8_e5m2{-448.0f}, {}},
+        RangeParam{element::f8e4m3, std::numeric_limits<ov::float8_e5m2>::max(), "out of range for f8e4m3"},
+        RangeParam{element::f8e4m3, std::numeric_limits<ov::float8_e5m2>::lowest(), "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, ov::float16{0.0f}, {}},
+        RangeParam{element::f8e4m3, ov::float16{200.0f}, {}},
+        RangeParam{element::f8e4m3, ov::float16{-200.0f}, {}},
+        RangeParam{element::f8e4m3, ov::float16{449.0f}, "out of range for f8e4m3"},
+        RangeParam{element::f8e4m3, ov::float16{-449.0f}, "out of range for f8e4m3"},
+
+        RangeParam{element::f8e4m3, ov::bfloat16{0.0f}, {}},
+        RangeParam{element::f8e4m3, ov::bfloat16{200.0f}, {}},
+        RangeParam{element::f8e4m3, ov::bfloat16{-200.0f}, {}},
+        RangeParam{element::f8e4m3, ov::bfloat16{512.0f}, "out of range for f8e4m3"},
+        RangeParam{element::f8e4m3, ov::bfloat16{-512.0f}, "out of range for f8e4m3"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_f8e5m2_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::f8e5m2, false, {}},
+                    RangeParam{element::f8e5m2, true, {}},
+
+                    RangeParam{element::f8e5m2, char{0}, {}},
+                    RangeParam{element::f8e5m2, char{-1}, {}},
+
+                    RangeParam{element::f8e5m2, int8_t{0}, {}},
+                    RangeParam{element::f8e5m2, std::numeric_limits<int8_t>::lowest(), {}},
+
+                    RangeParam{element::f8e5m2, uint8_t{0}, {}},
+                    RangeParam{element::f8e5m2, std::numeric_limits<uint8_t>::max(), {}},
+
+                    RangeParam{element::f8e5m2, int16_t{0}, {}},
+                    RangeParam{element::f8e5m2, std::numeric_limits<int16_t>::lowest(), {}},
+                    RangeParam{element::f8e5m2, std::numeric_limits<int16_t>::max(), {}},
+
+                    RangeParam{element::f8e5m2, uint16_t{0}, {}},
+                    RangeParam{element::f8e5m2, uint16_t{57344}, {}},
+                    RangeParam{element::f8e5m2, uint16_t{57345}, "out of range for f8e5m2"},
+
+                    RangeParam{element::f8e5m2, int32_t{0}, {}},
+                    RangeParam{element::f8e5m2, int32_t{57344}, {}},
+                    RangeParam{element::f8e5m2, int32_t{-57344}, {}},
+                    RangeParam{element::f8e5m2, int32_t{57345}, "out of range for f8e5m2"},
+                    RangeParam{element::f8e5m2, int32_t{-57345}, "out of range for f8e5m2"},
+
+                    RangeParam{element::f8e5m2, uint32_t{0}, {}},
+                    RangeParam{element::f8e5m2, uint32_t{57344}, {}},
+                    RangeParam{element::f8e5m2, uint32_t{57345}, "out of range for f8e5m2"},
+
+                    RangeParam{element::f8e5m2, int64_t{0}, {}},
+                    RangeParam{element::f8e5m2, int64_t{57344}, {}},
+                    RangeParam{element::f8e5m2, int64_t{-57344}, {}},
+                    RangeParam{element::f8e5m2, int64_t{57345}, "out of range for f8e5m2"},
+                    RangeParam{element::f8e5m2, int64_t{-57345}, "out of range for f8e5m2"},
+
+                    RangeParam{element::f8e5m2, uint64_t{0}, {}},
+                    RangeParam{element::f8e5m2, uint64_t{57344}, {}},
+                    RangeParam{element::f8e5m2, uint64_t{57345}, "out of range for f8e5m2"},
+
+                    RangeParam{element::f8e5m2, float{0.0f}, {}},
+                    RangeParam{element::f8e5m2, float{57344.0f}, {}},
+                    RangeParam{element::f8e5m2, float{-57344.0f}, {}},
+                    RangeParam{element::f8e5m2, float{57345.0f}, "out of range for f8e5m2"},
+                    RangeParam{element::f8e5m2, float{-57345.0f}, "out of range for f8e5m2"},
+
+                    RangeParam{element::f8e5m2, double{0.0}, {}},
+                    RangeParam{element::f8e5m2, double{57344.0}, {}},
+                    RangeParam{element::f8e5m2, double{-57344.0}, {}},
+                    RangeParam{element::f8e5m2, double{57345.0}, "out of range for f8e5m2"},
+                    RangeParam{element::f8e5m2, double{-57345.0}, "out of range for f8e5m2"},
+
+                    RangeParam{element::f8e5m2, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::f8e5m2, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::f8e5m2, ov::float4_e2m1{-1.0f}, {}},
+
+                    RangeParam{element::f8e5m2, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::f8e5m2, std::numeric_limits<ov::float8_e4m3>::max(), {}},
+                    RangeParam{element::f8e5m2, std::numeric_limits<ov::float8_e4m3>::lowest(), {}},
+
+                    RangeParam{element::f8e5m2, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::f8e5m2, std::numeric_limits<ov::float8_e5m2>::max(), {}},
+                    RangeParam{element::f8e5m2, std::numeric_limits<ov::float8_e5m2>::lowest(), {}},
+
+                    RangeParam{element::f8e5m2, ov::float16{0.0f}, {}},
+                    RangeParam{element::f8e5m2, ov::float16{57344.0f}, {}},
+                    RangeParam{element::f8e5m2, ov::float16{-57344.0f}, {}},
+                    RangeParam{element::f8e5m2, std::numeric_limits<ov::float16>::max(), "out of range for f8e5m2"},
+                    RangeParam{element::f8e5m2, std::numeric_limits<ov::float16>::lowest(), "out of range for f8e5m2"},
+
+                    RangeParam{element::f8e5m2, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::f8e5m2, ov::bfloat16{57344.0f}, {}},
+                    RangeParam{element::f8e5m2, ov::bfloat16{-57344.0f}, {}},
+                    RangeParam{element::f8e5m2, ov::bfloat16{65536.0f}, "out of range for f8e5m2"},
+                    RangeParam{element::f8e5m2, ov::bfloat16{-65536.0f}, "out of range for f8e5m2"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_f16_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::f16, false, {}},
+                    RangeParam{element::f16, true, {}},
+
+                    RangeParam{element::f16, char{0}, {}},
+                    RangeParam{element::f16, char{-1}, {}},
+
+                    RangeParam{element::f16, int8_t{0}, {}},
+                    RangeParam{element::f16, std::numeric_limits<int8_t>::lowest(), {}},
+
+                    RangeParam{element::f16, uint8_t{0}, {}},
+                    RangeParam{element::f16, std::numeric_limits<uint8_t>::max(), {}},
+
+                    RangeParam{element::f16, int16_t{0}, {}},
+                    RangeParam{element::f16, std::numeric_limits<int16_t>::lowest(), {}},
+                    RangeParam{element::f16, std::numeric_limits<int16_t>::max(), {}},
+
+                    RangeParam{element::f16, uint16_t{0}, {}},
+                    RangeParam{element::f16, uint16_t{65504}, {}},
+                    RangeParam{element::f16, std::numeric_limits<uint16_t>::max(), "out of range for f16"},
+
+                    RangeParam{element::f16, int32_t{0}, {}},
+                    RangeParam{element::f16, int32_t{65504}, {}},
+                    RangeParam{element::f16, int32_t{-65504}, {}},
+                    RangeParam{element::f16, int32_t{65505}, "out of range for f16"},
+                    RangeParam{element::f16, int32_t{-65505}, "out of range for f16"},
+
+                    RangeParam{element::f16, uint32_t{0}, {}},
+                    RangeParam{element::f16, uint32_t{65504}, {}},
+                    RangeParam{element::f16, uint32_t{65505}, "out of range for f16"},
+
+                    RangeParam{element::f16, int64_t{0}, {}},
+                    RangeParam{element::f16, int64_t{65504}, {}},
+                    RangeParam{element::f16, int64_t{-65504}, {}},
+                    RangeParam{element::f16, int64_t{65505}, "out of range for f16"},
+                    RangeParam{element::f16, int64_t{-65505}, "out of range for f16"},
+
+                    RangeParam{element::f16, uint64_t{0}, {}},
+                    RangeParam{element::f16, uint64_t{65504}, {}},
+                    RangeParam{element::f16, uint64_t{65505}, "out of range for f16"},
+
+                    RangeParam{element::f16, float{0.0f}, {}},
+                    RangeParam{element::f16, float{65504.0f}, {}},
+                    RangeParam{element::f16, float{-65504.0f}, {}},
+                    RangeParam{element::f16, float{65505.0f}, "out of range for f16"},
+                    RangeParam{element::f16, float{-65505.0f}, "out of range for f16"},
+
+                    RangeParam{element::f16, double{0.0}, {}},
+                    RangeParam{element::f16, double{65504.0}, {}},
+                    RangeParam{element::f16, double{-65504.0}, {}},
+                    RangeParam{element::f16, double{65505.0}, "out of range for f16"},
+                    RangeParam{element::f16, double{-65505.0}, "out of range for f16"},
+
+                    RangeParam{element::f16, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::f16, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::f16, ov::float4_e2m1{-1.0f}, {}},
+
+                    RangeParam{element::f16, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::f16, std::numeric_limits<ov::float8_e4m3>::max(), {}},
+                    RangeParam{element::f16, std::numeric_limits<ov::float8_e4m3>::lowest(), {}},
+
+                    RangeParam{element::f16, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::f16, std::numeric_limits<ov::float8_e5m2>::max(), {}},
+                    RangeParam{element::f16, std::numeric_limits<ov::float8_e5m2>::lowest(), {}},
+
+                    RangeParam{element::f16, ov::float16{0.0f}, {}},
+                    RangeParam{element::f16, std::numeric_limits<ov::float16>::max(), {}},
+                    RangeParam{element::f16, std::numeric_limits<ov::float16>::lowest(), {}},
+
+                    RangeParam{element::f16, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::f16, ov::float8_e8m0{32768.0f}, {}},
+                    RangeParam{element::f16, std::numeric_limits<ov::float8_e8m0>::max(), "out of range for f16"},
+
+                    RangeParam{element::f16, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::f16, ov::bfloat16{256.0f}, {}},
+                    RangeParam{element::f16, ov::bfloat16{-256.0f}, {}},
+                    RangeParam{element::f16, std::numeric_limits<ov::bfloat16>::max(), "out of range for f16"},
+                    RangeParam{element::f16, std::numeric_limits<ov::bfloat16>::lowest(), "out of range for f16"}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_bf16_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::bf16, false, {}},
+                    RangeParam{element::bf16, true, {}},
+
+                    RangeParam{element::bf16, char{0}, {}},
+                    RangeParam{element::bf16, char{-1}, {}},
+
+                    RangeParam{element::bf16, int8_t{0}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<int8_t>::lowest(), {}},
+
+                    RangeParam{element::bf16, uint8_t{0}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<uint8_t>::max(), {}},
+
+                    RangeParam{element::bf16, int16_t{0}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<int16_t>::lowest(), {}},
+
+                    RangeParam{element::bf16, uint16_t{0}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<uint16_t>::max(), {}},
+
+                    RangeParam{element::bf16, int32_t{0}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<int32_t>::lowest(), {}},
+                    RangeParam{element::bf16, std::numeric_limits<int32_t>::max(), {}},
+
+                    RangeParam{element::bf16, uint32_t{0}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<uint32_t>::max(), {}},
+
+                    RangeParam{element::bf16, int64_t{0}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<int64_t>::lowest(), {}},
+                    RangeParam{element::bf16, std::numeric_limits<int64_t>::max(), {}},
+
+                    RangeParam{element::bf16, uint64_t{0}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<uint64_t>::max(), {}},
+
+                    RangeParam{element::bf16, float{0.0f}, {}},
+                    RangeParam{element::bf16, float{std::numeric_limits<ov::bfloat16>::max()}, {}},
+                    RangeParam{element::bf16, float{std::numeric_limits<ov::bfloat16>::lowest()}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<float>::max(), "out of range for bf16"},
+                    RangeParam{element::bf16, std::numeric_limits<float>::lowest(), "out of range for bf16"},
+
+                    RangeParam{element::bf16, double{0.0}, {}},
+                    RangeParam{element::bf16, double{1.0e38}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<double>::max(), "out of range for bf16"},
+                    RangeParam{element::bf16, std::numeric_limits<double>::lowest(), "out of range for bf16"},
+
+                    RangeParam{element::bf16, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::bf16, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::bf16, ov::float4_e2m1{-1.0f}, {}},
+
+                    RangeParam{element::bf16, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<ov::float8_e4m3>::max(), {}},
+                    RangeParam{element::bf16, std::numeric_limits<ov::float8_e4m3>::lowest(), {}},
+
+                    RangeParam{element::bf16, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<ov::float8_e5m2>::max(), {}},
+                    RangeParam{element::bf16, std::numeric_limits<ov::float8_e5m2>::lowest(), {}},
+
+                    RangeParam{element::bf16, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<ov::float8_e8m0>::max(), {}},
+
+                    RangeParam{element::bf16, ov::float16{0.0f}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<ov::float16>::max(), {}},
+                    RangeParam{element::bf16, std::numeric_limits<ov::float16>::lowest(), {}},
+
+                    RangeParam{element::bf16, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::bf16, std::numeric_limits<ov::bfloat16>::max(), {}},
+                    RangeParam{element::bf16, std::numeric_limits<ov::bfloat16>::lowest(), {}}));
+
+INSTANTIATE_TEST_SUITE_P(
+    in_t_range_f32_ct,
+    ConstantRangeTest,
+    testing::Values(RangeParam{element::f32, false, {}},
+                    RangeParam{element::f32, true, {}},
+
+                    RangeParam{element::f32, char{0}, {}},
+                    RangeParam{element::f32, char{-1}, {}},
+
+                    RangeParam{element::f32, int8_t{0}, {}},
+                    RangeParam{element::f32, std::numeric_limits<int8_t>::lowest(), {}},
+
+                    RangeParam{element::f32, uint8_t{0}, {}},
+                    RangeParam{element::f32, std::numeric_limits<uint8_t>::max(), {}},
+
+                    RangeParam{element::f32, int16_t{0}, {}},
+                    RangeParam{element::f32, std::numeric_limits<int16_t>::lowest(), {}},
+
+                    RangeParam{element::f32, uint16_t{0}, {}},
+                    RangeParam{element::f32, std::numeric_limits<uint16_t>::max(), {}},
+
+                    RangeParam{element::f32, int32_t{0}, {}},
+                    RangeParam{element::f32, std::numeric_limits<int32_t>::lowest(), {}},
+                    RangeParam{element::f32, std::numeric_limits<int32_t>::max(), {}},
+
+                    RangeParam{element::f32, uint32_t{0}, {}},
+                    RangeParam{element::f32, std::numeric_limits<uint32_t>::max(), {}},
+
+                    RangeParam{element::f32, int64_t{0}, {}},
+                    RangeParam{element::f32, std::numeric_limits<int64_t>::lowest(), {}},
+                    RangeParam{element::f32, std::numeric_limits<int64_t>::max(), {}},
+
+                    RangeParam{element::f32, uint64_t{0}, {}},
+                    RangeParam{element::f32, std::numeric_limits<uint64_t>::max(), {}},
+
+                    RangeParam{element::f32, double{0.0}, {}},
+                    RangeParam{element::f32, double{std::numeric_limits<float>::max()}, {}},
+                    RangeParam{element::f32, double{std::numeric_limits<float>::lowest()}, {}},
+                    RangeParam{element::f32, std::numeric_limits<double>::max(), "out of range for f32"},
+                    RangeParam{element::f32, std::numeric_limits<double>::lowest(), "out of range for f32"},
+
+                    RangeParam{element::f32, ov::float4_e2m1{0.0f}, {}},
+                    RangeParam{element::f32, ov::float4_e2m1{1.0f}, {}},
+                    RangeParam{element::f32, ov::float4_e2m1{-1.0f}, {}},
+
+                    RangeParam{element::f32, ov::float8_e4m3{0.0f}, {}},
+                    RangeParam{element::f32, std::numeric_limits<ov::float8_e4m3>::max(), {}},
+                    RangeParam{element::f32, std::numeric_limits<ov::float8_e4m3>::lowest(), {}},
+
+                    RangeParam{element::f32, ov::float8_e5m2{0.0f}, {}},
+                    RangeParam{element::f32, std::numeric_limits<ov::float8_e5m2>::max(), {}},
+                    RangeParam{element::f32, std::numeric_limits<ov::float8_e5m2>::lowest(), {}},
+
+                    RangeParam{element::f32, ov::float8_e8m0{1.0f}, {}},
+                    RangeParam{element::f32, std::numeric_limits<ov::float8_e8m0>::max(), {}},
+
+                    RangeParam{element::f32, ov::float16{0.0f}, {}},
+                    RangeParam{element::f32, std::numeric_limits<ov::float16>::max(), {}},
+                    RangeParam{element::f32, std::numeric_limits<ov::float16>::lowest(), {}},
+
+                    RangeParam{element::f32, ov::bfloat16{0.0f}, {}},
+                    RangeParam{element::f32, std::numeric_limits<ov::bfloat16>::max(), {}},
+                    RangeParam{element::f32, std::numeric_limits<ov::bfloat16>::lowest(), {}},
+
+                    RangeParam{element::f32, std::numeric_limits<float>::max(), {}},
+                    RangeParam{element::f32, std::numeric_limits<float>::lowest(), {}}));
+
+INSTANTIATE_TEST_SUITE_P(in_t_range_f64_ct,
+                         ConstantRangeTest,
+                         testing::Values(RangeParam{element::f64, false, {}},
+                                         RangeParam{element::f64, true, {}},
+
+                                         RangeParam{element::f64, char{0}, {}},
+                                         RangeParam{element::f64, char{-1}, {}},
+
+                                         RangeParam{element::f64, int8_t{0}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<int8_t>::lowest(), {}},
+
+                                         RangeParam{element::f64, uint8_t{0}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<uint8_t>::max(), {}},
+
+                                         RangeParam{element::f64, int16_t{0}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<int16_t>::lowest(), {}},
+
+                                         RangeParam{element::f64, uint16_t{0}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<uint16_t>::max(), {}},
+
+                                         RangeParam{element::f64, int32_t{0}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<int32_t>::lowest(), {}},
+                                         RangeParam{element::f64, std::numeric_limits<int32_t>::max(), {}},
+
+                                         RangeParam{element::f64, uint32_t{0}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<uint32_t>::max(), {}},
+
+                                         RangeParam{element::f64, int64_t{0}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<int64_t>::lowest(), {}},
+                                         RangeParam{element::f64, std::numeric_limits<int64_t>::max(), {}},
+
+                                         RangeParam{element::f64, uint64_t{0}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<uint64_t>::max(), {}},
+
+                                         RangeParam{element::f64, float{0.0f}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<float>::max(), {}},
+                                         RangeParam{element::f64, std::numeric_limits<float>::lowest(), {}},
+
+                                         RangeParam{element::f64, double{0.0}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<double>::max(), {}},
+                                         RangeParam{element::f64, std::numeric_limits<double>::lowest(), {}},
+
+                                         RangeParam{element::f64, ov::float4_e2m1{0.0f}, {}},
+                                         RangeParam{element::f64, ov::float4_e2m1{1.0f}, {}},
+                                         RangeParam{element::f64, ov::float4_e2m1{-1.0f}, {}},
+
+                                         RangeParam{element::f64, ov::float8_e4m3{0.0f}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<ov::float8_e4m3>::max(), {}},
+                                         RangeParam{element::f64, std::numeric_limits<ov::float8_e4m3>::lowest(), {}},
+
+                                         RangeParam{element::f64, ov::float8_e5m2{0.0f}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<ov::float8_e5m2>::max(), {}},
+                                         RangeParam{element::f64, std::numeric_limits<ov::float8_e5m2>::lowest(), {}},
+
+                                         RangeParam{element::f64, ov::float8_e8m0{1.0f}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<ov::float8_e8m0>::max(), {}},
+
+                                         RangeParam{element::f64, ov::float16{0.0f}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<ov::float16>::max(), {}},
+                                         RangeParam{element::f64, std::numeric_limits<ov::float16>::lowest(), {}},
+
+                                         RangeParam{element::f64, ov::bfloat16{0.0f}, {}},
+                                         RangeParam{element::f64, std::numeric_limits<ov::bfloat16>::max(), {}},
+                                         RangeParam{element::f64, std::numeric_limits<ov::bfloat16>::lowest(), {}}));
+}  // namespace test
+}  // namespace ov
+
+namespace std {
+
+template <>
+class numeric_limits<ov::test::TestDType> {
+public:
+    static constexpr bool is_specialized = true;
+    static ov::test::TestDType min() noexcept {
+        return numeric_limits<float>::min();
+    }
+    static ov::test::TestDType max() noexcept {
+        return numeric_limits<float>::max();
+    }
+    static ov::test::TestDType lowest() noexcept {
+        return numeric_limits<float>::lowest();
+    }
+
+    static constexpr bool is_signed = true;
+    static constexpr bool is_integer = false;
+};
+}  // namespace std

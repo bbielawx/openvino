@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include "roi_align_kernel_ref.h"
@@ -65,12 +65,13 @@ float ROIAlignKernelRef::GetKernelsPriority(const Params &params) const {
 
 bool ROIAlignKernelRef::Validate(const Params& p) const {
     if (p.GetType() != KernelType::ROI_ALIGN) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     const roi_align_params &params = static_cast<const roi_align_params&>(p);
-    if (params.inputs.size() != 3)
-        return false;
+    if (params.inputs.size() != 3) {
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     return true;
 }
@@ -99,6 +100,63 @@ JitConstants ROIAlignKernelRef::GetJitConstants(const roi_align_params& params) 
         jit.AddConstant(MakeJitConstant("OFFSET_SRC", 0.5f));
         jit.AddConstant(MakeJitConstant("OFFSET_DST", -0.5f));
         jit.AddConstant(MakeJitConstant("MIN_SIZE", 0.f));
+    }
+
+    jit.AddConstant(MakeJitConstant("X1", "x1"));
+    jit.AddConstant(MakeJitConstant("Y1", "y1"));
+    jit.AddConstant(MakeJitConstant("ROI_WIDTH", "roi_width"));
+    jit.AddConstant(MakeJitConstant("ROI_HEIGHT", "roi_height"));
+    jit.AddConstant(MakeJitConstant("SAMPLE_X", "sample_x"));
+    jit.AddConstant(MakeJitConstant("SAMPLE_Y", "sample_y"));
+
+    if (!params.rotated_mode) {
+        const char* prepare_roi_macro =
+            R"( \
+        const INPUT1_TYPE X1 = (roi_ptr[0] + (INPUT1_TYPE)OFFSET_SRC) * (INPUT1_TYPE)SPATIAL_SCALE + (INPUT1_TYPE)OFFSET_DST; \
+        const INPUT1_TYPE Y1 = (roi_ptr[1] + (INPUT1_TYPE)OFFSET_SRC) * (INPUT1_TYPE)SPATIAL_SCALE + (INPUT1_TYPE)OFFSET_DST; \
+        const INPUT1_TYPE x2 = (roi_ptr[2] + (INPUT1_TYPE)OFFSET_SRC) * (INPUT1_TYPE)SPATIAL_SCALE + (INPUT1_TYPE)OFFSET_DST; \
+        const INPUT1_TYPE y2 = (roi_ptr[3] + (INPUT1_TYPE)OFFSET_SRC) * (INPUT1_TYPE)SPATIAL_SCALE + (INPUT1_TYPE)OFFSET_DST; \
+        const INPUT1_TYPE ROI_WIDTH = MAX(x2 - X1, (INPUT1_TYPE)MIN_SIZE); \
+        const INPUT1_TYPE ROI_HEIGHT = MAX(y2 - Y1, (INPUT1_TYPE)MIN_SIZE);
+        )";
+        jit.AddConstant(MakeJitConstant("PREPARE_ROI(roi_ptr)", prepare_roi_macro));
+
+        const char* transform_macro =
+            R"( \
+        INPUT1_TYPE SAMPLE_X = pre_sample_x; \
+        INPUT1_TYPE SAMPLE_Y = pre_sample_y;
+        )";
+
+        jit.AddConstant(MakeJitConstant("TRANSFORM_POINT_TO_IMAGE_SPACE(pre_sample_x,pre_sample_y)", transform_macro));
+    } else {
+        jit.AddConstant(MakeJitConstant("CLOCKWISE", params.clockwise));
+
+        const char* prepare_roi_macro =
+            R"( \
+        const INPUT1_TYPE center_x =   roi_ptr[0] * (INPUT1_TYPE)SPATIAL_SCALE - (INPUT1_TYPE)0.5f; \
+        const INPUT1_TYPE center_y =   roi_ptr[1] * (INPUT1_TYPE)SPATIAL_SCALE - (INPUT1_TYPE)0.5f; \
+        const INPUT1_TYPE ROI_WIDTH =  roi_ptr[2] * (INPUT1_TYPE)SPATIAL_SCALE; \
+        const INPUT1_TYPE ROI_HEIGHT = roi_ptr[3] * (INPUT1_TYPE)SPATIAL_SCALE; \
+        INPUT1_TYPE angle = roi_ptr[4];                         \
+                                                                \
+        if (CLOCKWISE) {                                        \
+            angle = -angle;                                     \
+        }                                                       \
+        const INPUT1_TYPE cos_angle = cos(angle);               \
+        const INPUT1_TYPE sin_angle = sin(angle);               \
+                                                                \
+        const INPUT1_TYPE X1 = -ROI_WIDTH / (INPUT1_TYPE)2.0f;  \
+        const INPUT1_TYPE Y1 = -ROI_HEIGHT / (INPUT1_TYPE)2.0f;
+        )";
+        jit.AddConstant(MakeJitConstant("PREPARE_ROI(roi_ptr)", prepare_roi_macro));
+
+        const char* transform_macro =
+            R"( \
+            INPUT1_TYPE SAMPLE_Y = pre_sample_y * cos_angle - pre_sample_x * sin_angle + center_y; \
+            INPUT1_TYPE SAMPLE_X = pre_sample_y * sin_angle + pre_sample_x * cos_angle + center_x;
+        )";
+
+        jit.AddConstant(MakeJitConstant("TRANSFORM_POINT_TO_IMAGE_SPACE(pre_sample_x,pre_sample_y)", transform_macro));
     }
 
     return jit;

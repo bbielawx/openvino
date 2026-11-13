@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import List
-
 import numpy as np
-from openvino.runtime.op import Parameter, Constant
-from openvino.runtime.opset13 import add, multiply
+from openvino.op import Parameter, Constant
+from openvino.opset13 import add, multiply
 
 import openvino as ov
-from tests.utils.helpers import create_filename_for_test
+from tests.utils.helpers import create_filenames_for_ir
 
 
 def make_constant(values, transposed):
@@ -37,8 +35,8 @@ def make_model(add_consts, mul_consts):
     return ov.Model([mul1], [parameter1])
 
 
-def get_constants(model, request, tmp_path) -> List[Constant]:
-    model_fname, _ = create_filename_for_test(request.node.name, tmp_path)
+def get_constants(model, request, tmp_path) -> list[Constant]:
+    model_fname, _ = create_filenames_for_ir(request.node.name, tmp_path)
     ov.save_model(model, model_fname)
     core = ov.Core()
     restored_model = core.read_model(model_fname)

@@ -1,10 +1,10 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "ov_lpt_models/convolution.hpp"
 
-#include "openvino/opsets/opset1.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
 #include <ov_ops/type_relaxed.hpp>
 #include "low_precision/network_helper.hpp"
 #include "low_precision/rt_info/quantization_granularity_attribute.hpp"
@@ -16,6 +16,8 @@
 #include "low_precision/network_helper.hpp"
 #include "common_test_utils/node_builders/constant.hpp"
 #include "common_test_utils/node_builders/fake_quantize.hpp"
+#include "openvino/op/broadcast.hpp"
+#include "openvino/op/transpose.hpp"
 
 using namespace ov::pass::low_precision;
 
@@ -75,32 +77,32 @@ std::shared_ptr<ov::Model> ConvolutionFunction::getOriginal(
             transposeOnData ? std::make_shared<ov::opset1::Transpose>(convertedWeights, constant) : convertedWeights,
             transposeOnInputLow ?
                 std::make_shared<ov::opset1::Transpose>(
-                    ov::test::utils::deprecated::make_constant(
-                        netPrecision, fqOnWeights.constantShape, fqOnWeights.inputLowValues, fqOnWeights.inputLowValues.empty()),
+                    ov::test::utils::make_constant(
+                        netPrecision, fqOnWeights.constantShape, fqOnWeights.inputLowValues),
                     constant->clone_with_new_inputs({})) :
-                ov::test::utils::deprecated::make_constant(
-                    netPrecision, fqOnWeights.constantShape, fqOnWeights.inputLowValues, fqOnWeights.inputLowValues.empty()),
+                ov::test::utils::make_constant(
+                    netPrecision, fqOnWeights.constantShape, fqOnWeights.inputLowValues),
             transposeOnInputHigh ?
                 std::make_shared<ov::opset1::Transpose>(
-                    ov::test::utils::deprecated::make_constant(
-                        netPrecision, fqOnWeights.constantShape, fqOnWeights.inputHighValues, fqOnWeights.inputHighValues.empty()),
+                    ov::test::utils::make_constant(
+                        netPrecision, fqOnWeights.constantShape, fqOnWeights.inputHighValues),
                     constant->clone_with_new_inputs({})) :
-                ov::test::utils::deprecated::make_constant(
-                    netPrecision, fqOnWeights.constantShape, fqOnWeights.inputHighValues, fqOnWeights.inputHighValues.empty()),
+                ov::test::utils::make_constant(
+                    netPrecision, fqOnWeights.constantShape, fqOnWeights.inputHighValues),
             transposeOnOutputLow ?
                 std::make_shared<ov::opset1::Transpose>(
-                    ov::test::utils::deprecated::make_constant(
-                        netPrecision, fqOnWeights.constantShape, fqOnWeights.outputLowValues, fqOnWeights.outputLowValues.empty()),
+                    ov::test::utils::make_constant(
+                        netPrecision, fqOnWeights.constantShape, fqOnWeights.outputLowValues),
                     constant->clone_with_new_inputs({})) :
-                ov::test::utils::deprecated::make_constant(
-                    netPrecision, fqOnWeights.constantShape, fqOnWeights.outputLowValues, fqOnWeights.outputLowValues.empty()),
+                ov::test::utils::make_constant(
+                    netPrecision, fqOnWeights.constantShape, fqOnWeights.outputLowValues),
             transposeOnOutputHigh ?
                 std::make_shared<ov::opset1::Transpose>(
-                    ov::test::utils::deprecated::make_constant(
-                        netPrecision, fqOnWeights.constantShape, fqOnWeights.outputHighValues, fqOnWeights.outputHighValues.empty()),
+                    ov::test::utils::make_constant(
+                        netPrecision, fqOnWeights.constantShape, fqOnWeights.outputHighValues),
                     constant->clone_with_new_inputs({})) :
-                ov::test::utils::deprecated::make_constant(
-                    netPrecision, fqOnWeights.constantShape, fqOnWeights.outputHighValues, fqOnWeights.outputHighValues.empty()),
+                ov::test::utils::make_constant(
+                    netPrecision, fqOnWeights.constantShape, fqOnWeights.outputHighValues),
             fqOnWeights.quantizationLevel);
     }
 
@@ -258,8 +260,7 @@ std::shared_ptr<ov::Model> ConvolutionFunction::getReference(
     std::shared_ptr<ov::opset1::Constant> weights,
     const ov::builder::subgraph::FakeQuantizeOnWeights fakeQuantizeOnWeights,
     const ov::element::Type precisionAfterOperation,
-    const ov::builder::subgraph::DequantizationOperations& dequantizationAfter,
-    const ov::element::Type precisionAfterDequantization) {
+    const ov::builder::subgraph::DequantizationOperations& dequantizationAfter) {
     auto input = std::make_shared<ov::opset1::Parameter>(inputPrecision, inputShape);
     auto dequantizationBeforeStructure = dequantizationBefore;
     dequantizationBeforeStructure.multiply.outPrecision = netPrecision;

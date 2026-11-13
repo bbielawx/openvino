@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -71,7 +71,7 @@ private:
         const auto in = std::make_shared<op::v0::Parameter>(input_type, input_shape);
         const auto SLOPE = std::make_shared<op::v0::Parameter>(input_type, slope_shape);
         const auto Prelu = std::make_shared<op::v0::PRelu>(in, SLOPE);
-        return std::make_shared<ov::Model>(NodeVector{Prelu}, ParameterVector{in, SLOPE});
+        return std::make_shared<ov::Model>(OutputVector{Prelu}, ParameterVector{in, SLOPE});
     }
 };
 
@@ -84,6 +84,13 @@ std::vector<PreluParams> generatePreluFloatParams() {
     using T = typename element_type_traits<IN_ET>::value_type;
 
     std::vector<PreluParams> preluParams{
+        PreluParams(ov::Shape{},
+                    IN_ET,
+                    std::vector<T>{-4},
+                    std::vector<T>{-2},
+                    ov::Shape{1},
+                    std::vector<T>{0.5},
+                    "scalar_data"),
         PreluParams(ov::Shape{6},
                     IN_ET,
                     std::vector<T>{1, 2, -3, -4, 5, 6},

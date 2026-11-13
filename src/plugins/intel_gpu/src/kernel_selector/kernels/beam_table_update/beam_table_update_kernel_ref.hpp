@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,6 +11,7 @@ namespace kernel_selector {
 struct beam_table_update_params : base_params {
     beam_table_update_params() : base_params(KernelType::BEAM_TABLE_UPDATE) {}
     bool is_state_set = false;
+    int64_t indirect_axis = 0;
 };
 
 class BeamTableUpdateKernelRef : public KernelBaseOpenCL {

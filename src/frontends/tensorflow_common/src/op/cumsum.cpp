@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,13 +12,11 @@
 using namespace std;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_cumsum_op(const NodeContext& node) {
-    default_op_checks(node, 2, {"Cumsum"}, true);
+    default_op_checks(node, 2, {"Cumsum", "CUMSUM"}, true);
+
     auto x = node.get_input(0);
     auto axis = node.get_input(1);
     auto exclusive = node.get_attribute<bool>("exclusive", false);
@@ -26,7 +24,7 @@ OutputVector translate_cumsum_op(const NodeContext& node) {
 
     auto complex_type_mark = as_type_ptr<ComplexTypeMark>(x.get_node_shared_ptr());
     if (complex_type_mark) {
-        x = complex_type_mark->input_value(0);
+        x = complex_type_mark->get_data();
         auto zero = create_same_type_const_scalar<int32_t>(axis, 0);
         auto less_than_zero = make_shared<v1::Less>(axis, zero);
         auto const_one = create_same_type_const_scalar<int32_t>(axis, 1);
@@ -43,7 +41,4 @@ OutputVector translate_cumsum_op(const NodeContext& node) {
     }
     return cum_sum->outputs();
 }
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -21,6 +21,7 @@ REGISTER_FACTORY(v0, Cosh);
 REGISTER_FACTORY(v0, CumSum);
 REGISTER_FACTORY(v0, CTCGreedyDecoder);
 REGISTER_FACTORY(v0, DepthToSpace);
+REGISTER_FACTORY(internal, GroupedDepthToSpace);
 REGISTER_FACTORY(v0, DetectionOutput);
 REGISTER_FACTORY(v0, Elu);
 REGISTER_FACTORY(v0, Erf);
@@ -57,6 +58,7 @@ REGISTER_FACTORY(v0, Sinh);
 REGISTER_FACTORY(v0, Sign);
 REGISTER_FACTORY(v0, SquaredDifference);
 REGISTER_FACTORY(v0, SpaceToDepth);
+REGISTER_FACTORY(internal, GroupedSpaceToDepth);
 REGISTER_FACTORY(v0, Squeeze);
 REGISTER_FACTORY(v0, ShapeOf);
 REGISTER_FACTORY(v0, ShuffleChannels);
@@ -188,6 +190,7 @@ REGISTER_FACTORY(v4, CTCLoss);
 // REGISTER_FACTORY(v4, Range);
 
 // ------------------------------ Supported v5 ops ------------------------------ //
+REGISTER_FACTORY(v5, GRUSequence);
 REGISTER_FACTORY(v5, HSigmoid);
 REGISTER_FACTORY(v5, LogSoftmax);
 REGISTER_FACTORY(v5, LSTMSequence);
@@ -198,7 +201,6 @@ REGISTER_FACTORY(v5, Loop);
 
 // ----------------------------- Unsupported v5 ops ----------------------------- //
 // REGISTER_FACTORY(v5, BatchNormInference);
-// REGISTER_FACTORY(v5, GRUSequence);
 // REGISTER_FACTORY(v5, RNNSequence);
 
 // ------------------------------ Supported v6 ops ------------------------------ //
@@ -245,6 +247,7 @@ REGISTER_FACTORY(v9, ROIAlign);
 REGISTER_FACTORY(v9, RDFT);
 REGISTER_FACTORY(v9, IRDFT);
 REGISTER_FACTORY(v9, Eye);
+REGISTER_FACTORY(v9, NonMaxSuppression);
 
 // ------------------------------ Supported v10 ops ----------------------------- //
 REGISTER_FACTORY(v10, IsFinite);
@@ -263,6 +266,32 @@ REGISTER_FACTORY(v12, ScatterElementsUpdate);
 
 // ------------------------------ Supported v13 ops ----------------------------- //
 REGISTER_FACTORY(v13, Multinomial);
+REGISTER_FACTORY(v13, ScaledDotProductAttention);
+REGISTER_FACTORY(v13, BitwiseAnd);
+REGISTER_FACTORY(v13, BitwiseOr);
+REGISTER_FACTORY(v13, BitwiseXor);
+REGISTER_FACTORY(v13, FakeConvert);
+
+
+// ------------------------------ Supported v15 ops ----------------------------- //
+REGISTER_FACTORY(v15, ROIAlignRotated);
+REGISTER_FACTORY(v15, BitwiseRightShift);
+REGISTER_FACTORY(v15, BitwiseLeftShift);
+REGISTER_FACTORY(v15, SearchSorted);
+REGISTER_FACTORY(v15, STFT);
+REGISTER_FACTORY(v15, Col2Im);
+
+// ------------------------------ Supported v16 ops ----------------------------- //
+REGISTER_FACTORY(v16, ISTFT);
+REGISTER_FACTORY(v16, SparseFillEmptyRows);
+REGISTER_FACTORY(v16, AvgPool);
+REGISTER_FACTORY(v16, OneHot);
+REGISTER_FACTORY(v16, Identity);
+REGISTER_FACTORY(v16, SegmentMax);
+
+// ------------------------------ Supported v17 ops ----------------------------- //
+REGISTER_FACTORY(v17, ErfInv);
+REGISTER_FACTORY(v17, GroupedMatMul);
 
 // --------------------------- Supported internal ops --------------------------- //
 REGISTER_FACTORY(internal, NonMaxSuppressionIEInternal);
@@ -274,9 +303,41 @@ REGISTER_FACTORY(internal, FullyConnectedCompressed);
 REGISTER_FACTORY(internal, RMS);
 REGISTER_FACTORY(internal, GatherCompressed);
 REGISTER_FACTORY(internal, KVCache);
+REGISTER_FACTORY(internal, KVCacheCompressed);
+REGISTER_FACTORY(internal, StatelessKV);
 REGISTER_FACTORY(internal, ReadValue);
+REGISTER_FACTORY(internal, ReadValues);
 REGISTER_FACTORY(internal, Gemm);
-REGISTER_FACTORY(internal, SwiGLU);
+REGISTER_FACTORY(internal, GLU);
 REGISTER_FACTORY(internal, IndirectGemm);
 REGISTER_FACTORY(internal, Convolution);
 REGISTER_FACTORY(internal, Placeholder);
+REGISTER_FACTORY(internal, SDPA);
+REGISTER_FACTORY(internal, IndirectSDPA);
+REGISTER_FACTORY(internal, RoPE);
+REGISTER_FACTORY(internal, DynamicQuantize);
+REGISTER_FACTORY(internal, PagedAttentionExtension);
+REGISTER_FACTORY(internal, PA_KV_Reorder);
+REGISTER_FACTORY(internal, PagedGatedDeltaNet);
+REGISTER_FACTORY(internal, PagedSelectiveSSM);
+REGISTER_FACTORY(internal, LoraSubgraph);
+REGISTER_FACTORY(internal, LoraSubgraphFused);
+REGISTER_FACTORY(internal, MSDA);
+REGISTER_FACTORY(internal, VLSDPA);
+REGISTER_FACTORY(internal, MOECompressed);
+REGISTER_FACTORY(internal, MoERouterFused);
+REGISTER_FACTORY(internal, GatedDeltaNet);
+REGISTER_FACTORY(internal, SelectiveSSM);
+REGISTER_FACTORY(internal, PagedCausalConv1D);
+REGISTER_FACTORY(internal, GatherMatmul);
+REGISTER_FACTORY(internal, GatherMatmulCompressed);
+REGISTER_FACTORY(internal, GroupedMatMulCompressed);
+REGISTER_FACTORY(internal, Atan2);
+REGISTER_FACTORY(internal, Swoosh);
+#ifdef ENABLE_MLIR_FOR_GPU
+REGISTER_FACTORY(internal, MLIR);
+#endif
+REGISTER_FACTORY(internal, PagedQSAIndexerGPU);
+REGISTER_FACTORY(internal, QSAIndexer);
+REGISTER_FACTORY(internal, SparsePA);
+REGISTER_FACTORY(internal, SparseSDPA);

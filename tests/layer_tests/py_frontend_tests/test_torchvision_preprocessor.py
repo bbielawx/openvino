@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
@@ -30,6 +30,22 @@ class Convnet(torch.nn.Module):
 
 
 def _infer_pipelines(test_input, preprocess_pipeline, input_channels=3):
+    retries = 0
+    max_retries = 3
+    last_e = None
+    while retries < max_retries:
+        try:
+            return _infer_pipelines_impl(test_input, preprocess_pipeline, input_channels)
+        except RuntimeError as e:
+            # This is a potentially sporadic issue
+            print(f"An error occurred: {e}. Retrying...")
+            last_e = e
+            retries += 1
+    else:
+        raise RuntimeError("Max retries reached. Function execution failed.") from last_e
+
+
+def _infer_pipelines_impl(test_input, preprocess_pipeline, input_channels=3):
     torch_model = Convnet(input_channels)
     ov_model = convert_model(torch_model)
     core = Core()
@@ -70,21 +86,29 @@ def test_normalize():
     reason="Ticket: 114816",
 )
 @pytest.mark.parametrize(
-    ("target_size", "interpolation", "tolerance"),
+    ("target_size", "current_size", "interpolation", "tolerance"),
     [
-        ((220, 220, 3), transforms.InterpolationMode.NEAREST, 4e-05),
-        ((200, 240, 3), transforms.InterpolationMode.NEAREST, 0.3),  # Ticket 127670
-        ((220, 220, 3), transforms.InterpolationMode.BILINEAR, 4e-03),
-        ((200, 240, 3), transforms.InterpolationMode.BILINEAR, 4e-03),
-        ((220, 220, 3), transforms.InterpolationMode.BICUBIC, 4e-03),
-        ((200, 240, 3), transforms.InterpolationMode.BICUBIC, 4e-03),
+        (224, (220, 220, 3), transforms.InterpolationMode.NEAREST, 4e-05),
+        (224, (200, 240, 3), transforms.InterpolationMode.NEAREST, 4e-05),
+        (224, (220, 220, 3), transforms.InterpolationMode.BILINEAR, 4e-03),
+        (224, (200, 240, 3), transforms.InterpolationMode.BILINEAR, 4e-03),
+        (224, (220, 220, 3), transforms.InterpolationMode.BICUBIC, 4e-03),
+        (224, (200, 240, 3), transforms.InterpolationMode.BICUBIC, 4e-03),
+        ((224, 224), (220, 220, 3), transforms.InterpolationMode.NEAREST, 4e-05),
+        ((224, 224), (200, 240, 3), transforms.InterpolationMode.NEAREST, 4e-05),
+        # integer scale factor -> every sampled coordinate is a rounding tie
+        ((224, 224), (448, 448, 3), transforms.InterpolationMode.NEAREST, 4e-05),
+        ((224, 224), (220, 220, 3), transforms.InterpolationMode.BILINEAR, 4e-03),
+        ((224, 224), (200, 240, 3), transforms.InterpolationMode.BILINEAR, 4e-03),
+        ((224, 224), (220, 220, 3), transforms.InterpolationMode.BICUBIC, 4e-03),
+        ((224, 224), (200, 240, 3), transforms.InterpolationMode.BICUBIC, 4e-03),
     ],
 )
-def test_resize(target_size, interpolation, tolerance):
-    test_input = np.random.randint(255, size=target_size, dtype=np.uint8)
+def test_resize(target_size, current_size, interpolation, tolerance):
+    test_input = np.random.randint(255, size=current_size, dtype=np.uint8)
     preprocess_pipeline = transforms.Compose(
         [
-            transforms.Resize(224, interpolation=interpolation),
+            transforms.Resize(target_size, interpolation=interpolation),
             transforms.ToTensor(),
         ],
     )
@@ -188,6 +212,51 @@ def test_centercrop():
     )
     torch_result, ov_result = _infer_pipelines(test_input, preprocess_pipeline)
     assert np.max(np.absolute(torch_result - ov_result)) < 4e-05
+
+
+@pytest.mark.parametrize(
+    ("image_size", "transforms_list"),
+    [
+        ((64, 64), [transforms.CenterCrop(64)]),
+        ((64, 48), [transforms.CenterCrop((64, 40))]),
+        ((64, 64), [transforms.CenterCrop(63)]),
+        ((64, 64), [transforms.CenterCrop(61)]),
+        ((64, 64), [transforms.CenterCrop(59)]),
+        # H and W offsets round differently: H diff 1 -> 0, W diff 3 -> 2
+        ((65, 64), [transforms.CenterCrop((64, 61))]),
+    ],
+)
+def test_centercrop_matches_torchvision(image_size, transforms_list):
+    test_input = np.random.randint(255, size=(*image_size, 3), dtype=np.uint8)
+    preprocess_pipeline = transforms.Compose([*transforms_list, transforms.ToTensor()])
+    torch_result, ov_result = _infer_pipelines(test_input, preprocess_pipeline)
+    assert torch_result.shape == ov_result.shape
+    assert np.max(np.absolute(torch_result - ov_result)) < 4e-05
+
+
+def test_resize_then_centercrop_shape():
+    # Resize with NEAREST already differs from torchvision in values, so only the cropped shape is compared
+    test_input = np.random.randint(255, size=(260, 300, 3), dtype=np.uint8)
+    preprocess_pipeline = transforms.Compose(
+        [
+            transforms.Resize(224, interpolation=transforms.InterpolationMode.NEAREST),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+        ],
+    )
+    torch_result, ov_result = _infer_pipelines(test_input, preprocess_pipeline)
+    assert torch_result.shape == ov_result.shape
+
+
+@pytest.mark.parametrize("crop_size", [(40, 40), (33, 10), (10, 33)])
+def test_centercrop_larger_than_image_raises(crop_size):
+    ov_model = convert_model(Convnet(3))
+    test_input = np.random.randint(255, size=(32, 32, 3), dtype=np.uint8)
+    preprocess_pipeline = transforms.Compose([transforms.CenterCrop(crop_size), transforms.ToTensor()])
+    with pytest.raises(ValueError, match="CenterCrop"):
+        PreprocessConverter.from_torchvision(
+            model=ov_model, transform=preprocess_pipeline, input_example=Image.fromarray(test_input, "RGB"),
+        )
 
 
 def test_grayscale():

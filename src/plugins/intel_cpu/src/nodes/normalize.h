@@ -1,22 +1,30 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
 #include <node.h>
-#include "onednn/dnnl.h"
+
+#include <algorithm>
 #include <cassert>
+#include <common/primitive_attr.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <oneapi/dnnl/dnnl.hpp>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
+#include <tuple>
+#include <vector>
 
-#include <cpu/ref_eltwise.hpp>
-#include <cpu/ref_depthwise_injector.hpp>
-#include "utils/bfloat16.hpp"
-#include "utils/cpu_utils.hpp"
-#include "openvino/core/parallel.hpp"
+#include "cpu_types.h"
+#include "graph_context.h"
+#include "memory_desc/cpu_memory_desc.h"
+#include "openvino/core/node.hpp"
+#include "openvino/core/type/element_type.hpp"
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+namespace ov::intel_cpu::node {
 #if defined(OPENVINO_ARCH_X86_64)
 struct jit_normalize_config_params {
     bool is_nchw;
@@ -31,28 +39,28 @@ struct jit_normalize_config_params {
 };
 
 struct jit_normalize_call_args {
-    const void *src;
-    void *dst;
-    const float *modulo;
-    const float *fused_factor;
+    const void* src;
+    void* dst;
+    const float* modulo;
+    const float* fused_factor;
     size_t src_stride;
     size_t dst_stride;
     size_t work_amount;
     size_t oc_off;
-    //ptr to array of post op inputs pointers (flat list)
+    // ptr to array of post op inputs pointers (flat list)
     const void** post_op_data;
 };
 
 struct jit_uni_normalize_modulo_kernel {
-    void (*ker_)(const jit_normalize_call_args *);
+    void (*ker_)(const jit_normalize_call_args*) = nullptr;
 
-    void operator()(const jit_normalize_call_args *args) {
+    void operator()(const jit_normalize_call_args* args) const {
         assert(ker_);
         ker_(args);
     }
 
-    jit_uni_normalize_modulo_kernel(jit_normalize_config_params jcp) : ker_(nullptr), jcp_(jcp) {}
-    virtual ~jit_uni_normalize_modulo_kernel() {}
+    explicit jit_uni_normalize_modulo_kernel(jit_normalize_config_params jcp) : jcp_(jcp) {}
+    virtual ~jit_uni_normalize_modulo_kernel() = default;
 
     virtual void create_ker() = 0;
 
@@ -60,58 +68,58 @@ struct jit_uni_normalize_modulo_kernel {
 };
 
 struct jit_uni_normalize_kernel {
-    void (*ker_)(const jit_normalize_call_args *);
+    void (*ker_)(const jit_normalize_call_args*) = nullptr;
 
-    void operator()(const jit_normalize_call_args *args) {
+    void operator()(const jit_normalize_call_args* args) const {
         assert(ker_);
         ker_(args);
     }
 
-    explicit jit_uni_normalize_kernel(jit_normalize_config_params jcp, const dnnl_primitive_attr &attr) : ker_(nullptr), jcp_(jcp), attr_(attr) {}
-    virtual ~jit_uni_normalize_kernel() {}
+    explicit jit_uni_normalize_kernel(jit_normalize_config_params jcp, const dnnl_primitive_attr& attr)
+        : jcp_(jcp),
+          attr_(attr) {}
+    virtual ~jit_uni_normalize_kernel() = default;
 
     virtual void create_ker() = 0;
 
     jit_normalize_config_params jcp_;
-    const dnnl_primitive_attr &attr_;
+    const dnnl_primitive_attr& attr_;
 };
 #endif
 class NormalizeL2 : public Node {
 public:
-    NormalizeL2(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context);
+    NormalizeL2(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context);
 
     static bool isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::string& errorMessage) noexcept;
     void getSupportedDescriptors() override {};
     void initSupportedPrimitiveDescriptors() override;
     void createPrimitive() override;
     bool created() const override;
-    void execute(dnnl::stream strm) override;
+    void execute(const dnnl::stream& strm) override;
     bool canBeInPlace() const override {
         return false;
     }
     bool canFuse(const NodePtr& node) const override;
 
     void prepareParams() override;
-    void executeDynamicImpl(dnnl::stream strm) override;
+    void executeDynamicImpl(const dnnl::stream& strm) override;
 
+    bool neverExecute() const override;
     bool isExecutable() const override;
 
-    enum class NormEpsMode {
-        ADD,
-        MAX
-    };
+    enum class NormEpsMode : uint8_t { ADD, MAX };
 
     struct NormalizeL2Attrs {
         LayoutType layout = LayoutType::ncsp;
         NormEpsMode epsMode = NormEpsMode::ADD;
         bool across_spatial = true;
         bool cornerCase = false;
-        float eps = 1e-10f;
+        float eps = 1e-10F;
 
-        ov::element::Type input_prec = ov::element::undefined;
-        ov::element::Type output_prec = ov::element::undefined;
-        size_t src_data_size = 0lu;
-        size_t dst_data_size = 0lu;
+        ov::element::Type input_prec = ov::element::dynamic;
+        ov::element::Type output_prec = ov::element::dynamic;
+        size_t src_data_size = 0LU;
+        size_t dst_data_size = 0LU;
     };
 
 private:
@@ -120,7 +128,10 @@ private:
     class NormalizeL2Executor {
     public:
         NormalizeL2Executor() = default;
-        virtual void exec(const uint8_t *src_ptr, uint8_t *dst_ptr, const void **post_ops_data) = 0;
+        virtual void exec(const uint8_t* src_ptr,
+                          uint8_t* dst_ptr,
+                          const CpuParallelPtr& cpu_parallel,
+                          const void** post_ops_data) = 0;
         virtual ~NormalizeL2Executor() = default;
 
         static std::shared_ptr<NormalizeL2Executor> getNormalizeL2Executor(const NormalizeL2Attrs& attrs,
@@ -128,7 +139,7 @@ private:
                                                                            const VectorDims& dims);
 
     protected:
-        inline float epsApply(const float &modulo, const NormEpsMode mode, const float eps) const {
+        [[nodiscard]] static float epsApply(const float& modulo, const NormEpsMode mode, const float eps) {
             return mode == NormEpsMode::ADD ? modulo + eps : std::max(modulo, eps);
         }
 
@@ -145,7 +156,7 @@ private:
             VectorDims dims;
         };
 
-        template<typename T>
+        template <typename T>
         struct NormalizeExecutorCreation {
             using src_t = typename std::tuple_element<0, T>::type;
             using dst_t = typename std::tuple_element<1, T>::type;
@@ -156,9 +167,12 @@ private:
         };
     };
 
-    template <typename in_data_t, typename out_data_t> class NormalizeL2CornerCaseExecutor;
-    template <typename in_data_t, typename out_data_t> class NormalizeL2JitExecutor;
-    template <typename in_data_t, typename out_data_t> class NormalizeL2ReferenceExecutor;
+    template <typename in_data_t, typename out_data_t>
+    class NormalizeL2CornerCaseExecutor;
+    template <typename in_data_t, typename out_data_t>
+    class NormalizeL2JitExecutor;
+    template <typename in_data_t, typename out_data_t>
+    class NormalizeL2ReferenceExecutor;
 
     dnnl::primitive_attr kernel_attrs;
 
@@ -173,6 +187,4 @@ private:
     executorPtr execPtr = nullptr;
 };
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

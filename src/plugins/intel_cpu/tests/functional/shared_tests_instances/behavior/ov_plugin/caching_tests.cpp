@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,6 +7,7 @@
 #include "ov_ops/multiclass_nms_ie_internal.hpp"
 #include "ov_ops/nms_ie_internal.hpp"
 #include "ov_ops/nms_static_shape_ie.hpp"
+#include "openvino/op/matrix_nms.hpp"
 
 using namespace ov;
 using namespace ov::test::behavior;
@@ -49,7 +50,7 @@ namespace {
         auto nms = std::make_shared<ov::op::internal::NonMaxSuppressionIEInternal>(boxes, scores, max_output_boxes_per_class,
                 iou_threshold, score_threshold, 0, true, element::i32);
         auto res = std::make_shared<ov::op::v0::Result>(nms);
-        auto func = std::make_shared<Model>(NodeVector{nms}, ParameterVector{boxes, scores});
+        auto func = std::make_shared<Model>(OutputVector{nms}, ParameterVector{boxes, scores});
         return func;
     }
 
@@ -61,7 +62,7 @@ namespace {
         attr.output_type = element::i32;
         auto nms = std::make_shared<ov::op::internal::NmsStaticShapeIE<ov::op::v8::MatrixNms>>(boxes, scores, attr);
         auto res = std::make_shared<ov::op::v0::Result>(nms);
-        auto func = std::make_shared<Model>(NodeVector{nms}, ParameterVector{boxes, scores});
+        auto func = std::make_shared<Model>(OutputVector{nms}, ParameterVector{boxes, scores});
         return func;
     }
 
@@ -72,7 +73,7 @@ namespace {
         attr.output_type = element::i32;
         auto nms = std::make_shared<ov::op::internal::MulticlassNmsIEInternal>(boxes, scores, attr);
         auto res = std::make_shared<ov::op::v0::Result>(nms);
-        auto func = std::make_shared<Model>(NodeVector{nms}, ParameterVector{boxes, scores});
+        auto func = std::make_shared<Model>(OutputVector{nms}, ParameterVector{boxes, scores});
         return func;
     }
 
@@ -112,28 +113,6 @@ namespace {
                                     ::testing::Values(ov::AnyMap{})),
                             CompileModelCacheTestBase::getTestCaseName);
 
-    const std::vector<ov::AnyMap> autoConfigs = {
-        {ov::device::priorities(ov::test::utils::DEVICE_CPU)}
-    };
-
-    INSTANTIATE_TEST_SUITE_P(smoke_Hetero_CachingSupportCase, CompileModelCacheTestBase,
-                            ::testing::Combine(
-                                    ::testing::ValuesIn(CompileModelCacheTestBase::getNumericAnyTypeFunctions()),
-                                    ::testing::ValuesIn(precisionsCPU),
-                                    ::testing::ValuesIn(batchSizesCPU),
-                                    ::testing::Values(ov::test::utils::DEVICE_HETERO),
-                                    ::testing::ValuesIn(autoConfigs)),
-                            CompileModelCacheTestBase::getTestCaseName);
-
-    INSTANTIATE_TEST_SUITE_P(smoke_Hetero_CachingSupportCase_Float, CompileModelCacheTestBase,
-                            ::testing::Combine(
-                                    ::testing::ValuesIn(CompileModelCacheTestBase::getFloatingPointOnlyFunctions()),
-                                    ::testing::ValuesIn(floatPrecisionsCPU),
-                                    ::testing::ValuesIn(batchSizesCPU),
-                                    ::testing::Values(ov::test::utils::DEVICE_HETERO),
-                                    ::testing::ValuesIn(autoConfigs)),
-                            CompileModelCacheTestBase::getTestCaseName);
-
     const std::vector<ov::AnyMap> CpuConfigs = {
         {ov::num_streams(2)},
     };
@@ -156,4 +135,8 @@ namespace {
                              CompileModelLoadFromCacheTest,
                              ::testing::Combine(::testing::ValuesIn(TestCpuTargets), ::testing::ValuesIn(CpuConfigs)),
                              CompileModelLoadFromCacheTest::getTestCaseName);
+    INSTANTIATE_TEST_SUITE_P(smoke_CachingSupportCase_CPU,
+                             CompileModelWithCacheEncryptionTest,
+                             ::testing::ValuesIn(TestCpuTargets),
+                             CompileModelWithCacheEncryptionTest::getTestCaseName);
 } // namespace

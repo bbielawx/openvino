@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -134,13 +134,20 @@ public:
      */
     ov::SoPtr<ov::IRemoteContext> get_context() const;
 
-    virtual ~ICompiledModel() = default;
+    /**
+     * @brief Release intermediate memory
+     *
+     */
+    virtual void release_memory();
+
+    virtual ~ICompiledModel();
 
 private:
     std::shared_ptr<const ov::IPlugin> m_plugin;
     std::vector<ov::Output<const ov::Node>> m_inputs;
     std::vector<ov::Output<const ov::Node>> m_outputs;
     ov::SoPtr<IRemoteContext> m_context;
+    std::shared_ptr<const void> m_weight_context;
 
     std::shared_ptr<ov::threading::ITaskExecutor> m_task_executor = nullptr;      //!< Holds a task executor
     std::shared_ptr<ov::threading::ITaskExecutor> m_callback_executor = nullptr;  //!< Holds a callback executor

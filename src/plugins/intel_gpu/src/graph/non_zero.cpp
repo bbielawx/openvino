@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -56,14 +56,12 @@ GPU_DEFINE_PRIMITIVE_TYPE_ID(gather_nonzero)
 layout gather_nonzero_inst::calc_output_layout(gather_nonzero_node const& node, kernel_impl_params const& impl_param) {
     assert(static_cast<bool>(node.get_primitive()->output_data_types[0]) == false &&
            "Output data type forcing is not supported for gather_nonzero_node!");
-    if (impl_param.memory_deps.count(1)) {
+    auto rank = impl_param.get_input_layout(0).get_partial_shape().rank().get_length();
+    if (impl_param.memory_deps.count(1) != 0u) {
         auto out_size = read_vector<int64_t>(impl_param.memory_deps.at(1), impl_param.get_stream());
-        ov::Shape output_shape(out_size.begin(), out_size.end());
-        ov::PartialShape output_pshape(output_shape);
-        return layout{std::move(output_pshape), cldnn::data_types::i32, cldnn::format::bfyx};
-    } else {
-        return layout{ov::PartialShape({ov::Dimension::dynamic(), ov::Dimension::dynamic(), 1, 1}), cldnn::data_types::i32, cldnn::format::bfyx};
+        return layout{{rank, out_size[0], 1, 1}, cldnn::data_types::i32, cldnn::format::bfyx};
     }
+    return layout{ov::PartialShape({ov::Dimension(rank), ov::Dimension::dynamic(), 1, 1}), cldnn::data_types::i32, cldnn::format::bfyx};
 }
 
 template<typename ShapeType>
@@ -78,9 +76,8 @@ std::vector<layout> gather_nonzero_inst::calc_output_layouts(gather_nonzero_node
         // output shape of nonzero is [input_rank, count_non_zero]
         auto out_layout = layout{{rank, out_size[0]}, cldnn::data_types::i32, cldnn::format::bfyx};
         return {out_layout};
-    } else {
-        return {layout{ov::PartialShape({ov::Dimension(rank), ov::Dimension::dynamic()}), cldnn::data_types::i32, cldnn::format::bfyx}};
     }
+    return {layout{ov::PartialShape({ov::Dimension(rank), ov::Dimension::dynamic()}), cldnn::data_types::i32, cldnn::format::bfyx}};
 }
 
 std::string gather_nonzero_inst::to_string(gather_nonzero_node const& node) {
@@ -99,6 +96,6 @@ std::string gather_nonzero_inst::to_string(gather_nonzero_node const& node) {
     return primitive_description.str();
 }
 
-gather_nonzero_inst::typed_primitive_inst(network& network, gather_nonzero_node const& node) : parent(network, node, false) {}
+gather_nonzero_inst::typed_primitive_inst(network& network, gather_nonzero_node const& node) : parent(network, node) {}
 
 }  // namespace cldnn

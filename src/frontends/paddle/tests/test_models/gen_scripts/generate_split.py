@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 #
@@ -15,7 +15,7 @@ def split(name : str, x, attrs : dict):
 
     with paddle.static.program_guard(paddle.static.Program(), paddle.static.Program()):
         node_x = paddle.static.data(name='x', shape=x.shape, dtype=x.dtype)
-        
+
         if paddle.__version__ >= '2.0.0':
             out = paddle.split(node_x, num_or_sections=attrs['num_or_sections'], axis=attrs['axis'])
         else:
@@ -31,7 +31,7 @@ def split(name : str, x, attrs : dict):
         print("outputs: ", type(outs),len(outs))
         print("out: ", type(out), len(out))
 
-        saveModel(name, exe, feedkeys=['x'], fetchlist=out, inputs=[x], outputs=outs, target_dir=sys.argv[1])
+        saveModel(name, exe, feed_vars=[node_x], fetchlist=out, inputs=[x], outputs=outs, target_dir=sys.argv[1])
 
     return outs[0]
 
@@ -59,7 +59,7 @@ def split_dim_tensor(name : str, x, attrs : dict, dim):
         print("outputs: ", type(outs),len(outs))
         print("out: ", type(out), len(out))
 
-        saveModel(name, exe, feedkeys=['x'], fetchlist=out, inputs=[x], outputs=outs, target_dir=sys.argv[1])
+        saveModel(name, exe, feed_vars=[node_x], fetchlist=out, inputs=[x], outputs=outs, target_dir=sys.argv[1])
 
     return outs[0]
 
@@ -87,7 +87,7 @@ def split_test_list_tensor(name : str, x, attrs : dict):
         print("outputs: ", type(outs),len(outs))
         print("out: ", type(out), len(out))
 
-        saveModel(name, exe, feedkeys=['x'], fetchlist=out, inputs=[x], outputs=outs, target_dir=sys.argv[1])
+        saveModel(name, exe, feed_vars=[node_x], fetchlist=out, inputs=[x], outputs=outs, target_dir=sys.argv[1])
 
     return outs[0]
 

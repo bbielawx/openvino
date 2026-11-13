@@ -1,5 +1,3 @@
-.. {#openvino_docs_Runtime_Inference_Modes_Overview}
-
 Inference Devices and Modes
 ============================
 
@@ -12,40 +10,36 @@ Inference Devices and Modes
    inference-devices-and-modes/gpu-device
    inference-devices-and-modes/npu-device
    inference-devices-and-modes/auto-device-selection
-   inference-devices-and-modes/multi-device
    inference-devices-and-modes/hetero-execution
    inference-devices-and-modes/automatic-batching
    inference-devices-and-modes/query-device-properties
 
 
-The OpenVINO runtime offers multiple inference modes to enable the best hardware utilization under
-different conditions:
+The OpenVINO™ Runtime offers several inference modes to optimize hardware usage.
+You can run inference on a single device or use automated modes that manage multiple devices:
 
 | **single-device inference**
-|    Define just one device responsible for the entire inference workload. It supports a range of
-     processors by means of the following plugins embedded in the Runtime library:
+|    This mode runs all inference on one selected device. The OpenVINO Runtime includes 
+     built-in plugins that support the following devices:
 |    :doc:`CPU <inference-devices-and-modes/cpu-device>`
 |    :doc:`GPU <inference-devices-and-modes/gpu-device>`
 |    :doc:`NPU <inference-devices-and-modes/npu-device>`
 
 | **automated inference modes**
-|    Assume certain level of automation in selecting devices for inference. They may potentially
-     increase your deployed solution's performance and portability. The automated modes are:
+|    These modes automate device selection and workload distribution, potentially increasing 
+     performance and portability:
 |    :doc:`Automatic Device Selection (AUTO) <inference-devices-and-modes/auto-device-selection>`
-|    :doc:`Multi-Device Execution (MULTI) <inference-devices-and-modes/multi-device>`
-|    :doc:`Heterogeneous Execution (HETERO) <inference-devices-and-modes/hetero-execution>`
-|    :doc:`Automatic Batching Execution (Auto-batching) <inference-devices-and-modes/automatic-batching>`
+|    :doc:`Heterogeneous Execution (HETERO) <inference-devices-and-modes/hetero-execution>`  across different device types
+|    :doc:`Automatic Batching Execution (Auto-batching) <inference-devices-and-modes/automatic-batching>`: automatically groups inference requests to improve throughput
 
-
+Learn how to configure devices in the :doc:`Query device properties <inference-devices-and-modes/query-device-properties>` article.
 
 Enumerating Available Devices
 #######################################
 
-The OpenVINO Runtime API features dedicated methods of enumerating devices and their capabilities.
-Note that beyond the typical "CPU" or "GPU" device names, more qualified names are used when multiple
-instances of a device are available (iGPU is always GPU.0).
-The output you receive may look like this (truncated to device names only, two GPUs are listed
-as an example):
+The OpenVINO Runtime API provides methods to list available devices and their details.
+When there are multiple instances of a device, they get specific names like GPU.0 for iGPU.
+Here is an example of the output with device names, including two GPUs:
 
 .. code-block:: sh
 
@@ -58,29 +52,36 @@ as an example):
        Device: GPU.1
 
 
-You may see how to obtain this information in the :doc:`Hello Query Device Sample <../../learn-openvino/openvino-samples/hello-query-device>`.
-Here is an example of a simple programmatic way to enumerate the devices and use them with the
-multi-device mode:
+See the :doc:`Hello Query Device Sample <../../get-started/learn-openvino/openvino-samples/hello-query-device>`
+for more details.
+
+Below is an example showing how to list available devices and use them with multi-device mode:
 
 .. tab-set::
 
    .. tab-item:: C++
       :sync: cpp
 
-      .. doxygensnippet:: docs/snippets/MULTI2.cpp
+      .. doxygensnippet:: docs/articles_en/assets/snippets/MULTI2.cpp
          :language: cpp
          :fragment: [part2]
 
-With two GPU devices used in one setup, the explicit configuration would be "MULTI:GPU.1,GPU.0".
-Accordingly, the code that loops over all available devices of the "GPU" type only is as follows:
+If you have two GPU devices, you can specify them explicitly as “MULTI:GPU.1,GPU.0”. 
+Here is how to list and use all available GPU devices:
 
 .. tab-set::
 
    .. tab-item:: C++
       :sync: cpp
 
-      .. doxygensnippet:: docs/snippets/MULTI3.cpp
+      .. doxygensnippet:: docs/articles_en/assets/snippets/MULTI3.cpp
          :language: cpp
          :fragment: [part3]
 
+Additional Resources
+####################
 
+* `OpenVINO™ Runtime API Tutorial <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/openvino-api>`__
+* `AUTO Device Tutorial <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/auto-device>`__
+* `GPU Device Tutorial <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/gpu-device>`__
+* `NPU Device Tutorial <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/hello-npu>`__

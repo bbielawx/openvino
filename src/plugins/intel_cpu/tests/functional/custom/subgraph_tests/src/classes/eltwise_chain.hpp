@@ -1,14 +1,18 @@
-// Copyright (C) 2018-2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <tuple>
 #include <string>
+#include <variant>
 #include <vector>
 #include <memory>
+#include <iostream>
 
+#include "common_test_utils/node_builders/comparison.hpp"
 #include "common_test_utils/node_builders/constant.hpp"
 #include "common_test_utils/node_builders/fake_quantize.hpp"
+#include "common_test_utils/node_builders/activation.hpp"
 #include "common_test_utils/common_utils.hpp"
 #include "common_test_utils/ov_tensor_utils.hpp"
 #include "common_test_utils/node_builders/eltwise.hpp"
@@ -18,11 +22,35 @@
 namespace ov {
 namespace test {
 
+enum class PostNode : uint8_t {
+    EMPTY,
+    QUANTIZE,
+    SOFTSIGN
+};
+
+inline std::ostream& operator<<(std::ostream& os, PostNode node) {
+    switch (node) {
+        case PostNode::EMPTY:    os << "EMPTY"; break;
+        case PostNode::QUANTIZE: os << "QUANTIZE"; break;
+        case PostNode::SOFTSIGN: os << "SOFTSIGN"; break;
+        default:                 os << "UNKNOWN"; break;
+    }
+    return os;
+}
+
+// An operation of the chain. A comparison produces a boolean, so it can only be the last one.
+using EltwiseChainOp = std::variant<ov::test::utils::EltwiseTypes, ov::test::utils::ComparisonTypes>;
+
+inline std::ostream& operator<<(std::ostream& os, const EltwiseChainOp& op) {
+    std::visit([&os](auto type) { os << type; }, op);
+    return os;
+}
+
 typedef std::tuple<std::vector<InputShape>, // Input shapes
         ov::test::utils::InputLayerType,    // Secondary input type
         std::vector<ElementType>,           // Input precisions
-        std::vector<ov::test::utils::EltwiseTypes>,  // Eltwise operations
-        bool,                               // With quantization
+        std::vector<EltwiseChainOp>,        // Eltwise operations
+        PostNode,                           // { QA | SoftSign | Nothing }
         ov::element::Type,                  // Conversion type
         std::string                         // Device name
         >
@@ -42,9 +70,9 @@ protected:
 namespace eltwise_chain {
 std::vector<std::vector<ov::Shape>> inputShapes();
 std::vector<std::vector<ElementType>> inputPrecisions();
-std::vector<std::vector<ov::test::utils::EltwiseTypes>> eltwiseOps();
+std::vector<std::vector<EltwiseChainOp>> eltwiseOps();
 std::vector<std::vector<ov::Shape>> inputShapesConvert();
-std::vector<std::vector<ov::test::utils::EltwiseTypes>> eltwiseOpsConvert();
+std::vector<std::vector<EltwiseChainOp>> eltwiseOpsConvert();
 std::vector<std::vector<ElementType>> inputPrecisionsConvert();
 }  // namespace eltwise_chain
 }  // namespace test

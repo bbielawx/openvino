@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -111,7 +111,6 @@ namespace testValues1 {
 const std::vector<int> opset_version = {1, 7, 8};
 
 const std::vector<ov::PartialShape> inputShapes3D = {{3, 3, 4}, {-1, -1, -1}};
-
 const std::vector<GatherTransformationTestValues> testValues = {
     // U8: per-tensor quantization
     {{1},
@@ -149,13 +148,13 @@ const std::vector<GatherTransformationTestValues> testValues = {
      LayerTransformation::createParamsU8I8(),
      {ov::element::u8,
       {{ov::element::f32},
-       {{128.f}, element::undefined, {1, 3, 1}, false, 1ul, element::u8, true},
+       {{128.f}, element::dynamic, {1, 3, 1}, false, 1ul, element::u8, true},
        {{0.1f}, ov::element::f32, {1, 3, 1}}}},
      {ov::element::u8,
       {{}, {}, {}},
       ov::element::u8,
       {{ov::element::f32},
-       {{128.f}, element::undefined, {1, 3, 1}, false, 1ul, element::u8, true},
+       {{128.f}, element::dynamic, {1, 3, 1}, false, 1ul, element::u8, true},
        {{0.1f}, ov::element::f32, {1, 3, 1}}}}},
     // U8: per-channel quantization, gather axis match with channel
     {{1},
@@ -186,6 +185,22 @@ const std::vector<GatherTransformationTestValues> testValues = {
       {{}, {}, {}},
       ov::element::u8,
       {{ov::element::f32}, {{64}, ov::element::f32, {}}, {{0.2f}, ov::element::f32, {}}}}},
+    // U8: rank-1 (model-declared, per-channel) dequantization constant, gather axis at the last
+    // dimension == channel. The constant reaches LPT unpadded, so the transform must left-pad it
+    // up to the data rank instead of indexing the dequantization shape out of bounds.
+    {{1},
+     {0},
+     {2},  // axis: last dimension
+     std::int64_t{0},
+     LayerTransformation::createParamsU8I8(),
+     {ov::element::u8,
+      {{ov::element::f32},
+       {{128, 64, 32, 16}, ov::element::f32, ov::Shape{4}},
+       {{0.4f, 0.3f, 0.2f, 0.1f}, ov::element::f32, ov::Shape{4}}}},
+     {ov::element::u8,
+      {{}, {}, {}},
+      ov::element::u8,
+      {{ov::element::f32}, {{128}, ov::element::f32, {}}, {{0.4f}, ov::element::f32, {}}}}},
     // U8: per-channel quantization, gather axis and channel doesn't match
     {{1},
      {0},

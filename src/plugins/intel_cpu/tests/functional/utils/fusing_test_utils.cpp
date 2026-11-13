@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,12 +8,9 @@
 
 namespace CPUTestUtils {
 
-std::string CpuTestWithFusing::getTestCaseName(fusingSpecificParams params) {
+std::string CpuTestWithFusing::getTestCaseName(const fusingSpecificParams& params) {
+    const auto& [postOpMgrPtr, fusedOps] = params;
     std::ostringstream result;
-    std::vector<std::string> fusedOps;
-    std::shared_ptr<postOpMgr> postOpMgrPtr;
-    std::tie(postOpMgrPtr, fusedOps) = params;
-
     if (postOpMgrPtr) {
         auto postOpsNames = postOpMgrPtr->getFusedOpsNames();
         if (!postOpsNames.empty()) {
@@ -58,7 +55,11 @@ void CpuTestWithFusing::CheckFusingResults(const std::shared_ptr<const ov::Model
             size_t pos = 0;
             for (const auto& fusedOp : fusedOps) {
                 pos = originalLayersNames.find(fusedOp, checkFusingPosition ? pos : 0);
-                ASSERT_TRUE(pos != std::string::npos) << "Fused op " << fusedOp << " has not been found!";
+                if (expectPostOpsToBeFused) {
+                    ASSERT_TRUE(pos != std::string::npos) << "Fused op " << fusedOp << " has not been found!";
+                } else {
+                    ASSERT_TRUE(pos == std::string::npos) << "op" << fusedOp << " should not be fused!";
+                }
             }
         }
     }

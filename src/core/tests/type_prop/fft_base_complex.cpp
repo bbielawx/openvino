@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,8 +7,10 @@
 #include "common_test_utils/test_assertions.hpp"
 #include "common_test_utils/type_prop.hpp"
 #include "gmock/gmock.h"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/dft.hpp"
+#include "openvino/op/idft.hpp"
 #include "openvino/openvino.hpp"
-#include "openvino/opsets/opset12.hpp"
 
 namespace fft_base_test {
 using namespace std;
@@ -432,12 +434,12 @@ TYPED_TEST_P(FFTInvalidInput, invalid_axes) {
     auto axes = op::v0::Constant::create(element::i64, Shape{1}, {3});
     OV_EXPECT_THROW(std::ignore = this->make_op(data, axes),
                     ov::Exception,
-                    HasSubstr("Parameter axis 3 out of the tensor rank range [-2, 1]"));
+                    HasSubstr("Axis 3 out of the tensor rank range [-2, 1]"));
 
     axes = op::v0::Constant::create(element::i64, Shape{1}, {-3});
     OV_EXPECT_THROW(std::ignore = this->make_op(data, axes),
                     ov::Exception,
-                    HasSubstr("Parameter axis -3 out of the tensor rank range [-2, 1]"));
+                    HasSubstr("Axis -3 out of the tensor rank range [-2, 1]"));
 
     axes = op::v0::Constant::create(element::i64, Shape{2}, {0, -2});
     OV_EXPECT_THROW(std::ignore = this->make_op(data, axes), ov::Exception, HasSubstr("Each axis must be unique"));
@@ -445,7 +447,7 @@ TYPED_TEST_P(FFTInvalidInput, invalid_axes) {
     axes = op::v0::Constant::create(element::i64, Shape{1}, {2});
     OV_EXPECT_THROW(std::ignore = this->make_op(data, axes),
                     ov::Exception,
-                    HasSubstr("Parameter axis 2 out of the tensor rank range [-2, 1]"));
+                    HasSubstr("Axis 2 out of the tensor rank range [-2, 1]"));
 
     axes = op::v0::Constant::create(element::i64, Shape{1, 2}, {0, 1});
     OV_EXPECT_THROW(std::ignore = this->make_op(data, axes), ov::Exception, HasSubstr("Axes input must be 1D tensor."));

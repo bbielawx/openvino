@@ -1,20 +1,23 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <gtest/gtest.h>
 
 #include "common_test_utils/graph_comparator.hpp"
+#include "common_test_utils/ov_test_utils.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/convert.hpp"
 #include "openvino/op/convolution.hpp"
 #include "openvino/op/gru_cell.hpp"
 #include "openvino/op/multiply.hpp"
 #include "openvino/op/negative.hpp"
+#include "openvino/op/relu.hpp"
 #include "openvino/op/squeeze.hpp"
 #include "openvino/op/tensor_iterator.hpp"
 #include "openvino/op/unsqueeze.hpp"
 #include "openvino/op/util/variable.hpp"
+#include "openvino/runtime/tensor.hpp"
 
 TEST(GraphComparatorTests, AllEnablePositiveCheck) {
     FunctionsComparator comparator(FunctionsComparator::no_default());
@@ -23,7 +26,7 @@ TEST(GraphComparatorTests, AllEnablePositiveCheck) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
         function = function_ref->clone();
     }
     comparator.enable(FunctionsComparator::NAMES)
@@ -45,13 +48,13 @@ TEST(GraphComparatorTests, CheckbyDefault) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto input2 = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto add = std::make_shared<ov::op::v1::Add>(input, input2);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input, input2});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input, input2});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {12});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     auto res = comparator.compare(function, function_ref);
     ASSERT_FALSE(res.valid) << res.message;
@@ -64,7 +67,7 @@ TEST(GraphComparatorTests, CheckResultsNumber) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto input2 = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto add = std::make_shared<ov::op::v1::Add>(input, input2);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input, input2});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input, input2});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
@@ -88,7 +91,7 @@ TEST(GraphComparatorTests, NamesCheckPositive) {
         constant->set_friendly_name("new_name2");
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
         add->set_friendly_name("new_name3");
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
@@ -97,7 +100,7 @@ TEST(GraphComparatorTests, NamesCheckPositive) {
         constant->set_friendly_name("new_name2");
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
         add->set_friendly_name("new_name3");
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::NAMES).enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -114,7 +117,7 @@ TEST(GraphComparatorTests, NamesCheckNegative) {
         constant->set_friendly_name("new_name2");
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
         add->set_friendly_name("new_name3");
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
@@ -123,7 +126,7 @@ TEST(GraphComparatorTests, NamesCheckNegative) {
         constant->set_friendly_name("new_name2");
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
         add->set_friendly_name("new_name3_different");
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::NAMES).enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -137,13 +140,13 @@ TEST(GraphComparatorTests, ConstCheckWithoutEnable) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {12});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -157,13 +160,13 @@ TEST(GraphComparatorTests, ConstCheckNegative) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {12});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::CONST_VALUES).enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -177,7 +180,7 @@ TEST(GraphComparatorTests, TensorNamesCheckNegative) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
         function = function_ref->clone();
         add->get_input_tensor(0).set_names({"new_name"});
     }
@@ -193,7 +196,7 @@ TEST(GraphComparatorTests, TensorNamesCheckWithoutEnable) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
         function = function_ref->clone();
         add->get_input_tensor(0).set_names({"new_name"});
     }
@@ -218,7 +221,7 @@ TEST(GraphComparatorTests, CheckAttributesNegative) {
                                                               ov::CoordinateDiff{1, 1},
                                                               ov::CoordinateDiff{1, 1},
                                                               ov::Strides{1, 1});
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{conv}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{conv}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::Shape{1, 3, 12, 12});
@@ -233,7 +236,7 @@ TEST(GraphComparatorTests, CheckAttributesNegative) {
                                                               ov::CoordinateDiff{0, 0},
                                                               ov::CoordinateDiff{0, 0},
                                                               ov::Strides{1, 1});
-        function = std::make_shared<ov::Model>(ov::NodeVector{conv}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{conv}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::ATTRIBUTES).enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -247,13 +250,13 @@ TEST(GraphComparatorTests, CheckPrecisionsNegative) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::f32, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::PRECISIONS).enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -267,13 +270,13 @@ TEST(GraphComparatorTests, CheckPrecisionsWithoutEnable) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::f32, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -288,13 +291,13 @@ TEST(GraphComparatorTests, CheckRTInfo) {
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
         add->get_rt_info()["my_info"] = 42;
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::RUNTIME_KEYS).enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -308,14 +311,14 @@ TEST(GraphComparatorTests, CheckRTInfoReverse) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
         add->get_rt_info()["my_info"] = 42;
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::RUNTIME_KEYS).enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -330,13 +333,13 @@ TEST(GraphComparatorTests, CheckRTInfoInput) {
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
         add->input(0).get_rt_info()["my_info"] = 42;
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::RUNTIME_KEYS).enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -351,13 +354,13 @@ TEST(GraphComparatorTests, CheckRTInfoOutput) {
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
         add->output(0).get_rt_info()["my_info"] = 42;
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{3});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {3}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::RUNTIME_KEYS).enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -401,7 +404,7 @@ TEST(GraphComparatorTests, CheckTensorIteratorPositive) {
         auto out1 = tensor_iterator->get_concatenated_slices(res_2, 0, 1, 1, -1, 0);
 
         auto res_ti_1 = std::make_shared<ov::op::v0::Result>(tensor_iterator->output(1));
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{res_ti_1}, ov::ParameterVector{X, Y});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{res_ti_1}, ov::ParameterVector{X, Y});
         function = function_ref->clone();
     }
     comparator.enable(FunctionsComparator::NODES);
@@ -563,7 +566,7 @@ TEST(GraphComparatorTests, DisableCheck) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
         function = function_ref->clone();
     }
     comparator.enable(FunctionsComparator::NODES);
@@ -579,13 +582,13 @@ TEST(GraphComparatorTests, CheckAccuracyPositive) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::ACCURACY);
     auto res = comparator.compare(function, function_ref);
@@ -599,13 +602,13 @@ TEST(GraphComparatorTests, CheckAccuracyNegative) {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {1}, {12});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
         auto constant = ov::op::v0::Constant::create(ov::element::i64, {1}, {200});
         auto add = std::make_shared<ov::op::v1::Add>(input, constant);
-        function = std::make_shared<ov::Model>(ov::NodeVector{add}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{add}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::ACCURACY);
     auto res = comparator.compare(function, function_ref);
@@ -628,7 +631,7 @@ TEST(GraphComparatorTests, CheckAccuracyNotEnabled) {
                                                               ov::CoordinateDiff{1, 1},
                                                               ov::CoordinateDiff{1, 1},
                                                               ov::Strides{1, 1});
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{conv}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{conv}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::Shape{1, 3, 12, 12});
@@ -643,7 +646,7 @@ TEST(GraphComparatorTests, CheckAccuracyNotEnabled) {
                                                               ov::CoordinateDiff{1, 1},
                                                               ov::CoordinateDiff{1, 1},
                                                               ov::Strides{1, 1});
-        function = std::make_shared<ov::Model>(ov::NodeVector{conv}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{conv}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::NODES);
     auto res = comparator.compare(function, function_ref);
@@ -659,7 +662,7 @@ TEST(GraphComparatorTests, CheckConsumersCountPositive) {
         auto add_1 = std::make_shared<ov::op::v1::Add>(input, constant);
         auto add_2 = std::make_shared<ov::op::v1::Add>(input, constant);
         auto mul = std::make_shared<ov::op::v1::Multiply>(add_1, add_2);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{mul}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{mul}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
@@ -667,7 +670,7 @@ TEST(GraphComparatorTests, CheckConsumersCountPositive) {
         auto add_1 = std::make_shared<ov::op::v1::Add>(input, constant);
         auto add_2 = std::make_shared<ov::op::v1::Add>(input, constant);
         auto mul = std::make_shared<ov::op::v1::Multiply>(add_1, add_2);
-        function = std::make_shared<ov::Model>(ov::NodeVector{mul}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{mul}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::NODES).enable(FunctionsComparator::CONSUMERS_COUNT);
     auto res = comparator.compare(function, function_ref);
@@ -683,7 +686,7 @@ TEST(GraphComparatorTests, CheckConsumersCountNegative) {
         auto add_1 = std::make_shared<ov::op::v1::Add>(input, constant);
         auto add_2 = std::make_shared<ov::op::v1::Add>(input, constant);
         auto mul = std::make_shared<ov::op::v1::Multiply>(add_1, add_2);
-        function_ref = std::make_shared<ov::Model>(ov::NodeVector{mul}, ov::ParameterVector{input});
+        function_ref = std::make_shared<ov::Model>(ov::OutputVector{mul}, ov::ParameterVector{input});
     }
     {
         auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::Shape{1});
@@ -692,9 +695,36 @@ TEST(GraphComparatorTests, CheckConsumersCountNegative) {
         auto add_1 = std::make_shared<ov::op::v1::Add>(input, constant_1);
         auto add_2 = std::make_shared<ov::op::v1::Add>(input, constant_2);
         auto mul = std::make_shared<ov::op::v1::Multiply>(add_1, add_2);
-        function = std::make_shared<ov::Model>(ov::NodeVector{mul}, ov::ParameterVector{input});
+        function = std::make_shared<ov::Model>(ov::OutputVector{mul}, ov::ParameterVector{input});
     }
     comparator.enable(FunctionsComparator::NODES).enable(FunctionsComparator::CONSUMERS_COUNT);
     auto res = comparator.compare(function, function_ref);
     ASSERT_FALSE(res.valid) << res.message;
+}
+
+TEST(InferOnTemplateTests, ShapeMismatchDiagnosticContainsPortInfo) {
+    auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::Shape{4});
+    input->set_friendly_name("my_param");
+    input->get_output_tensor(0).set_names({"my_tensor"});
+    auto relu = std::make_shared<ov::op::v0::Relu>(input);
+    auto model = std::make_shared<ov::Model>(ov::OutputVector{relu}, ov::ParameterVector{input});
+
+    ov::Tensor wrong_shape_tensor(ov::element::f32, ov::Shape{8});
+    std::map<std::shared_ptr<ov::Node>, ov::Tensor> inputs{{input, wrong_shape_tensor}};
+
+    std::string what;
+    try {
+        ov::test::utils::infer_on_template(model, inputs);
+        FAIL() << "infer_on_template was expected to throw on shape mismatch";
+    } catch (const std::exception& ex) {
+        what = ex.what();
+    }
+
+    EXPECT_NE(what.find("infer_on_template: set_tensor failed"), std::string::npos) << what;
+    EXPECT_NE(what.find("my_param"), std::string::npos) << what;
+    EXPECT_NE(what.find("my_tensor"), std::string::npos) << what;
+    EXPECT_NE(what.find("expected_shape="), std::string::npos) << what;
+    EXPECT_NE(what.find("got_tensor_shape="), std::string::npos) << what;
+    EXPECT_NE(what.find("Compiled model inputs:"), std::string::npos) << what;
+    EXPECT_NE(what.find("Original error:"), std::string::npos) << what;
 }

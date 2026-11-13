@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -50,8 +50,13 @@ public:
         buffer << traits._order;
         buffer << traits.order;
         buffer << traits.internal_order;
+        buffer << traits.desc_size;
         buffer << traits.block_sizes.size();
-        for (auto& block_size : traits.block_sizes) {
+        for (const auto& block_size : traits.block_sizes) {
+            buffer << block_size.first;
+            buffer << block_size.second;
+        }
+        for (const auto& block_size : traits.logic_block_sizes) {
             buffer << block_size.first;
             buffer << block_size.second;
         }
@@ -70,6 +75,7 @@ public:
         buffer >> traits._order;
         buffer >> traits.order;
         buffer >> traits.internal_order;
+        buffer >> traits.desc_size;
 
         size_t num_block_size;
         buffer >> num_block_size;
@@ -80,6 +86,11 @@ public:
             buffer >> axis_idx;
             traits.block_sizes.push_back(std::make_pair(blk_size, axis_idx));
         }
+        for (size_t i = 0; i < num_block_size; i++) {
+            buffer >> blk_size;
+            buffer >> axis_idx;
+            traits.logic_block_sizes.push_back(std::make_pair(blk_size, axis_idx));
+        }
     }
 };
 
@@ -89,8 +100,9 @@ public:
     static void save(BufferType& buffer, const cldnn::format& format) {
         cldnn::format::type fmt_type = format;
         buffer << make_data(&fmt_type, sizeof(cldnn::format::type));
-        if (fmt_type == cldnn::format::custom)
+        if (fmt_type == cldnn::format::custom) {
             buffer << format.traits();
+        }
     }
 };
 

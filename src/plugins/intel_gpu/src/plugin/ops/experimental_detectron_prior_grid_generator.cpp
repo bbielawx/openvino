@@ -1,32 +1,21 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include <intel_gpu/plugin/common_utils.hpp>
 #include "intel_gpu/plugin/program_builder.hpp"
 #include <intel_gpu/primitives/experimental_detectron_prior_grid_generator.hpp>
 #include "openvino/op/experimental_detectron_prior_grid_generator.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 namespace {
-cldnn::tensor mkTensor(const ov::Shape& shape) {
-    if (shape.size() == 4)
-        return cldnn::tensor{cldnn::batch(shape[0]), cldnn::feature(shape[1]), cldnn::spatial(4, shape[2])};
-    else
-        return cldnn::tensor{cldnn::spatial(4, shape[0])};
-}
 
 static void CreateExperimentalDetectronPriorGridGeneratorOp(
     ProgramBuilder& p,
     const std::shared_ptr<ov::op::v6::ExperimentalDetectronPriorGridGenerator>& op) {
     validate_inputs_count(op, {3});
-    cldnn::tensor outTensor = mkTensor(op->get_output_shape(0));
-    auto outDataType = cldnn::element_type_to_data_type(op->get_output_element_type(0));
-    cldnn::layout outLayout{outDataType, cldnn::format::bfyx, outTensor};
-    auto& attrs = op->get_attrs();
-    auto& featmap_shape = op->get_input_shape(1);
-    auto& image_shape = op->get_input_shape(2);
+    const auto& attrs = op->get_attrs();
+    const auto& featmap_shape = op->get_input_shape(1);
+    const auto& image_shape = op->get_input_shape(2);
     auto inputs = p.GetInputInfo(op);
     inputs.resize(1);  // only priors is read
     cldnn::experimental_detectron_prior_grid_generator prim{layer_type_name_ID(op),
@@ -46,5 +35,4 @@ static void CreateExperimentalDetectronPriorGridGeneratorOp(
 
 REGISTER_FACTORY_IMPL(v6, ExperimentalDetectronPriorGridGenerator);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

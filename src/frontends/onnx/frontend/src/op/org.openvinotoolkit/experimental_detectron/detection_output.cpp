@@ -1,19 +1,13 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/org.openvinotoolkit/experimental_detectron/detection_output.hpp"
-
-#include "core/node.hpp"
+#include "core/operator_set.hpp"
 #include "openvino/op/experimental_detectron_detection_output.hpp"
 
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::org_openvinotoolkit::opset_1 {
 ov::OutputVector experimental_detectron_detection_output(const ov::frontend::onnx::Node& node) {
     using DetectionOutput = v6::ExperimentalDetectronDetectionOutput;
 
@@ -37,8 +31,8 @@ ov::OutputVector experimental_detectron_detection_output(const ov::frontend::onn
     return {detection_output->output(0), detection_output->output(1), detection_output->output(2)};
 }
 
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("ExperimentalDetectronDetectionOutput",
+        OPSET_SINCE(1),
+        org_openvinotoolkit::opset_1::experimental_detectron_detection_output,
+        OPENVINO_ONNX_DOMAIN);
+}  // namespace ov::frontend::onnx::org_openvinotoolkit::opset_1

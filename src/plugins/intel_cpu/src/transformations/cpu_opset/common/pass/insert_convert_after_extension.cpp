@@ -1,15 +1,26 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "insert_convert_after_extension.hpp"
 
-#include <openvino/op/convert.hpp>
-#include "cpu_types.h"
-#include "itt.hpp"
-#include <transformations/utils/utils.hpp>
+#include <memory>
 
-ov::pass::InsertConvertAfterExtension::InsertConvertAfterExtension() {
+#include "cpu_types.h"
+#include "openvino/cc/pass/itt.hpp"
+#include "openvino/core/node.hpp"
+#include "openvino/core/node_output.hpp"
+#include "openvino/core/type.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/op/convert.hpp"
+#include "openvino/op/result.hpp"
+#include "openvino/pass/matcher_pass.hpp"
+#include "openvino/pass/pattern/matcher.hpp"
+#include "openvino/pass/pattern/op/label.hpp"
+#include "openvino/pass/pattern/op/pattern.hpp"
+#include "utils/general_utils.h"
+
+ov::pass::InsertConvertAfterExtension::InsertConvertAfterExtension(bool convert_output_precision) {
     MATCHER_SCOPE(InsertConvertAfterExtension);
 
     auto i64_extension = [](const ov::Output<ov::Node>& output) -> bool {
@@ -24,11 +35,15 @@ ov::pass::InsertConvertAfterExtension::InsertConvertAfterExtension() {
         const auto ref = m.get_match_root();
 
         for (auto& output : ref->outputs()) {
-            if (output.get_element_type() == ov::element::i64 || output.get_element_type() == ov::element::u64) {
+            if (ov::intel_cpu::any_of(output.get_element_type(), ov::element::i64, ov::element::u64)) {
                 auto targetInputs = output.get_target_inputs();
                 auto convert = std::make_shared<op::v0::Convert>(output, ov::element::i32);
 
                 for (const auto& targetInput : targetInputs) {
+                    // Keep the original output element type if required.
+                    if (!convert_output_precision && is_type<op::v0::Result>(targetInput.get_node())) {
+                        continue;
+                    }
                     targetInput.replace_source_output(convert);
                 }
 

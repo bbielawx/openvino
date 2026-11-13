@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -68,6 +68,8 @@ void op::v0::Parameter::set_partial_shape(const PartialShape& partial_shape) {
 
 AttributeAdapter<ParameterVector>::AttributeAdapter(ParameterVector& ref) : m_ref(ref) {}
 
+AttributeAdapter<ParameterVector>::~AttributeAdapter() = default;
+
 bool AttributeAdapter<ParameterVector>::visit_attributes(AttributeVisitor& visitor) {
     size_t size = m_ref.size();
     visitor.on_attribute("size", size);
@@ -84,7 +86,7 @@ bool AttributeAdapter<ParameterVector>::visit_attributes(AttributeVisitor& visit
         }
         visitor.on_attribute(index.str(), id);
         if (!m_ref[i]) {
-            m_ref[i] = ov::as_type_ptr<op::v0::Parameter>(visitor.get_registered_node(id));
+            m_ref[i] = ov::as_type_ptr<op::v0::Parameter>(visitor.get_registered_node(std::move(id)));
         }
     }
     return true;

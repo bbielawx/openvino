@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,13 +11,10 @@ using namespace std;
 using namespace ov;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_where_op(const NodeContext& node) {
-    default_op_checks(node, 1, {"Where"});
+    default_op_checks(node, 1, {"Where", "WHERE"});
     auto condition = node.get_input(0);
     auto non_zero = make_shared<v3::NonZero>(condition, element::i64);
     auto transpose_order = make_shared<v0::Constant>(element::i32, Shape{2}, vector<int32_t>{1, 0});
@@ -26,7 +23,4 @@ OutputVector translate_where_op(const NodeContext& node) {
     return res->outputs();
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

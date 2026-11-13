@@ -1,14 +1,19 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <memory>
+#include <vector>
+
+#include "openvino/core/attribute_visitor.hpp"
 #include "openvino/core/node.hpp"
+#include "openvino/core/node_vector.hpp"
+#include "openvino/core/type/element_type.hpp"
 #include "openvino/op/op.hpp"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
 class InteractionNode : public ov::op::Op {
 public:
@@ -16,17 +21,19 @@ public:
 
     InteractionNode() = default;
 
-    InteractionNode(const OutputVector& args);
+    explicit InteractionNode(const OutputVector& args);
 
-    InteractionNode(const NodeVector& args);
+    explicit InteractionNode(const NodeVector& args);
 
-    bool visit_attributes(ov::AttributeVisitor &visitor) override;
+    bool visit_attributes(ov::AttributeVisitor& visitor) override;
 
     void validate_and_infer_types() override;
 
     std::shared_ptr<Node> clone_with_new_inputs(const ov::OutputVector& new_args) const override;
 
-    ov::element::Type get_output_type() const { return m_output_type; }
+    ov::element::Type get_output_type() const {
+        return m_output_type;
+    }
 
     void set_fq_scales(const std::vector<float>& scales) {
         m_fq_scales = scales;
@@ -41,5 +48,4 @@ private:
     std::vector<float> m_fq_scales;
 };
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

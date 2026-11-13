@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -44,12 +44,12 @@ struct condition : public primitive_base<condition> {
 
         void save(BinaryOutputBuffer& ob) const {
             ob << input_map.size();
-            for (auto& input_pair : input_map) {
+            for (const auto& input_pair : input_map) {
                 ob << input_pair.first;
                 ob << input_pair.second;
             }
             ob << output_map.size();
-            for (auto& output_pair : output_map) {
+            for (const auto& output_pair : output_map) {
                 ob << output_pair.first;
                 ob << output_pair.second;
             }
@@ -88,13 +88,12 @@ struct condition : public primitive_base<condition> {
     ///                           sometimes, if
     /// @param branch_true        Branch containg primitives, which will be executed when pred is true. then body in ngraph
     /// @param branch_false       Branch containg primitives, which will be executed when pred is false. else body in ngraph
-    /// @param output_padding     Optional padding for output from primitive.
     condition(const primitive_id& id,
             const std::vector<input_info>& inputs,
             const branch& branch_true,
             const branch& branch_false,
             const size_t num_outputs = 1)
-        : primitive_base(id, inputs, {padding()}, {optional_data_type()}, num_outputs),
+        : primitive_base(id, inputs, num_outputs, {optional_data_type()}),
         branch_true(branch_true),
         branch_false(branch_false) {}
 
@@ -112,9 +111,6 @@ struct condition : public primitive_base<condition> {
         ib >> branch_true;
         ib >> branch_false;
     }
-
-protected:
-    std::vector<input_info> get_dependencies() const override { return {}; }
 };
 
 static inline std::ostream& operator<< (std::ostream& os, condition::branch& info) {

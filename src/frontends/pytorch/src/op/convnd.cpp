@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,10 +8,7 @@
 #include "openvino/op/group_conv.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -53,7 +50,7 @@ OutputVector translate_convnd(const NodeContext& context) {
     if (!context.input_is_none(2)) {
         auto bias = context.get_input(2);
         auto bias_from_visible_context = context.get_input_from_visible_context(2);
-        if (std::dynamic_pointer_cast<v0::Constant>(bias_from_visible_context.get_node_shared_ptr())) {
+        if (ov::as_type_ptr<v0::Constant>(bias_from_visible_context.get_node_shared_ptr())) {
             bias = bias_from_visible_context;
         }
         auto bias_rank = bias.get_partial_shape().rank();
@@ -66,7 +63,4 @@ OutputVector translate_convnd(const NodeContext& context) {
     return {conv};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

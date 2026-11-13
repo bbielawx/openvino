@@ -1,15 +1,14 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include "openvino/core/rtti.hpp"
 #include "pass.hpp"
+#include "snippets/lowered/linear_ir.hpp"
 
-namespace ov {
-namespace snippets {
-namespace lowered {
-namespace pass {
+namespace ov::snippets::lowered::pass {
 
 /**
  * @interface MoveResultOutOfLoop
@@ -21,12 +20,9 @@ namespace pass {
  */
 class MoveResultOutOfLoop : public Pass {
 public:
-    OPENVINO_RTTI("MoveResultOutOfLoop", "Pass")
+    OPENVINO_RTTI("MoveResultOutOfLoop", "", Pass);
     MoveResultOutOfLoop() = default;
     bool run(LinearIR& linear_ir) override;
 };
 
-} // namespace pass
-} // namespace lowered
-} // namespace snippets
-} // namespace ov
+}  // namespace ov::snippets::lowered::pass

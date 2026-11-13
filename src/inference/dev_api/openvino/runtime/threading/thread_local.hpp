@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,7 +11,7 @@
 
 #include "openvino/core/parallel.hpp"
 
-#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO
+#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO || OV_THREAD == OV_THREAD_TBB_ADAPTIVE
 #    include <tbb/enumerable_thread_specific.h>
 #else
 #    include <functional>
@@ -25,7 +25,7 @@
 namespace ov {
 namespace threading {
 
-#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO
+#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO || OV_THREAD == OV_THREAD_TBB_ADAPTIVE
 
 /**
  * @brief A wrapper class to keep object to be thread local.
@@ -59,8 +59,16 @@ struct ThreadLocal {
         _create = std::move(other._create);
         return *this;
     }
-    ThreadLocal(const ThreadLocal&) = delete;
-    ThreadLocal& operator=(const ThreadLocal&&) = delete;
+    ThreadLocal(const ThreadLocal& other) : _create(other._create) {
+        std::lock_guard<std::mutex> lock{other._mutex};
+        _map = other._map;
+    }
+    ThreadLocal& operator=(const ThreadLocal& other) {
+        std::lock_guard<std::mutex> lock{other._mutex};
+        _map = other._map;
+        _create = other._create;
+        return *this;
+    }
     explicit ThreadLocal(const Create& create_) : _create{create_} {}
 
     T& local() {
@@ -93,13 +101,13 @@ struct ThreadLocal {
         auto operator*() -> decltype(it->second) {
             return it->second;
         }
-        auto operator-> () -> decltype(&(it->second)) {
+        auto operator->() -> decltype(&(it->second)) {
             return &(it->second);
         }
         auto operator*() const -> decltype(it->second) {
             return it->second;
         }
-        auto operator-> () const -> decltype(&(it->second)) {
+        auto operator->() const -> decltype(&(it->second)) {
             return &(it->second);
         }
     };
@@ -110,10 +118,10 @@ struct ThreadLocal {
     auto end() -> Iterator<decltype(_map.end())> {
         return {_map.end()};
     }
-    auto begin() const -> Iterator<decltype(_map.begin())> const {
+    auto begin() const -> const Iterator<decltype(_map.begin())> {
         return {_map.begin()};
     }
-    auto end() const -> Iterator<decltype(_map.end())> const {
+    auto end() const -> const Iterator<decltype(_map.end())> {
         return {_map.end()};
     }
 

@@ -1,29 +1,42 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
 import os
+import platform
+import pytest
 import shutil
 import subprocess
 import tempfile
-
-import pytest
 import tensorflow as tf
 import tensorflow.compat.v1 as tf_v1
 import tensorflow_hub as hub
 # noinspection PyUnresolvedReferences
-import tensorflow_text  # do not delete, needed for text models
-from openvino import Core
-
-from models_hub_common.constants import tf_hub_cache_dir, hf_cache_dir
+#import tensorflow_text  # do not delete, needed for text models. Commended due to ticket 179327
+from huggingface_hub import snapshot_download
 from models_hub_common.test_convert_model import TestConvertModel
-from models_hub_common.utils import get_models_list
-from utils import type_map, load_graph, get_input_signature, get_output_signature, unpack_tf_result, \
-    repack_ov_result_to_tf_format, get_output_signature_from_keras_layer
+from models_hub_common.utils import get_models_list, model_list_path
+from openvino import convert_model
+
+from utils import load_graph, get_input_signature, get_output_signature, unpack_tf_result, \
+    repack_ov_result_to_tf_format, get_output_signature_from_keras_layer, retrieve_inputs_info_for_signature, \
+    retrieve_inputs_info_from_input_spec
 
 
 def is_hf_link(link: str):
     return link.startswith("hf_")
+
+
+def is_tf_keras_application(link: str):
+    return link.startswith("tf_keras_applications")
+
+
+def get_keras_application_model_by_name(model_name):
+    try:
+        model_class = getattr(tf.keras.applications, model_name)
+        return model_class
+    except AttributeError:
+        raise ValueError(f"Model '{model_name}' not found in tf.keras.applications")
 
 
 class TestTFHubConvertModel(TestConvertModel):
@@ -32,14 +45,15 @@ class TestTFHubConvertModel(TestConvertModel):
 
     def load_model(self, model_name, model_link: str):
         if is_hf_link(model_link):
+            model_cached = snapshot_download(model_name)  # required to avoid HF rate limits
             library_type = model_link[3:]
             if library_type == "transformers":
                 from transformers import TFAutoModel
-                return TFAutoModel.from_pretrained(model_name)
+                return TFAutoModel.from_pretrained(model_cached)
             elif library_type == "sentence-transformers":
                 from tf_sentence_transformers import SentenceTransformer
-                return SentenceTransformer.from_pretrained(model_name)
-        if 'storage.openvinotoolkit.org' in model_link:
+                return SentenceTransformer.from_pretrained(model_cached)
+        elif 'storage.openvinotoolkit.org' in model_link:
             # this models is from public OpenVINO storage
             subprocess.check_call(["wget", "-nv", model_link], cwd=self.model_dir.name)
             model_file_name = os.path.basename(model_link)
@@ -52,6 +66,8 @@ class TestTFHubConvertModel(TestConvertModel):
             if model_file_name.endswith('.pb'):
                 graph = load_graph(model_file_name)
                 return graph
+        elif is_tf_keras_application(model_link):
+            return get_keras_application_model_by_name(model_name)()
 
         load = hub.load(model_link)
         if 'serving_default' in list(load.signatures.keys()):
@@ -70,40 +86,34 @@ class TestTFHubConvertModel(TestConvertModel):
             input_signature = get_input_signature(model_obj)
         elif hasattr(model_obj, "input_signature") and model_obj.input_signature is not None:
             input_signature = model_obj.input_signature
+        elif hasattr(model_obj, "input_spec") and hasattr(model_obj, "inputs"):
+            # some Keras models have input_spec and inputs attributes instead of input_signature
+            inputs_info = retrieve_inputs_info_from_input_spec(model_obj.input_spec, model_obj.inputs)
+            self.output_signature = get_output_signature_from_keras_layer(model_obj)
+            self.inputs_info = inputs_info
+            return inputs_info
         else:
             assert len(model_obj.structured_input_signature) > 1, "incorrect model or test issue"
             input_signature = model_obj.structured_input_signature[1].items()
 
-        inputs_info = []
-        for input_name, input_info in (input_signature.items() if isinstance(input_signature, dict) else input_signature):
-            input_shape = []
-            try:
-                if input_info.shape.as_list() == [None, None, None, 3] and input_info.dtype == tf.float32:
-                    # image classification case, let us imitate an image
-                    # that helps to avoid compute output size issue
-                    input_shape = [1, 200, 200, 3]
-                else:
-                    for dim in input_info.shape.as_list():
-                        if dim is None:
-                            input_shape.append(1)
-                        else:
-                            input_shape.append(dim)
-            except ValueError:
-                # unknown rank case
-                pass
-            if input_info.dtype == tf.resource:
-                # skip inputs corresponding to variables
-                continue
-            assert input_info.dtype in type_map, "Unsupported input type: {}".format(input_info.dtype)
-            inputs_info.append((input_name, input_shape, type_map[input_info.dtype]))
-
+        inputs_info = retrieve_inputs_info_for_signature(input_signature)
         self.output_signature = get_output_signature_from_keras_layer(model_obj)
+        self.inputs_info = inputs_info
         return inputs_info
 
+    def convert_model(self, model_obj):
+        # NPU has no dynamic shapes: bake the concrete input dims (from get_inputs_info) into Parameters
+        if 'NPU' in (self.ie_device or '') and getattr(self, 'inputs_info', None):
+            input_arg = [(name, shape) for name, shape, _ in self.inputs_info]
+            print("Converting with static input shapes for {}: {}".format(self.ie_device, input_arg))
+            return convert_model(model_obj, input=input_arg)
+        return convert_model(model_obj)
+
     def infer_ov_model(self, ov_model, inputs, ie_device):
-        core = Core()
-        compiled = core.compile_model(ov_model, ie_device)
-        ov_outputs = compiled(inputs)
+        ov_outputs = super().infer_ov_model(ov_model, inputs, ie_device)
+        # For NPU ov_outputs returns None (compile-only)
+        if ov_outputs is None:
+            return None
 
         # TF FE loses output structure in case when original model has output dictionary, where values are tuples.
         # OV generates in this case a list of tensors with inner tensor names.
@@ -131,7 +141,8 @@ class TestTFHubConvertModel(TestConvertModel):
             for ind, output_name in enumerate(output_names):
                 output_dict[output_name] = tf_output[ind]
             return output_dict
-
+        elif isinstance(model_obj, tf.keras.models.Model) and len(inputs) == 1:
+            return unpack_tf_result(model_obj(list(inputs.values())[0]))
         # repack input dictionary to tensorflow constants
         tf_inputs = {}
         for input_name, input_value in inputs.items():
@@ -151,21 +162,37 @@ class TestTFHubConvertModel(TestConvertModel):
                     pass
 
     def teardown_method(self):
-        # remove all downloaded files for TF Hub models
-        self.clean_dir(tf_hub_cache_dir)
-
-        # remove all downloaded files for HF models
-        self.clean_dir(hf_cache_dir)
-
         # deallocate memory after each test case
         gc.collect()
 
     @pytest.mark.parametrize("model_name,model_link,mark,reason",
-                             get_models_list(os.path.join(os.path.dirname(__file__), "model_lists", "precommit")))
+                             get_models_list(model_list_path(os.path.join(os.path.dirname(__file__),
+                                                                          "model_lists"), "precommit_convert_model")))
     @pytest.mark.precommit
     def test_convert_model_precommit(self, model_name, model_link, mark, reason, ie_device):
         assert mark is None or mark == 'skip' or mark == 'xfail', \
             "Incorrect test case: {}, {}".format(model_name, model_link)
+        
+        arm_platforms = {'arm', 'armv7l', 'aarch64', 'arm64', 'ARM64'}
+        arm_failed_models = {
+            'movenet/singlepose/lightning',
+            'imagenet/mobilenet_v2_100_224/feature_vector',
+            'movenet/multipose/lightning',
+            'imagenet/mobilenet_v1_100_224/classification',
+            'magenta/arbitrary-image-stylization-v1-256',
+            'small_bert/bert_en_uncased_L-4_H-256_A-4',
+            'movinet/a5/base/kinetics-600/classification',
+            'efficientdet/lite0/detection',
+            'film',
+            'i3d-rgb',
+            'microsoft/deberta-v3-small',
+            'facebook/convnext-tiny-224',
+            'google/vit-base-patch16-224',
+            'facebook/sam-vit-base',
+        }
+        if platform.machine() in arm_platforms and model_name in arm_failed_models:
+            pytest.skip(f"Model {model_name} is not enabled on ARM platform")
+        
         if mark == 'skip':
             pytest.skip(reason)
         elif mark == 'xfail':

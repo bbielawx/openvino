@@ -1,23 +1,17 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/compress.hpp"
-
+#include "core/operator_set.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/gather.hpp"
 #include "openvino/op/non_zero.hpp"
 #include "openvino/op/squeeze.hpp"
 #include "utils/reshape.hpp"
-
 using namespace ov::op;
 using ov::Shape;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 ov::OutputVector compress(const ov::frontend::onnx::Node& node) {
     auto data = node.get_ov_inputs().at(0);
     auto condition = node.get_ov_inputs().at(1);
@@ -26,9 +20,9 @@ ov::OutputVector compress(const ov::frontend::onnx::Node& node) {
     if (node.has_attribute("axis")) {
         axis = node.get_attribute_value<int64_t>("axis");
     } else {
+        // When axis is absent, both inputs are flattened to 1D per ONNX spec.
         data = std::make_shared<v0::Squeeze>(ov::op::util::flatten(data, static_cast<int>(axis)));
-        data = std::make_shared<v0::Squeeze>(ov::op::util::flatten(data, static_cast<int>(axis)));
-        data = std::make_shared<v0::Squeeze>(ov::op::util::flatten(data, static_cast<int>(axis)));
+        condition = std::make_shared<v0::Squeeze>(ov::op::util::flatten(condition, static_cast<int>(axis)));
     }
     auto axis_node = v0::Constant::create(ov::element::i64, ov::Shape{}, {axis});
     auto zero_node = v0::Constant::create(ov::element::i64, ov::Shape{}, {0});
@@ -39,8 +33,5 @@ ov::OutputVector compress(const ov::frontend::onnx::Node& node) {
 
     return {result};
 }
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("Compress", OPSET_SINCE(1), ai_onnx::opset_1::compress);
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

@@ -1,29 +1,42 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "fullyconnected.hpp"
-#include "utils.hpp"
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+#include <cstddef>
+#include <functional>
+#include <numeric>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-Result FCShapeInfer::infer(
-        const std::vector<std::reference_wrapper<const VectorDims>>& input_shapes,
-        const std::unordered_map<size_t, MemoryPtr>& data_dependency) {
+#include "cpu_memory.h"
+#include "cpu_types.h"
+#include "shape_inference/shape_inference_status.hpp"
+
+namespace ov::intel_cpu::node {
+
+Result FCShapeInfer::infer(const std::vector<std::reference_wrapper<const VectorDims>>& input_shapes,
+                           [[maybe_unused]] const std::unordered_map<size_t, MemoryPtr>& data_dependency) {
     const VectorDims& activationShape = input_shapes[0].get();
     const VectorDims& weightShape = input_shapes[1].get();
     size_t activationRank = activationShape.size();
-    size_t channelRank = weightShape.size() - 1;
+    size_t channelRank = 1;
 
     // activation   weight    output_shape
     // NCHW         CoCHW     NCo
     // TNC          CoC       TNCo
     // NC           CoC       NCo
+    // SMK          WKN       DMN
     VectorDims outputShape(out_rank, 1);
     // set Co
-    outputShape.back() = weightShape[0];
+    if (activationShape.size() == 3 && weightShape.size() == 3) {
+        outputShape.back() = weightShape[1];
+    } else {
+        outputShape.back() =
+            std::accumulate(weightShape.begin(), weightShape.end() - 1, size_t{1}, std::multiplies<>());
+    }
     // set batch dims
     size_t batchRank = activationRank - channelRank;
     size_t startIdx = out_rank - batchRank - 1;
@@ -33,6 +46,4 @@ Result FCShapeInfer::infer(
 
     return {{std::move(outputShape)}, ShapeInferStatus::success};
 }
-} // namespace node
-} // namespace intel_cpu
-} // namespace ov
+}  // namespace ov::intel_cpu::node

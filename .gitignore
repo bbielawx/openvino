@@ -3,15 +3,18 @@ _*
 [Bb]uild*/
 cmake-build*
 
-# but ensure we don't skip __init__.py and __main__.py
+# but ensure we don't skip Python files
 !__init__.py
 !__main__.py
+!*.pyi
+
 # and sphinx documentation folders
 !docs/sphinx_setup/_*
 
 # developer tools
 *.idea
-.vscode
+.clangd
+.vscode/
 .vs/
 .vsconan/
 .DS_Store
@@ -28,6 +31,7 @@ temp/
 CMakeLists.txt.user
 docs/IE_PLUGIN_DG/html/
 CMakeUserPresets.json
+venv
 
 *.project
 *.cproject
@@ -54,23 +58,14 @@ __tests__/runner/*
 node_modules
 # Coverage directory used by tools like istanbul
 coverage
+!.github/coverage/
+!.github/coverage/**
 *.lcov
 # Optional npm cache directory
 .npm
 
 # Artifacts
-/tools/mo/*.bin
-/tools/mo/*.xml
-/tools/mo/*.json
-/tools/mo/*.so
-/tools/mo/*.txt
-/tools/mo/*.pb
-/tools/mo/*.pbtxt
-/tools/mo/!CMakeLists.txt
-/tools/mo/*.mapping
-/tools/mo/*.dat
-/tools/mo/*.svg
-/src/plugins/intel_cpu/tools/commit_slider/*.json
-/src/plugins/intel_cpu/tools/commit_slider/slider_cache/*
-/src/plugins/intel_cpu/thirdparty/ComputeLibrary/build/*
+/tools/commit_slider/*.json
+/tools/commit_slider/slider_cache/*
+/src/plugins/intel_cpu/thirdparty/ComputeLibrary/build/arm_compute_version.embed
 .github/GITHUB_OUTPUT

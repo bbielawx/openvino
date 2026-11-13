@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,7 +9,6 @@
 #include <limits>
 
 #include "base_reference_test.hpp"
-#include "openvino/runtime/allocator.hpp"
 
 using namespace ov;
 
@@ -29,14 +28,19 @@ struct Builder : ParamsBuilder<AtanhParams> {
 class ReferenceAtanhLayerTest : public testing::TestWithParam<AtanhParams>, public CommonReferenceTest {
 public:
     void SetUp() override {
+        /* Keep the legacy comparator for this test. Its expected outputs explicitly include ±INFINITY, but the modern
+         * comparator skips a value pair whenever both operands are classified as out-of-limits; consequently, an actual
+         * NaN is not compared against an expected infinity and the Atanh test can pass with the wrong special value.
+         * Enabling the legacy path here preserves the existing NaN-vs-infinity failure check until the modern
+         * comparator handles special values strictly. */
         legacy_compare = true;
-        auto params = GetParam();
+        const auto& params = GetParam();
         function = CreateFunction(params.input.shape, params.input.type);
         inputData = {params.input.data};
         refOutData = {params.expected.data};
     }
     static std::string getTestCaseName(const testing::TestParamInfo<AtanhParams>& obj) {
-        auto param = obj.param;
+        const auto& param = obj.param;
         std::ostringstream result;
         result << "shape=" << param.input.shape << "_";
         result << "type=" << param.input.type;
@@ -48,7 +52,7 @@ private:
     static std::shared_ptr<Model> CreateFunction(const Shape& shape, const element::Type& type) {
         const auto in = std::make_shared<op::v0::Parameter>(type, shape);
         const auto out = std::make_shared<op::v3::Atanh>(in);
-        return std::make_shared<ov::Model>(NodeVector{out}, ParameterVector{in});
+        return std::make_shared<ov::Model>(OutputVector{out}, ParameterVector{in});
     }
 };
 

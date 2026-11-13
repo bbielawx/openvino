@@ -1,11 +1,10 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "assign_inst.h"
-#include "implementation_map.hpp"
+#include "registry/implementation_map.hpp"
 #include "register.hpp"
-#include "intel_gpu/runtime/error_handler.hpp"
 
 namespace cldnn {
 namespace cpu {
@@ -19,7 +18,7 @@ struct assign_impl : public typed_primitive_impl<assign> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::cpu::assign_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<assign_impl>(*this);
+        return std::make_unique<assign_impl>(*this);
     }
 
     assign_impl() : parent() {}
@@ -27,6 +26,11 @@ struct assign_impl : public typed_primitive_impl<assign> {
     explicit assign_impl(const assign_node& outer) {
         set_node_params(outer);
     }
+
+    // assign's execute_impl runs memcpy from the input buffer into the variable's memory.
+    // It does not access the input on the host side,
+    // so the input primitive does not need to allocate its output in lockable (usm_host) memory.
+    bool requires_lockable_input() const override { return false; }
 
     void set_node_params(const program_node& arg) override {
         OPENVINO_ASSERT(arg.is_type<assign>());
@@ -53,11 +57,9 @@ struct assign_impl : public typed_primitive_impl<assign> {
 
         auto& stream = instance.get_network().get_stream();
 
-        for (auto e : events) {
-            e->wait();
-        }
+        stream.wait_for_events(events);
 
-        const auto ev_set_memory = variable.get_memory()->copy_from(stream, instance.input_memory());
+        const auto ev_set_memory = variable.get_memory()->copy_from(stream, instance.input_memory(), 0, 0, variable.get_layout().bytes_count(), true);
         variable.set();
 
         return ev_set_memory;
@@ -67,7 +69,7 @@ struct assign_impl : public typed_primitive_impl<assign> {
 
 public:
     static std::unique_ptr<primitive_impl> create(const assign_node& arg, const kernel_impl_params& impl_param) {
-        return make_unique<assign_impl>();
+        return std::make_unique<assign_impl>();
     }
 };
 

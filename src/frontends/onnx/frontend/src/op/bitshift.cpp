@@ -1,22 +1,16 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/bitshift.hpp"
-
+#include "core/operator_set.hpp"
 #include "exceptions.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/divide.hpp"
 #include "openvino/op/multiply.hpp"
 #include "openvino/op/power.hpp"
-
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 ov::OutputVector bitshift(const ov::frontend::onnx::Node& node) {
     const ov::Output<ov::Node> input_x = node.get_ov_inputs().at(0);
     const ov::Output<ov::Node> input_y = node.get_ov_inputs().at(1);
@@ -41,8 +35,5 @@ ov::OutputVector bitshift(const ov::frontend::onnx::Node& node) {
     }
 }
 
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("BitShift", OPSET_SINCE(1), ai_onnx::opset_1::bitshift);
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

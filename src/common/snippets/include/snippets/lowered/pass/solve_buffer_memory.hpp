@@ -1,33 +1,36 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "pass.hpp"
+#include <cstddef>
+#include <utility>
+#include <vector>
 
-#include "allocate_buffers.hpp"
+#include "openvino/core/rtti.hpp"
 #include "openvino/runtime/memory_solver.hpp"
+#include "pass.hpp"
+#include "snippets/lowered/expressions/buffer_expression.hpp"
+#include "snippets/lowered/linear_ir.hpp"
 
-namespace ov {
-namespace snippets {
-namespace lowered {
-namespace pass {
+namespace ov::snippets::lowered::pass {
 
 /**
  * @interface SolveBufferMemory
  * @brief The pass optimally calculates the common buffer scratchpad size and
- *        set the offsets relative to the common data pointer to all Buffers. The pass uses MemorySolver API.
+ *        set the offsets relative to the common data pointer to all defined Buffers.
+ *        The pass uses MemorySolver API to calculate common allocation size for static Buffers.
+ *        If some Buffers have unknown allocation size, the pass set `dynamic` offset.
  *        Note: The pass requires expression enumeration. It should be executed separately before this pass!
- *        Note: this transformation works only with m_clusters, no lir or iterators are really needed
  * @ingroup snippets
  */
 class SolveBufferMemory : public Pass {
 public:
-    OPENVINO_RTTI("SolveBufferMemory", "Pass")
+    OPENVINO_RTTI("SolveBufferMemory", "", Pass);
 
-    SolveBufferMemory(size_t& buffer_scratchpad_size, AllocateBuffers::BufferClusters& clusters)
-        : m_buffer_scratchpad_size(buffer_scratchpad_size), m_clusters(clusters) {}
+    explicit SolveBufferMemory(size_t& static_buffer_scratchpad_size)
+        : m_static_buffer_scratchpad_size(static_buffer_scratchpad_size) {}
     /**
      * @brief Apply the pass to the Linear IR
      * @param linear_ir the target Linear IR
@@ -35,21 +38,40 @@ public:
      */
     bool run(lowered::LinearIR& linear_ir) override;
 
+    // For the better performance data should be aligned with cache line size.
+    // The majority of CPUs have cache line size `64` bytes.
+    constexpr static size_t byte_alignment = 64;
+
 private:
+    using Buffers = std::vector<BufferExpressionPtr>;
+    /**
+     * @brief Split buffer expressions of Linear IR into
+     *        static (with defined allocation size) and dynamic (with unknown size) buffers
+     * @param buffer_expressions buffer expressions
+     * @return the pair of static and dynamic buffer expressions
+     */
+    static std::pair<Buffers, Buffers> extract_static_and_dynamic_buffers(const Buffers& buffer_expressions);
     /**
      * @brief Initializes boxes for MemorySolver
-     * @param buffer_clusters buffer clusters. These clusters could be obtained using DefineBufferClusters pass
+     * @param buffer_expressions buffer expressions
+     * @param linear_ir linear ir
      * @return vector of boxes for MemorySolver
      */
-    std::vector<ov::MemorySolver::Box> init_boxes(const AllocateBuffers::BufferClusters& buffer_clusters);
+    static std::vector<ov::MemorySolver::Box> init_boxes(const Buffers& buffer_expressions, const LinearIR& linear_ir);
+    /**
+     * @brief Calculate memory size and set offset to buffer with defined allocation size
+     * @param static_buffer_expressions static buffer expressions
+     * @param linear_ir linear ir
+     */
+    void solve_static_buffer_memory(const Buffers& static_buffer_expressions, const LinearIR& linear_ir);
+    /**
+     * @brief Initialize offset for Buffer with undefined allocation size
+     *        Note: should be called after `solve_static_buffer_memory`
+     * @param dynamic_buffer_expressions dynamic buffer expressions
+     */
+    void set_dynamic_buffer_offset(const Buffers& dynamic_buffer_expressions) const;
 
-    size_t& m_buffer_scratchpad_size;
-    AllocateBuffers::BufferClusters& m_clusters;
-
-    constexpr static size_t m_alignment = 32; // 32 bytes for data alignment in allocated memory
+    size_t& m_static_buffer_scratchpad_size;
 };
 
-} // namespace pass
-} // namespace lowered
-} // namespace snippets
-} // namespace ov
+}  // namespace ov::snippets::lowered::pass

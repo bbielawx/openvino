@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -50,6 +50,7 @@
     #pragma clang diagnostic ignored "-Wunused-variable"
     #pragma clang diagnostic ignored "-Wunused-function"
     #pragma clang diagnostic ignored "-Wignored-qualifiers"
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #elif defined __GNUC__
     #pragma GCC diagnostic push
     #pragma GCC diagnostic ignored "-Wsign-compare"
@@ -57,6 +58,7 @@
     #pragma GCC diagnostic ignored "-Wunused-variable"
     #pragma GCC diagnostic ignored "-Wunused-function"
     #pragma GCC diagnostic ignored "-Wignored-qualifiers"
+    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     #if __GNUC__ >= 8
     #pragma GCC diagnostic ignored "-Wcatch-value"
     #endif
@@ -70,7 +72,8 @@
 
 #include "ocl_ext.hpp"
 
-#if CL_HPP_TARGET_OPENCL_VERSION >= 200 && CL_HPP_MINIMUM_OPENCL_VERSION >= 200
+#if defined(CL_HPP_PARAM_NAME_INFO_1_1_DEPRECATED_IN_2_0_) && \
+    CL_HPP_TARGET_OPENCL_VERSION >= 200 && CL_HPP_MINIMUM_OPENCL_VERSION >= 200
 namespace cl {
 namespace detail {
 CL_HPP_PARAM_NAME_INFO_1_1_DEPRECATED_IN_2_0_(CL_HPP_DECLARE_PARAM_TRAITS_)

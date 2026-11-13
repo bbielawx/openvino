@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,9 +10,7 @@
 #include "openvino/frontend/decoder.hpp"
 #include "tf_framework_node.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
+namespace ov::frontend::tensorflow {
 
 class DecoderFake : public ov::frontend::DecoderBase {
 public:
@@ -62,6 +60,7 @@ protected:
           m_no_conversion_reason(no_conversion_reason) {}
 
 public:
+    OPENVINO_OP("InternalOperation", "util", ov::frontend::tensorflow::FrameworkNode);
     // get a reason why some operation is unable to convert to OpenVINO opset
     // we store this information for InternalOperation to elaborate the reason
     // for cases such as Constant node of string type
@@ -72,6 +71,4 @@ public:
 private:
     std::string m_no_conversion_reason;
 };
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow

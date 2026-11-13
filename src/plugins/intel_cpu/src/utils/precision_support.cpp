@@ -1,66 +1,77 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "precision_support.h"
 
 #if defined(OPENVINO_ARCH_X86_64)
-#include "cpu/x64/cpu_isa_traits.hpp"
+#    include "cpu/x64/cpu_isa_traits.hpp"
+#endif
+#if defined(OPENVINO_ARCH_ARM) || defined(OPENVINO_ARCH_ARM64)
+#    include "openvino/runtime/system_conf.hpp"
 #endif
 #include "openvino/core/type/element_type.hpp"
 #include "openvino/core/visibility.hpp"
 
-#if defined(OV_CPU_WITH_ACL)
-#include "arm_compute/core/CPP/CPPTypes.h"
-#endif
+namespace ov::intel_cpu {
 
-namespace ov {
-namespace intel_cpu {
-
-static bool hasFP16HardwareSupport(const ov::element::Type& precision) {
+static bool hasFP16HardwareSupport() {
 #if defined(OPENVINO_ARCH_X86_64)
-    if (dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx512_core_fp16) ||
-        dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx2_vnni_2))
-        return true;
-    return false;
-#elif defined(OPENVINO_ARCH_ARM64) && defined(OV_CPU_WITH_ACL)
-    //has_fp16() works correctly on aarch64 only
-    //TODO: remove else branch as soon as ACL issue #1096 is fixed
-    return arm_compute::CPUInfo::get().has_fp16();
+    return dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx512_core_fp16) ||
+           dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx2_vnni_2);
+#elif defined(OPENVINO_ARCH_ARM) || defined(OPENVINO_ARCH_ARM64)
+    return with_cpu_neon_fp16();
 #else
     return false;
 #endif
 }
 
-static bool hasBF16HardwareSupport(const ov::element::Type& precision) {
+static bool hasBF16HardwareSupport() {
 #if defined(OPENVINO_ARCH_X86_64)
-        if (dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx512_core) ||
-            dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx2_vnni_2))
-            return true;
-        return false;
+    return dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx512_core) ||
+           dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx2_vnni_2);
 #else
-        return false;
+    return false;
 #endif
 }
 
 bool hasHardwareSupport(const ov::element::Type& precision) {
     switch (precision) {
     case ov::element::f16:
-        return hasFP16HardwareSupport(precision);
+        return hasFP16HardwareSupport();
     case ov::element::bf16:
-        return hasBF16HardwareSupport(precision);
+        return hasBF16HardwareSupport();
     default:
         return true;
     }
 }
 
+bool hasFp8WeightsDecompressionSupport([[maybe_unused]] ov::element::Type activationPrecision) {
+#if defined(OPENVINO_ARCH_X86_64)
+    using namespace dnnl::impl::cpu::x64;
+    switch (activationPrecision) {
+    case ov::element::f16:
+        // no native f16 compute on Sapphire Rapids, so it is excluded
+        return mayiuse(avx512_core_amx_fp16) || mayiuse(avx10_2);
+    case ov::element::bf16:
+        return mayiuse(avx512_core_amx) || mayiuse(avx10_2);
+    default:
+        // oneDNN has no f32 x fp8 configuration (including ACCURACY mode's dynamic)
+        return false;
+    }
+#else
+    return false;
+#endif
+}
+
 ov::element::Type defaultFloatPrecision() {
-    if (hasHardwareSupport(ov::element::f16))
+    if (hasHardwareSupport(ov::element::f16)) {
         return ov::element::f16;
-    if (hasHardwareSupport(ov::element::bf16))
+    }
+    if (hasHardwareSupport(ov::element::bf16)) {
         return ov::element::bf16;
+    }
     return ov::element::f32;
 }
 
-}  // namespace intel_cpu
-}  // namespace ov
+}  // namespace ov::intel_cpu

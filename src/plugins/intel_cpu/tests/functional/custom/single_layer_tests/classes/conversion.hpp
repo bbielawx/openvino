@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,21 +13,28 @@ using namespace CPUTestUtils;
 
 namespace ov {
 namespace test {
+enum SpecialValue : uint8_t { none, nan, inf, overflow };
+
 using convertLayerTestParamsSet = std::tuple<InputShape,         // input shapes
                                              ov::element::Type,  // input precision
                                              ov::element::Type,  // output precision
+                                             SpecialValue,       // Specail value
                                              CPUSpecificParams>;
 
 class ConvertCPULayerTest : public testing::WithParamInterface<convertLayerTestParamsSet>,
                             virtual public SubgraphBaseTest, public CPUTestsBase {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<convertLayerTestParamsSet> obj);
+    static std::string getTestCaseName(const testing::TestParamInfo<convertLayerTestParamsSet>& obj);
     static bool isInOutPrecisionSupported(ov::element::Type inPrc, ov::element::Type outPrc);
 protected:
     void SetUp() override;
+    void generate_inputs(const std::vector<ov::Shape>& targetInputStaticShapes) override;
+    void validate() override;
     virtual void validate_out_prc() const;
 
     ov::element::Type inPrc, outPrc;
+private:
+    ov::test::SpecialValue special_value;
 };
 
 class ConvertToBooleanCPULayerTest : public ConvertCPULayerTest {

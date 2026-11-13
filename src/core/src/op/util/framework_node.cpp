@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -94,7 +94,7 @@ void ov::op::util::FrameworkNode::validate_and_infer_types() {
                 pshape = shape_map.at(output_index);
             }
             if (PartialShape::merge_into(pshape, node_result.get_partial_shape())) {
-                shape_map[output_index] = pshape;
+                shape_map[output_index] = std::move(pshape);
             } else {
                 shape_map[output_index] = PartialShape::dynamic();
             }
@@ -195,3 +195,5 @@ bool ov::op::util::FrameworkNode::visit_attributes(AttributeVisitor& visitor) {
 
 ov::AttributeAdapter<ov::op::util::FrameworkNodeAttrs>::AttributeAdapter(ov::op::util::FrameworkNodeAttrs& value)
     : DirectValueAccessor<ov::op::util::FrameworkNodeAttrs>(value) {}
+
+ov::AttributeAdapter<ov::op::util::FrameworkNodeAttrs>::~AttributeAdapter() = default;

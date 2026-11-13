@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #pragma once
@@ -27,9 +27,8 @@ struct group_normalization : public primitive_base<group_normalization> {
                         const input_info& scale,
                         const input_info& bias,
                         std::int64_t num_groups,
-                        double epsilon,
-                        const padding& output_padding = padding())
-    : primitive_base(id, {data, scale, bias}, {output_padding}), num_groups{num_groups}, epsilon{epsilon} {}
+                        double epsilon)
+    : primitive_base(id, {data, scale, bias}), num_groups{num_groups}, epsilon{epsilon} {}
 
     /// @brief Number of groups the channel dimension will be divided into
     /// @details
@@ -49,8 +48,9 @@ struct group_normalization : public primitive_base<group_normalization> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         const auto& rhs_casted = downcast<const group_normalization>(rhs);
 

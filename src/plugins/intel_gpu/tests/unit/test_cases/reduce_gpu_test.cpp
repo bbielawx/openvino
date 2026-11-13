@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,6 +9,7 @@
 #include <intel_gpu/primitives/reduce.hpp>
 #include <intel_gpu/primitives/data.hpp>
 #include "reduce_inst.h"
+#include "registry/implementation_manager.hpp"
 
 #include <cmath>
 #include <algorithm>
@@ -63,34 +64,32 @@ struct reduce_accumulator {
     };
 
     AccT accumulate(AccT& acc, AccT& input_val, cldnn::reduce_mode reduce_mode, bool sum_only) {
-        if (reduce_mode == cldnn::reduce_mode::sum || reduce_mode ==  cldnn::reduce_mode::mean ||
-            reduce_mode == cldnn::reduce_mode::log_sum)
-            acc += input_val;
-        else if (reduce_mode == cldnn::reduce_mode::max)
+        if (reduce_mode == cldnn::reduce_mode::max) {
             acc = input_val > acc ? input_val : acc;
-        else if (reduce_mode == cldnn::reduce_mode::min)
+        } else if (reduce_mode == cldnn::reduce_mode::sum || reduce_mode ==  cldnn::reduce_mode::mean ||
+            reduce_mode == cldnn::reduce_mode::log_sum) {
+            acc += input_val;
+        } else if (reduce_mode == cldnn::reduce_mode::min) {
             acc = input_val < acc ? input_val : acc;
-        else if (reduce_mode == cldnn::reduce_mode::prod)
+        } else if (reduce_mode == cldnn::reduce_mode::prod) {
             acc = acc * input_val;
-        else if (reduce_mode == cldnn::reduce_mode::logical_and)
+        } else if (reduce_mode == cldnn::reduce_mode::logical_and) {
             acc = acc && input_val;
-        else if (reduce_mode == cldnn::reduce_mode::logical_or)
+        } else if (reduce_mode == cldnn::reduce_mode::logical_or) {
             acc = acc || input_val;
-        else if (reduce_mode == cldnn::reduce_mode::sum_square) {
+        } else if (reduce_mode == cldnn::reduce_mode::sum_square) {
             if (sum_only)
                 acc += input_val;
             else
                 acc += input_val * input_val;
-        }
-        else if (reduce_mode == cldnn::reduce_mode::l1)
+        } else if (reduce_mode == cldnn::reduce_mode::l1) {
             acc += abs(input_val);
-        else if (reduce_mode == cldnn::reduce_mode::l2) {
+        } else if (reduce_mode == cldnn::reduce_mode::l2) {
             if (sum_only)
                 acc += input_val;
             else
                 acc += input_val * input_val;
-        }
-        else if (reduce_mode == cldnn::reduce_mode::log_sum_exp) {
+        } else if (reduce_mode == cldnn::reduce_mode::log_sum_exp) {
             if (sum_only)
                 acc += input_val;
             else
@@ -489,6 +488,8 @@ protected:
 
 public:
     void execute(bool is_caching_test) {
+        if (engine.get_device_info().supports_immad)
+            return;
         int input_dim = static_cast<int>(input_format.dimension());
         cldnn::format layout_format = input_format;
 
@@ -538,10 +539,10 @@ public:
         config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{{"reduce", reduce_impl}}));
         cldnn::network::ptr network = get_network(engine, topology, config, get_test_stream_ptr(), is_caching_test);
         network->set_input_data("input", input_mem);
-        network->execute();
+        auto outputs = network->execute();
 
-        auto out_mem = network->get_output("reduce").get_memory();
-        cldnn::mem_lock<output_t> out_ptr(out_mem, get_test_stream());
+        auto out_mem = outputs.at("reduce").get_memory();
+        cldnn::mem_lock<output_t, mem_lock_type::read> out_ptr(out_mem, get_test_stream());
         auto out_lay = out_mem->get_layout();
 
         ASSERT_EQ(out_lay.get_tensor().sizes()[0], reference_result.size());                 // b
@@ -594,7 +595,17 @@ INSTANTIATE_TEST_SUITE_P(reduce_gpu_b_fs_yx_fsv16_i8_i8,
                             TestParamType_general_reduce_gpu(3, 3, 1, 1, 3, 6, format::b_fs_yx_fsv16, reduce_mode::logical_or, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, true, data_types::i8),
                             TestParamType_general_reduce_gpu(3, 5, 1, 1, 3, 2, format::b_fs_yx_fsv16, reduce_mode::logical_and, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, true, data_types::i8),
                             TestParamType_general_reduce_gpu(3, 7, 1, 1, 3, 2, format::b_fs_yx_fsv16, reduce_mode::logical_or, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, true, data_types::i8),
-                            TestParamType_general_reduce_gpu(1, 3, 1, 1, 6, 12, format::b_fs_yx_fsv16, reduce_mode::logical_and, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, true, data_types::i8)
+                            TestParamType_general_reduce_gpu(1, 3, 1, 1, 6, 12, format::b_fs_yx_fsv16, reduce_mode::logical_and, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, true, data_types::i8),
+                            TestParamType_general_reduce_gpu(3, 3, 1, 1, 2, 11, format::b_fs_yx_fsv16, reduce_mode::min, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::i8),
+                            TestParamType_general_reduce_gpu(16, 4, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::max, {1, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::i8),
+                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::i8),
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 18, 11, format::b_fs_yx_fsv16, reduce_mode::max, {2, 1}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::i8),
+                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 17, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::i8),
+                            TestParamType_general_reduce_gpu(16, 4, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::max, {1, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::i8),
+                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::i8),
+                            TestParamType_general_reduce_gpu(2, 5, 1, 1, 3, 3, format::b_fs_yx_fsv16, reduce_mode::max, {3, 1}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::i8),
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 18, 11, format::b_fs_yx_fsv16, reduce_mode::max, {2, 1}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::i8),
+                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 17, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::i8)
                             ),
                             general_reduce_gpu::PrintToStringParamName);
 
@@ -603,33 +614,22 @@ INSTANTIATE_TEST_SUITE_P(reduce_gpu_b_fs_yx_fsv16_i8_i8,
                         ::testing::Values(
                             TestParamType_general_reduce_gpu(3, 3, 1, 1, 3, 2, format::b_fs_yx_fsv16, reduce_mode::sum, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(3, 3, 1, 1, 3, 3, format::b_fs_yx_fsv16, reduce_mode::l1, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(3, 3, 1, 1, 2, 11, format::b_fs_yx_fsv16, reduce_mode::min, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(7, 3, 1, 1, 13, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(26, 12, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::sum, {3, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 12, 1, 1, 13, 11, format::b_fs_yx_fsv16, reduce_mode::l1, {2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 4, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::max, {1, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 34, 1, 1, 13, 12, format::b_fs_yx_fsv16, reduce_mode::l2, {0, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(1, 2, 1, 1, 5, 5, format::b_fs_yx_fsv16, reduce_mode::prod, {3, 1}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(16, 26, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::mean, {3, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 18, 11, format::b_fs_yx_fsv16, reduce_mode::max, {2, 1}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 17, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 34, 1, 1, 16, 11, format::b_fs_yx_fsv16, reduce_mode::l1, {1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(16, 16, 1, 1, 15, 8, format::b_fs_yx_fsv16, reduce_mode::log_sum_exp, {0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 34, 1, 1, 14, 11, format::b_fs_yx_fsv16, reduce_mode::l2, {1}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(16, 16, 1, 1, 12, 8, format::b_fs_yx_fsv16, reduce_mode::sum_square, {2}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 34, 1, 1, 12, 11, format::b_fs_yx_fsv16, reduce_mode::log_sum, {3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-
                             TestParamType_general_reduce_gpu(7, 3, 1, 1, 13, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(26, 12, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::sum, {3, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 12, 1, 1, 13, 11, format::b_fs_yx_fsv16, reduce_mode::l1, {2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 4, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::max, {1, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 34, 1, 1, 13, 9, format::b_fs_yx_fsv16, reduce_mode::l2, {0, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(2, 5, 1, 1, 3, 3, format::b_fs_yx_fsv16, reduce_mode::max, {3, 1}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(16, 26, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::mean, {3, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 18, 11, format::b_fs_yx_fsv16, reduce_mode::max, {2, 1}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 17, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 34, 1, 1, 16, 15, format::b_fs_yx_fsv16, reduce_mode::l1, {1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(16, 16, 1, 1, 15, 8, format::b_fs_yx_fsv16, reduce_mode::log_sum_exp, {0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 3, 1, 1, 14, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {1}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
@@ -799,7 +799,7 @@ void test_common_bfyx(bool is_caching_test) {
 
     std::vector<T> ref_data = {1.0f};
 
-    cldnn::mem_lock<T> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<T, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -833,7 +833,7 @@ TEST(reduce_gpu, common_bfyx_keepdims) {
 
     std::vector<float> ref_data = {6.0f, 22.0f, 38.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -863,7 +863,7 @@ TEST(reduce_gpu, regr_bfyx_keepdims) {
 
     std::vector<float> ref_data = { 1.0f, 5.0f, 9.0f, 13.0f, 17.0f, 21.0f };
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -893,7 +893,7 @@ TEST(reduce_gpu, common_bfzyx) {
 
     std::vector<float> ref_data = {1.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -923,7 +923,7 @@ TEST(reduce_gpu, common_bfzyx_keepdims) {
 
     std::vector<float> ref_data = {1.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -953,7 +953,7 @@ TEST(reduce_gpu, common_bfwzyx) {
 
     std::vector<float> ref_data = {6.0f, 22.0f, 38.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -983,7 +983,7 @@ TEST(reduce_gpu, common_bfwzyx_keepdims) {
 
     std::vector<float> ref_data = {66.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1014,7 +1014,7 @@ TEST(reduce_gpu, common_bfwzyx_max_keepdims) {
 
     std::vector<float> ref_data = {20.0f, 21.0f, 22.0f, 23.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1044,7 +1044,7 @@ TEST(reduce_gpu, common_bfwzyx_min) {
 
     std::vector<float> ref_data = {0.0f, 3.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1074,7 +1074,7 @@ TEST(reduce_gpu, common_bfwzyx_min_keepdims) {
 
     std::vector<float> ref_data = {0.0f, 3.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1104,7 +1104,7 @@ TEST(reduce_gpu, common_bfwzyx_mean) {
 
     std::vector<float> ref_data = {1.0f, 4.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1134,7 +1134,7 @@ TEST(reduce_gpu, common_bfwzyx_mean_keepdims) {
 
     std::vector<float> ref_data = {1.0f, 4.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1164,7 +1164,7 @@ TEST(reduce_gpu, common_bfwzyx_prod) {
 
     std::vector<float> ref_data = {0.0f, 60.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1194,7 +1194,7 @@ TEST(reduce_gpu, common_bfwzyx_prod_keepdims) {
 
     std::vector<float> ref_data = {0.0f, 60.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1225,7 +1225,7 @@ TEST(reduce_gpu, common_bfwzyx_sum_keepdims) {
 
     std::vector<float> ref_data = {60.0f, 66.0f, 72.0f, 78.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1255,7 +1255,7 @@ TEST(reduce_gpu, common_bfwzyx_logical_and) {
 
     std::vector<char> ref_data = {0, 1};
 
-    cldnn::mem_lock<char> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<char, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1285,7 +1285,7 @@ TEST(reduce_gpu, common_bfwzyx_logical_and_keepdims) {
 
     std::vector<char> ref_data = {0, 1};
 
-    cldnn::mem_lock<char> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<char, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1315,7 +1315,7 @@ TEST(reduce_gpu, common_bfwzyx_logical_or) {
 
     std::vector<char> ref_data = {1, 1};
 
-    cldnn::mem_lock<char> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<char, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1345,7 +1345,7 @@ TEST(reduce_gpu, common_bfwzyx_logical_or_keepdims) {
 
     std::vector<char> ref_data = {1, 1};
 
-    cldnn::mem_lock<char> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<char, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1375,7 +1375,7 @@ TEST(reduce_gpu, common_bfwzyx_sum_square) {
 
     std::vector<float> ref_data = {5.0f, 50.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1405,7 +1405,7 @@ TEST(reduce_gpu, common_bfwzyx_sum_square_keepdims) {
 
     std::vector<float> ref_data = {5.0f, 50.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1435,7 +1435,7 @@ TEST(reduce_gpu, common_bfwzyx_l1) {
 
     std::vector<float> ref_data = {3.0f, 12.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1465,7 +1465,7 @@ TEST(reduce_gpu, common_bfwzyx_l1_keepdims) {
 
     std::vector<float> ref_data = {3.0f, 12.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1495,7 +1495,7 @@ TEST(reduce_gpu, common_bfwzyx_l2) {
 
     std::vector<float> ref_data = {2.236067977f, 7.071067812f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1525,7 +1525,7 @@ TEST(reduce_gpu, common_bfwzyx_l2_keepdims) {
 
     std::vector<float> ref_data = {2.236067977f, 7.071067812f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1555,7 +1555,7 @@ TEST(reduce_gpu, common_bfwzyx_log_sum) {
 
     std::vector<float> ref_data = {1.0986122887f, 2.4849066498f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1585,7 +1585,7 @@ TEST(reduce_gpu, common_bfwzyx_log_sum_keepdims) {
 
     std::vector<float> ref_data = {1.0986122887f, 2.4849066498f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1615,7 +1615,7 @@ TEST(reduce_gpu, common_bfwzyx_log_sum_exp) {
 
     std::vector<float> ref_data = {2.407605964f, 5.407605964f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1645,24 +1645,67 @@ TEST(reduce_gpu, common_bfwzyx_log_sum_exp_keepdims) {
 
     std::vector<float> ref_data = {2.407605964f, 5.407605964f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
     }
 }
 
-TEST(reduce_gpu, dynamic) {
+TEST(reduce_gpu, cpu_impl_int32) {
     auto& engine = get_test_engine();
-    auto input = engine.allocate_memory({data_types::f32, format::bfwzyx, {2, 3, 1, 1, 1, 1}});
+    auto input = engine.allocate_memory({{4}, data_types::i32, format::bfyx});
 
-    layout in_dyn_layout { ov::PartialShape::dynamic(6), data_types::f32, format::bfwzyx };
+    set_values<int32_t>(input, {1, 2, 3, 4});
 
-    set_values(input, {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f});
+    topology topology;
+    topology.add(input_layout("input", input->get_layout()));
+    topology.add(reduce("reduce", input_info("input"), reduce_mode::prod, {0}, true));
+
+    auto config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{{"reduce", {format::bfyx, "", impl_types::cpu}}}));
+    network network(engine, topology, config);
+
+    network.set_input_data("input", input);
+
+    auto outputs = network.execute();
+
+    ASSERT_EQ(outputs.size(), size_t(1));
+    ASSERT_EQ(outputs.begin()->first, "reduce");
+
+    auto output = outputs.at("reduce").get_memory();
+
+    std::vector<int32_t> ref_data = {24};
+
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr(output, get_test_stream());
+
+    for (size_t i = 0; i < ref_data.size(); ++i) {
+        ASSERT_EQ(ref_data[i], output_ptr[i]);
+    }
+}
+
+struct reduce_dynamic_params {
+    format::type input_format;
+    ov::PartialShape input_shape;
+    std::vector<int64_t> axes;
+    std::vector<float> input;
+    std::vector<float> expected_output;
+};
+
+class reduce_gpu_dynamic : public ::testing::TestWithParam<reduce_dynamic_params> {};
+
+TEST_P(reduce_gpu_dynamic, basic) {
+    const auto& p = GetParam();
+    auto& engine = get_test_engine();
+    auto input = engine.allocate_memory({p.input_shape, data_types::f32, p.input_format});
+
+    layout in_dyn_layout { ov::PartialShape::dynamic(p.input_shape.size()), data_types::f32, p.input_format };
+
+    set_values(input, p.input);
 
     topology topology;
     topology.add(input_layout("input", in_dyn_layout));
-    topology.add(reduce("reduce", input_info("input"), reduce_mode::prod, {1, 2}, 1));
+    topology.add(reduce("reduce", input_info("input"), reduce_mode::prod, p.axes, 1));
 
     ExecutionConfig config = get_test_default_config(engine);
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
@@ -1680,17 +1723,40 @@ TEST(reduce_gpu, dynamic) {
     ASSERT_EQ(outputs.begin()->first, "reduce");
 
     auto output = outputs.at("reduce").get_memory();
+    ASSERT_EQ(output->get_layout().format, p.input_format);
 
-    std::vector<float> ref_data = {0.0f, 60.0f};
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
+    ASSERT_EQ(output_ptr.size(), p.expected_output.size());
 
-    for (size_t i = 0; i < ref_data.size(); ++i) {
-        ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
+    for (size_t i = 0; i < p.expected_output.size(); ++i) {
+        ASSERT_TRUE(are_equal(p.expected_output[i], output_ptr[i]));
     }
 }
 
+INSTANTIATE_TEST_SUITE_P(reduce_gpu,
+                         reduce_gpu_dynamic,
+                         ::testing::Values(
+                             reduce_dynamic_params{format::bfwzyx, ov::PartialShape{2, 3, 1, 1, 1, 1}, {1, 2},
+                                                   {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f},
+                                                   {0.0f, 60.0f}},
+                             // prod over f -> out 2x1x2x1
+                             reduce_dynamic_params{format::byxf, ov::PartialShape{2, 3, 2, 1}, {1},
+                                                   {1.0f, 2.0f, 3.0f,      // b0 y0 f0..2
+                                                    4.0f, 5.0f, 6.0f,      // b0 y1 f0..2
+                                                    7.0f, 8.0f, 9.0f,      // b1 y0 f0..2
+                                                    10.0f, 11.0f, 12.0f},  // b1 y1 f0..2
+                                                   {6.0f, 120.0f, 504.0f, 1320.0f}}),
+                         [](const ::testing::TestParamInfo<reduce_dynamic_params>& info) {
+                             std::string name = format(info.param.input_format).to_string() + "_axes";
+                             for (auto axis : info.param.axes)
+                                 name += "_" + std::to_string(axis);
+                             return name;
+                         });
+
 TEST(reduce_gpu, b_fs_yx_fsv16_min_dynamic) {
     auto& engine = get_test_engine();
+    if (engine.get_device_info().supports_immad)
+            return;
     auto input = engine.allocate_memory({data_types::f32, format::bfyx, {1, 17, 1, 2}});
 
     set_values(input, {
@@ -1737,7 +1803,7 @@ TEST(reduce_gpu, b_fs_yx_fsv16_min_dynamic) {
 
     std::vector<float> ref_data = {1.0f, -9.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
@@ -1746,6 +1812,8 @@ TEST(reduce_gpu, b_fs_yx_fsv16_min_dynamic) {
 
 TEST(reduce_gpu, b_fs_yx_fsv16_max_dynamic) {
     auto& engine = get_test_engine();
+    if (engine.get_device_info().supports_immad)
+            return;
     auto input = engine.allocate_memory({data_types::f32, format::bfyx, {1, 17, 1, 2}});
 
     set_values(input, {
@@ -1792,11 +1860,43 @@ TEST(reduce_gpu, b_fs_yx_fsv16_max_dynamic) {
 
     std::vector<float> ref_data = {9.0f, -1.0f};
 
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_data.size(); ++i) {
         ASSERT_TRUE(are_equal(ref_data[i], output_ptr[i]));
     }
+}
+
+TEST(reduce_gpu, reduce_min_max_default_output_element_type_should_be_same_to_input_element_type) {
+    auto& engine = get_test_engine();
+
+    auto input = engine.allocate_memory({data_types::i8, format::bfyx, {1, 1, 2, 2}});
+    set_values<int8_t>(input, {1, 1, 1, 1});
+
+    topology topology1(
+        input_layout("input", input->get_layout()),
+        reduce("reduce", input_info("input"), reduce_mode::max, {1}, 0),
+        reorder("reorder", input_info("reduce"), format::bfyx, data_types::i8)
+    );
+
+    ExecutionConfig config = get_test_default_config(engine);
+    network network1(engine, topology1, config);
+    network1.set_input_data("input", input);
+    auto output = network1.execute();
+
+    ASSERT_EQ(network1.get_program()->get_node("reduce").get_output_layout().data_type, data_types::i8);
+
+    topology topology2(
+        input_layout("input", input->get_layout()),
+        reduce("reduce", input_info("input"), reduce_mode::min, {1}, 0),
+        reorder("reorder", input_info("reduce"), format::bfyx, data_types::i8)
+    );
+
+    network network2(engine, topology2, config);
+    network2.set_input_data("input", input);
+    output = network2.execute();
+
+    ASSERT_EQ(network2.get_program()->get_node("reduce").get_output_layout().data_type, data_types::i8);
 }
 
 template <data_types InputT, data_types OutputT>
@@ -1904,15 +2004,15 @@ public:
             topology.add(red);
             ExecutionConfig config = get_test_default_config(engine);
             config.set_property(ov::intel_gpu::optimize_data(true));
-            ov::intel_gpu::ImplementationDesc reduce_impl = {input_format, kernel_name};
+            ov::intel_gpu::ImplementationDesc reduce_impl = {input_format, kernel_name, impl_types::ocl};
             config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{{"reduce", reduce_impl}}));
             cldnn::network::ptr network = get_network(engine, topology, config, get_test_stream_ptr(), is_caching_test);
             network->set_input_data("input", input_mem);
 
-            network->execute();
+            auto outputs = network->execute();
 
-            auto out_mem = network->get_output("reduce").get_memory();
-            cldnn::mem_lock<output_t> out_ptr(out_mem, get_test_stream());
+            auto out_mem = outputs.at("reduce").get_memory();
+            cldnn::mem_lock<output_t, mem_lock_type::read> out_ptr(out_mem, get_test_stream());
             auto out_lay = out_mem->get_layout();
 
             ASSERT_EQ(out_lay.get_tensor().sizes()[0], reference_result.size());                 // b
@@ -2069,10 +2169,10 @@ public:
         network network(engine, topology, config);
         network.set_input_data("input", input_mem);
 
-        network.execute();
+        auto outputs = network.execute();
 
-        auto out_mem = network.get_output("reduce").get_memory();
-        cldnn::mem_lock<output_t> out_ptr(out_mem, get_test_stream());
+        auto out_mem = outputs.at("reduce").get_memory();
+        cldnn::mem_lock<output_t, mem_lock_type::read> out_ptr(out_mem, get_test_stream());
         auto out_lay = out_mem->get_layout();
 
         ASSERT_EQ(out_lay.get_tensor().sizes()[0], reference_result.size());    // b
@@ -2114,20 +2214,16 @@ TEST_P(onednn_reduce_gpu_i8_f32, base) { execute_onednn(); }
 class onednn_reduce_gpu_f16_f16 : public ReduceOnednnTestBase<data_types::f16, data_types::f16> {};
 TEST_P(onednn_reduce_gpu_f16_f16, base) { execute_onednn(); }
 
+class onednn_reduce_gpu_f32_f32 : public ReduceOnednnTestBase<data_types::f32, data_types::f32> {};
+TEST_P(onednn_reduce_gpu_f32_f32, base) { execute_onednn(); }
+
 INSTANTIATE_TEST_SUITE_P(onednn_reduce_gpu_b_fs_yx_fsv16_i8_f32,
                         onednn_reduce_gpu_i8_f32,
                         ::testing::Values(
                             TestParamType_general_reduce_gpu(3, 3, 1, 1, 3, 2, format::b_fs_yx_fsv16, reduce_mode::sum, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(3, 3, 1, 1, 2, 11, format::b_fs_yx_fsv16, reduce_mode::min, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(7, 3, 1, 1, 13, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 4, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::max, {1, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 18, 11, format::b_fs_yx_fsv16, reduce_mode::max, {2, 1}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::i8, false, data_types::f32),
 
                             TestParamType_general_reduce_gpu(7, 3, 1, 1, 13, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 4, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::max, {1, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
-                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 17, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32),
                             TestParamType_general_reduce_gpu(17, 3, 1, 1, 14, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {1}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::i8, false, data_types::f32)
                         ), general_reduce_gpu::PrintToStringParamName);
 
@@ -2153,7 +2249,184 @@ INSTANTIATE_TEST_SUITE_P(onednn_reduce_gpu_b_fs_yx_fsv16_f16_f16,
                             TestParamType_general_reduce_gpu(17, 34, 1, 1, 16, 15, format::b_fs_yx_fsv16, reduce_mode::l1, {1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::f16, false, data_types::f16),
                             TestParamType_general_reduce_gpu(17, 3, 1, 1, 14, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {1}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::f16, false, data_types::f16)
                         ), general_reduce_gpu::PrintToStringParamName);
+
+                        INSTANTIATE_TEST_SUITE_P(onednn_reduce_gpu_b_fs_yx_fsv16_f32_f32,
+                        onednn_reduce_gpu_f32_f32,
+                        ::testing::Values(
+                            TestParamType_general_reduce_gpu(3, 3, 1, 1, 3, 2, format::b_fs_yx_fsv16, reduce_mode::sum, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(3, 3, 1, 1, 3, 3, format::b_fs_yx_fsv16, reduce_mode::l1, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(3, 3, 1, 1, 2, 11, format::b_fs_yx_fsv16, reduce_mode::min, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(7, 3, 1, 1, 13, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(16, 4, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::max, {1, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 13, 12, format::b_fs_yx_fsv16, reduce_mode::l2, {0, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 3}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 18, 11, format::b_fs_yx_fsv16, reduce_mode::max, {2, 1}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 16, 11, format::b_fs_yx_fsv16, reduce_mode::l1, {1, 0}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 14, 11, format::b_fs_yx_fsv16, reduce_mode::l2, {1}, "reduce_gpu_b_fs_yx_fsv16", false, data_types::f32, false, data_types::f32),
+
+                            TestParamType_general_reduce_gpu(7, 3, 1, 1, 13, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {3, 2, 1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(16, 4, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::max, {1, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 13, 9, format::b_fs_yx_fsv16, reduce_mode::l2, {0, 2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(16, 16, 1, 1, 16, 8, format::b_fs_yx_fsv16, reduce_mode::min, {2, 3}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 18, 11, format::b_fs_yx_fsv16, reduce_mode::max, {2, 1}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 16, 15, format::b_fs_yx_fsv16, reduce_mode::l1, {1, 0}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 3, 1, 1, 14, 11, format::b_fs_yx_fsv16, reduce_mode::mean, {1}, "reduce_gpu_b_fs_yx_fsv16", true, data_types::f32, false, data_types::f32)
+                        ), general_reduce_gpu::PrintToStringParamName);
+
+INSTANTIATE_TEST_SUITE_P(onednn_reduce_gpu_byxf_i8_f32,
+                        onednn_reduce_gpu_i8_f32,
+                        ::testing::Values(
+                            TestParamType_general_reduce_gpu(7, 3, 1, 1, 13, 11, format::byxf, reduce_mode::mean, {3, 2, 1, 0}, "reduce_gpu_byxf", true, data_types::i8, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 3, 1, 1, 14, 11, format::byxf, reduce_mode::mean, {1}, "reduce_gpu_byxf", true, data_types::i8, false, data_types::f32)
+                        ), general_reduce_gpu::PrintToStringParamName);
+
+INSTANTIATE_TEST_SUITE_P(onednn_reduce_gpu_byxf_f16_f16,
+                        onednn_reduce_gpu_f16_f16,
+                        ::testing::Values(
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 16, 15, format::byxf, reduce_mode::l1, {1, 0}, "reduce_gpu_byxf", true, data_types::f16, false, data_types::f16),
+                            TestParamType_general_reduce_gpu(17, 3, 1, 1, 14, 11, format::byxf, reduce_mode::mean, {1}, "reduce_gpu_byxf", true, data_types::f16, false, data_types::f16)
+                        ), general_reduce_gpu::PrintToStringParamName);
+
+INSTANTIATE_TEST_SUITE_P(onednn_reduce_gpu_byxf_f32_f32,
+                        onednn_reduce_gpu_f32_f32,
+                        ::testing::Values(
+                            TestParamType_general_reduce_gpu(17, 34, 1, 1, 16, 15, format::byxf, reduce_mode::l1, {1, 0}, "reduce_gpu_byxf", true, data_types::f32, false, data_types::f32),
+                            TestParamType_general_reduce_gpu(17, 3, 1, 1, 14, 11, format::byxf, reduce_mode::mean, {1}, "reduce_gpu_byxf", true, data_types::f32, false, data_types::f32)
+                        ), general_reduce_gpu::PrintToStringParamName);
+
+// Regression test: oneDNN derives its src/dst memory descriptor rank from format::dimension(),
+// not from the layout's partial shape rank. If an input layout carries a higher-rank partial shape
+// than its assigned format (e.g. a 5D shape squeezed into a 4D bfyx format by an upstream
+// reshape/optimization), oneDNN would build a truncated descriptor. reorder_inputs therefore
+// realigns the reduce input format to the input rank, so the node must never be compiled with a
+// layout whose format rank disagrees with its shape rank.
+static void test_reduce_input_format_rank_mismatch(int64_t reduce_axis) {
+    auto& engine = get_test_engine();
+    if (!engine.get_device_info().supports_immad)
+        return;
+
+    const int f_size = 6;
+    const int x_size = 8;
+    // Partial shape is 5D (b, f, z, y, x) but the format below is 4D (bfyx): intentional mismatch.
+    ov::PartialShape input_pshape{1, f_size, 1, 1, x_size};
+    layout input_lay(input_pshape, data_types::f16, format::bfyx);
+    auto input_mem = engine.allocate_memory(input_lay);
+
+    std::vector<ov::float16> input_data(f_size * x_size);
+    for (size_t i = 0; i < input_data.size(); i++)
+        input_data[i] = ov::float16(static_cast<float>(i) * 0.1f);
+    set_values(input_mem, input_data);
+
+    topology topology;
+    topology.add(input_layout("input", input_mem->get_layout()));
+    topology.add(reduce("reduce", input_info("input"), reduce_mode::mean, {reduce_axis}, false));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    config.set_property(ov::intel_gpu::optimize_data(true));
+
+    network network(engine, topology, config);
+    network.set_input_data("input", input_mem);
+
+    ASSERT_NO_THROW(network.execute());
+
+    auto inst = network.get_primitive("reduce");
+    ASSERT_NE(inst->get_impl(), nullptr);
+    const auto& in_lay = inst->get_input_layout(0);
+    ASSERT_EQ(in_lay.format.dimension(), in_lay.get_partial_shape().size())
+        << "reduce input format rank must be realigned to the input shape rank, got " << in_lay.to_short_string();
+}
+
+TEST(reduce_gpu, onednn_reduce_input_format_rank_mismatch_blocked_axis) {
+    test_reduce_input_format_rank_mismatch(1);
+}
+
+// Reducing a spatial axis exercises the tensor-field remapping in reorder_unreduced_axis_no_fusion(),
+// which silently zeroed the wrong field when the input tensor rank and format rank disagreed.
+TEST(reduce_gpu, onednn_reduce_input_format_rank_mismatch_spatial_axis) {
+    test_reduce_input_format_rank_mismatch(4);
+}
+
+// Regression test, natural-selection variant: oneDNN's ReduceImplementationManager
+// is only registered for shape_types::static_shape (see registry/reduce_impls.cpp), so a
+// dynamic-shape reduce node has no oneDNN candidate at compile time. But b_fs_yx_fsv16 (blocked)
+// is only registered for OCL's *static* reduce impl, not its dynamic one (see impls/ocl/reduce.cpp
+// dyn_formats), so once the shape is realized at runtime there is no valid dynamic candidate
+// either. The runtime static-shape fallback then picks oneDNN, without force_implementations,
+// exercising the same reorder_unreduced_axis_no_fusion() rank-normalization path.
+static void test_reduce_dynamic_node_static_fallback(int64_t reduce_axis) {
+    auto& engine = get_test_engine();
+    if (!engine.get_device_info().supports_immad)
+        return;
+
+    const int f_size = 17;
+    const int x_size = 2;
+    auto used_layout = layout({1, f_size, 1, x_size}, data_types::f16, format::b_fs_yx_fsv16);
+    auto input_mem = engine.allocate_memory(used_layout);
+
+    std::vector<float> input_data(f_size * x_size);
+    {
+        cldnn::mem_lock<ov::float16> input_ptr(input_mem, get_test_stream());
+        for (int fi = 0; fi < f_size; fi++)
+            for (int xi = 0; xi < x_size; xi++) {
+                float val = static_cast<float>(fi * x_size + xi) * 0.1f;
+                input_data[fi * x_size + xi] = val;
+                tensor coords(batch(0), feature(fi), spatial(xi, 0, 0, 0));
+                input_ptr[used_layout.get_linear_offset(coords)] = ov::float16(val);
+            }
+    }
+
+    topology topology;
+    // The runtime memory keeps its concrete b_fs_yx_fsv16 layout; only the declared input_layout
+    // is dynamic, which is what makes the node's compile-time shape_type dynamic.
+    topology.add(input_layout("input", layout(ov::PartialShape::dynamic(4), data_types::f16, format::b_fs_yx_fsv16)));
+    topology.add(reduce("reduce", input_info("input"), reduce_mode::mean, {reduce_axis}, false));
+    topology.add(reorder("reduce_bfyx", input_info("reduce"), format::bfyx, data_types::f16));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    // No force_implementations: verify oneDNN is picked because it is the only valid candidate
+    // once the OCL dynamic reduce impl rejects the blocked b_fs_yx_fsv16 format.
+
+    network network(engine, topology, config);
+    network.set_input_data("input", input_mem);
+
+    auto outputs = network.execute();
+
+    auto inst = network.get_primitive("reduce");
+    auto impl = inst->get_impl();
+    ASSERT_NE(impl, nullptr);
+    ASSERT_NE(impl->m_manager, nullptr);
+    ASSERT_EQ(impl->m_manager->get_impl_type(), impl_types::onednn)
+        << "expected oneDNN static fallback to be selected without force_implementations";
+
+    auto out_mem = outputs.at("reduce_bfyx").get_memory();
+    cldnn::mem_lock<ov::float16, mem_lock_type::read> out_ptr(out_mem, get_test_stream());
+
+    // axis 1 reduces feature (output indexed by x), axis 3 reduces x (output indexed by feature).
+    const int out_size = reduce_axis == 1 ? x_size : f_size;
+    const int reduced_size = reduce_axis == 1 ? f_size : x_size;
+    for (int oi = 0; oi < out_size; oi++) {
+        float expected = 0.f;
+        for (int ri = 0; ri < reduced_size; ri++) {
+            const int fi = reduce_axis == 1 ? ri : oi;
+            const int xi = reduce_axis == 1 ? oi : ri;
+            expected += input_data[fi * x_size + xi];
+        }
+        expected /= reduced_size;
+        ASSERT_NEAR(static_cast<float>(out_ptr[oi]), expected, 1e-1f) << "out=" << oi;
+    }
+}
+
+TEST(reduce_gpu, onednn_reduce_dynamic_node_static_fallback_selection) {
+    test_reduce_dynamic_node_static_fallback(1);
+}
+
+TEST(reduce_gpu, onednn_reduce_dynamic_node_static_fallback_spatial_axis) {
+    test_reduce_dynamic_node_static_fallback(3);
+}
 #endif  // ENABLE_ONEDNN_FOR_GPU
+
 
 #ifdef RUN_ALL_MODEL_CACHING_TESTS
 TEST_P(general_reduce_gpu_i8_i8, base_cached) { execute(true); }
@@ -2169,4 +2442,77 @@ TEST_P(general_reduce_gpu_xy_i8, base_cached) { execute(true); }
 
 TEST(reduce_gpu, common_bfyx_cached) {
     test_common_bfyx<float>(true);
+}
+
+class reduce_scalar_output_f16_f16 : public ReduceTestBase<data_types::f16, data_types::f16> {};
+TEST_P(reduce_scalar_output_f16_f16, base) { execute(false); }
+
+INSTANTIATE_TEST_SUITE_P(reduce_scalar_output_f16_f16,
+                        reduce_scalar_output_f16_f16,
+                        ::testing::Values(
+                            TestParamType_general_reduce_gpu(1, 1, 1, 1, 1013, 2, format::bfyx, reduce_mode::sum, {3, 2, 1, 0},  "reduce_simple_to_scalar", false, data_types::f16, false, data_types::f16),
+                            TestParamType_general_reduce_gpu(1, 1, 1, 1, 1013, 2, format::bfyx, reduce_mode::min, {3, 2, 1, 0},  "reduce_simple_to_scalar", false, data_types::f16, false, data_types::f16),
+                            TestParamType_general_reduce_gpu(1, 1, 1, 1, 1013, 2, format::bfyx, reduce_mode::mean, {3, 2, 1, 0}, "reduce_simple_to_scalar", false, data_types::f16, false, data_types::f16),
+                            TestParamType_general_reduce_gpu(1, 1, 1, 1, 1013, 2, format::bfyx, reduce_mode::max, {3, 2, 1, 0},  "reduce_simple_to_scalar", false, data_types::f16, false, data_types::f16),
+                            TestParamType_general_reduce_gpu(1, 1, 1, 1, 1024, 1, format::bfyx, reduce_mode::min, {3, 2, 1, 0},  "reduce_simple_to_scalar", false, data_types::f16, false, data_types::f16),
+                            TestParamType_general_reduce_gpu(1, 1, 1, 1, 1025, 1, format::bfyx, reduce_mode::min, {3, 2, 1, 0},  "reduce_simple_to_scalar", false, data_types::f16, false, data_types::f16)
+                        ), general_reduce_gpu::PrintToStringParamName);
+
+TEST(reduce_f32_fw_gpu, large_buffer) {
+    // This test is used for manual testing only.
+    GTEST_SKIP();
+
+    auto engine = create_test_engine();
+    engine->set_enable_large_allocations(true);
+
+    size_t s0 = 16384;
+    size_t s1 = 256 * (256 + 128);
+    ov::Shape sz_6gb = { 1, 1, s1, s0 }; // *4 bytes;
+    size_t peak_mem_usage = (ov::shape_size(sz_6gb) + s0) * sizeof(float);
+    if (engine->get_device_info().max_global_mem_size < peak_mem_usage)
+        GTEST_SKIP();
+
+    layout in_l = { sz_6gb, data_types::f32, format::bfyx };
+
+    auto config = get_test_default_config(*engine);
+    ov::intel_gpu::ImplementationDesc reduce_impl = {format::bfyx, "", impl_types::any};
+    if (engine->get_device_info().supports_immad) {
+        reduce_impl.impl_type = impl_types::onednn;
+    } else {
+        reduce_impl.impl_type = impl_types::ocl;
+    }
+    config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{{"reduce", reduce_impl}}));
+
+    topology topology(input_layout("input", in_l),
+                      reduce("reduce", input_info("input"), reduce_mode::mean, {2}, true));
+    network network(*engine, topology, config);
+    auto input = network.get_output_memory("input");
+    {
+        mem_lock<float, mem_lock_type::write> l(input, get_test_stream());
+        const size_t test_size = ov::shape_size(sz_6gb);
+        for (size_t i = 0; i < test_size; i++) {
+            l[i] = static_cast<float>(i) / s0;
+        }
+    }
+
+    network.set_input_data("input", input);
+    auto outputs = network.execute();
+    ASSERT_EQ(outputs.size(), size_t(1));
+    ASSERT_EQ(outputs.begin()->first, "reduce");
+
+    auto output_memory = outputs.at("reduce").get_memory();
+    auto output_layout = output_memory->get_layout();
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output_memory, get_test_stream());
+
+    ASSERT_EQ(output_layout.format, format::bfyx);
+    ASSERT_EQ(output_layout.get_linear_size(), s0);
+
+    // ensure that single 6GB buffer is allocated
+    ASSERT_EQ(engine->get_max_used_device_memory(), peak_mem_usage);
+
+    size_t sum = s1 * (s1 - 1) / 2;
+    float mean = static_cast<float>(sum) / static_cast<float>(s1);
+    for (size_t i = 0; i < s0; i++) {
+        ASSERT_NEAR(mean, output_ptr[i], 1.0f);
+    }
 }

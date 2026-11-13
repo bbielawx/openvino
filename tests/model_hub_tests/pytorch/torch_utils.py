@@ -1,9 +1,9 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import pytest
 import torch
-import os
 from models_hub_common.test_convert_model import TestConvertModel
 from models_hub_common.utils import get_models_list
 from openvino import convert_model
@@ -46,11 +46,12 @@ def extract_unsupported_ops_from_exception(e: str) -> list:
 
 class TestTorchConvertModel(TestConvertModel):
     cached_model = None
+
     def setup_class(self):
         torch.set_grad_enabled(False)
 
     def load_model(self, model_name, model_link):
-        raise "load_model is not implemented"
+        raise RuntimeError("load_model is not implemented")
 
     def get_inputs_info(self, model_obj):
         return None
@@ -64,34 +65,15 @@ class TestTorchConvertModel(TestConvertModel):
 
     def convert_model_impl(self, model_obj):
         if hasattr(self, "mode") and self.mode == "export":
-            from torch.export import export
-            from packaging import version
-
-            model_obj.eval()
-            if isinstance(self.example, dict):
-                from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
-
-                # need to infer before export to initialize everything, otherwise it will be initialized with FakeTensors
-                pt_res = model_obj(**self.example)
-                graph = export(model_obj, tuple(), self.example)
-                if version.parse(torch.__version__) >= version.parse("2.2"):
-                    graph = graph.run_decompositions()
-
-                gm = graph.module()
-                print(gm.code)
-
-                decoder = TorchFXPythonDecoder(gm)
-                decoder._input_signature = list(self.example.keys())
-                ov_model = convert_model(decoder, verbose=True)
-            else:
-                pt_res = model_obj(*self.example)
-                graph = export(model_obj, self.example)
-                ov_model = convert_model(graph, verbose=True)
-
-            if isinstance(pt_res, dict):
-                for i, k in enumerate(pt_res.keys()):
-                    ov_model.outputs[i].get_tensor().set_names({k})
-            ov_model.validate_nodes_and_infer_types()
+            export_kwargs = {}
+            if getattr(self, "dynamo_input", None):
+                export_kwargs["input"] = self.dynamo_input
+            ov_model = convert_model(model_obj,
+                                     example_input=self.example,
+                                     verbose=True,
+                                     dynamo=True,
+                                     **export_kwargs,
+                                     )
         else:
             ov_model = convert_model(model_obj,
                                      example_input=self.example,

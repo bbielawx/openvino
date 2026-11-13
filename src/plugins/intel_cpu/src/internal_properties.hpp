@@ -1,14 +1,18 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "openvino/runtime/intel_cpu/properties.hpp"
+#include <cstdint>
+#include <istream>
+#include <ostream>
+#include <string>
+
+#include "openvino/core/except.hpp"
 #include "openvino/runtime/properties.hpp"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
 /**
  * @brief Defines how many records can be stored in the CPU runtime parameters cache per CPU runtime parameter type per
@@ -17,14 +21,9 @@ namespace intel_cpu {
 static constexpr Property<int32_t, PropertyMutability::RW> cpu_runtime_cache_capacity{"CPU_RUNTIME_CACHE_CAPACITY"};
 
 /**
- * @brief Allow low precision transform.
- */
-static constexpr Property<bool, PropertyMutability::RW> lp_transforms_mode{"LP_TRANSFORMS_MODE"};
-
-/**
  * @brief Enum to define possible snippets mode hints.
  */
-enum class SnippetsMode {
+enum class SnippetsMode : uint8_t {
     ENABLE = 0,           //!<  Enable
     IGNORE_CALLBACK = 1,  //!<  Ignore callback
     DISABLE = 2,          //!<  Disable
@@ -68,5 +67,24 @@ inline std::istream& operator>>(std::istream& is, SnippetsMode& mode) {
  */
 static constexpr Property<SnippetsMode, PropertyMutability::RW> snippets_mode{"SNIPPETS_MODE"};
 
-}  // namespace intel_cpu
-}  // namespace ov
+/**
+ * @brief This property used to test accurcay of setting model_distribution_policy to TENSOR_PARALLEL in functional
+ * tests.
+ */
+static constexpr Property<bool, PropertyMutability::RW> enable_tensor_parallel{"ENABLE_TENSOR_PARALLEL"};
+
+/**
+ * @brief Define whether to enable sage_attn
+ * @param true - enable
+ * @param false - disable
+ */
+static constexpr Property<bool, PropertyMutability::RW> enable_sage_attn{"ENABLE_SAGE_ATTN"};
+
+/**
+ * @brief Selects the export_model() blob format: true = HSM container, false = legacy layout (default).
+ * @note Transition switch; removed together with the legacy format. Set it on the plugin (not only per compile call)
+ * so that Core caching picks up the matching blob format.
+ */
+static constexpr Property<bool, PropertyMutability::RW> export_hsm_format{"CPU_EXPORT_HSM_FORMAT"};
+
+}  // namespace ov::intel_cpu

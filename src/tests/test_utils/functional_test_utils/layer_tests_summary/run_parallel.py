@@ -1,24 +1,24 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-import os
-import sys
-import threading
 import csv
 import datetime
-import shlex
 import heapq
-
+import os
+import shlex
+import sys
+import threading
 from argparse import ArgumentParser
-from subprocess import Popen, TimeoutExpired, run, call
 from hashlib import sha256
 from pathlib import Path
 from shutil import rmtree, copyfile
+from subprocess import Popen, TimeoutExpired, run, call
 from tarfile import open as tar_open
-from utils.conformance_utils import get_logger, progressbar
-from utils import constants
-from utils import file_utils
 
 import defusedxml.ElementTree as ET
+
+from utils import constants
+from utils import file_utils
+from utils.conformance_utils import get_logger, progressbar
 
 if not constants.IS_WIN:
     from signal import SIGKILL
@@ -58,6 +58,7 @@ def parse_arguments():
     )
     split_unit_help = "Split by test or suite"
     repeat_help = "Number of times to repeat failed and interrupted tests"
+    excluded_tests_file_help = "Path to the file containing list of tests that should not be executed"
 
     parser.add_argument(
         "-e",
@@ -121,6 +122,13 @@ def parse_arguments():
         type=int,
         required=False,
         default=1
+    )
+    parser.add_argument(
+        "--excluded_tests_file",
+        help=excluded_tests_file_help,
+        type=str,
+        required=False,
+        default=None,
     )
 
     return parser.parse_args()
@@ -199,7 +207,7 @@ class TaskManager:
     def init_worker(self):
         if len(self._command_list) <= self._idx:
             logger.warning(
-                "Skip worker initialiazation. Command list lenght <= worker index"
+                "Skip worker initialiazation. Command list length <= worker index"
             )
             return
         if self._device_cnt == 0:
@@ -255,8 +263,13 @@ class TaskManager:
                         self.kill_process_tree(self._process_list[pid].pid)
                         self._process_list[pid].kill()
                         self._process_list[pid].wait(timeout=1)
-                    self._process_list[pid].wait(timeout=0)
+                    returncode = self._process_list[pid].wait(timeout=0)
                     args = self._process_list[pid].args
+                    if returncode != 0:
+                        logger.warning(
+                            f"Process PID {pid} called with arguments {args} " +
+                            f"was finished with non-zero return code {returncode}"
+                        )
                     if constants.IS_WIN:
                         args = args.split()
                     device = get_device_by_args(args)
@@ -305,7 +318,7 @@ class TaskManager:
                     # logger.info(f"Process {pid} takes {float((datetime.datetime.now() - self._timers[pid]).total_seconds())}")
                     self._process_list.pop(pid)
                     logger.info(
-                        f"Compeleting processes: Active process counter: {len(self._process_list)}..."
+                        f"Completing processes: Active process counter: {len(self._process_list)}..."
                     )
                     break
                 except TimeoutExpired:
@@ -424,7 +437,7 @@ class TestParallelRunner:
             try:
                 os.remove(test_list_file_name)
             except Exception as err:
-                logger.warning(f"Imposible to remove {test_list_file_name}. Error: {err}")
+                logger.warning(f"Impossible to remove {test_list_file_name}. Error: {err}")
         command_to_get_test_list = self._command + f' --gtest_list_tests > {test_list_file_name}'
         logger.info(f"Get test list using command: {command_to_get_test_list}")
         run_res = run(command_to_get_test_list, check=True, shell=True)
@@ -471,7 +484,7 @@ class TestParallelRunner:
             logger.warning(
                 "Look like there are not tests to run! Please check the filters!"
             )
-            sys.exit(0)
+            sys.exit(5)
         return tests_dict
 
     def __get_test_list_by_cache(self):
@@ -715,7 +728,7 @@ class TestParallelRunner:
 
     def postprocess_logs(self):
         test_results = {}
-        logger.info("Log analize is started")
+        logger.info("Log analysis is started")
         saved_tests = []
         interapted_tests = set()
         INTERAPTED_DIR = "interapted"
@@ -1012,6 +1025,27 @@ class TestParallelRunner:
         logger.info(
             f"Total test count with disabled tests is {test_cnt + len(self._disabled_tests)}. All logs is saved to {logs_dir}"
         )
+
+        failed_logs_dir = os.path.join(logs_dir, "failed")
+        if os.path.isdir(failed_logs_dir):
+            # sorted: deterministic preview across CI retries
+            all_failed = sorted(
+                f for f in os.listdir(failed_logs_dir)
+                if os.path.isfile(os.path.join(failed_logs_dir, f))
+            )
+            preview_cnt = min(10, len(all_failed))
+            if preview_cnt > 0:
+                logger.error(f"Printing [{preview_cnt}/{len(all_failed)}] failed tests")
+                for fname in all_failed[:preview_cnt]:
+                    path = os.path.join(failed_logs_dir, fname)
+                    logger.error(f"===== {path} =====")
+                    try:
+                        with open(path, "r", encoding=constants.ENCODING, errors="ignore") as f:
+                            sys.stderr.write(f.read())
+                            sys.stderr.write("\n")
+                    except OSError as e:
+                        logger.error(f"  (cannot read {path}: {e})")
+
         return is_successfull_run
 
 
@@ -1026,8 +1060,16 @@ if __name__ == "__main__":
     logger.info(f"[ARGUMENTS] --parallel_devices={args.parallel_devices}")
     logger.info(f"[ARGUMENTS] --split_unit={args.split_unit}")
     logger.info(f"[ARGUMENTS] --repeat_failed={args.repeat_failed}")
+    logger.info(f"[ARGUMENTS] --excluded_tests_file={args.excluded_tests_file or 'None'}")
     logger.info(f"[ARGUMENTS] Executable file arguments = {exec_file_args}")
     TaskManager.process_timeout = args.process_timeout
+
+    # Get excluded tests from the file
+    excluded_tests = set()
+    if args.excluded_tests_file:
+        with open(args.excluded_tests_file, mode='r', encoding='utf-8') as excluded_tests_file:
+            excluded_tests = set(excluded_tests_file.read().split('\n'))
+
     test_runner = TestParallelRunner(
         exec_file_path=args.exec_file,
         test_command_line=exec_file_args,
@@ -1037,6 +1079,7 @@ if __name__ == "__main__":
         split_unit=args.split_unit,
         repeat_failed=args.repeat_failed,
         is_parallel_devices=args.parallel_devices,
+        excluded_tests=excluded_tests
     )
     test_runner.run()
     if not test_runner.postprocess_logs():

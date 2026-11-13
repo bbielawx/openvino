@@ -1,9 +1,10 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "min_max_prim_list_construct_replacer.hpp"
 
+#include "openvino/core/graph_util.hpp"
 #include "openvino/core/rt_info.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/maximum.hpp"
@@ -18,20 +19,18 @@
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace pass {
+namespace ov::frontend::pytorch::pass {
 
 using namespace ov::op;
 
 MinMaxPrimListConstructReplacer::MinMaxPrimListConstructReplacer() {
-    auto op = ov::pass::pattern::wrap_type<ov::op::util::FrameworkNode>();
+    const auto& op =
+        ov::pass::pattern::wrap_type<ov::op::util::FrameworkNode>(fw_node_predicate({"prim::min", "prim::max"}));
 
     ov::matcher_pass_callback callback = [](ov::pass::pattern::Matcher& m) {
         bool is_min = false;
-        auto max_op = cast_fw_node(m.get_match_root(), "prim::max");
-        auto min_op = cast_fw_node(m.get_match_root(), "prim::min");
+        const auto& max_op = cast_fw_node(m.get_match_root(), "prim::max");
+        const auto& min_op = cast_fw_node(m.get_match_root(), "prim::min");
         std::shared_ptr<ov::op::util::FrameworkNode> op;
         if (!max_op && !min_op) {
             return false;
@@ -84,7 +83,4 @@ MinMaxPrimListConstructReplacer::MinMaxPrimListConstructReplacer() {
     this->register_matcher(m, callback);
 };
 
-}  // namespace pass
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::pass

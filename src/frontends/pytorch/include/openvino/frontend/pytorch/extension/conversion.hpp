@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,12 +9,12 @@
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/frontend/pytorch/visibility.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
+namespace ov::frontend::pytorch {
 
-class PYTORCH_API ConversionExtension : public ConversionExtensionBase {
+class ConversionExtension : public ConversionExtensionBase {
 public:
+    OPENVINO_RTTI("frontend::pytorch::ConversionExtension", "", ConversionExtensionBase);
+
     using Ptr = std::shared_ptr<ConversionExtension>;
 
     ConversionExtension() = delete;
@@ -27,12 +27,8 @@ public:
         return m_converter;
     }
 
-    ~ConversionExtension() override;
-
 private:
     ov::frontend::CreatorFunction m_converter;
 };
 
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch

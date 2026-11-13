@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -46,6 +46,6 @@ class TRANSFORMATIONS_API TSShapeOfForward;
  */
 class ov::pass::transpose_sinking::TSShapeOfForward : public ov::pass::transpose_sinking::TSForwardBase {
 public:
-    OPENVINO_RTTI("TSShapeOfForward", "0");
+    OPENVINO_RTTI("TSShapeOfForward", "0", ov::pass::transpose_sinking::TSForwardBase);
     TSShapeOfForward();
 };

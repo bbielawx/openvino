@@ -1,8 +1,8 @@
 #include "check_network_batchable.hpp"
 
 #include "openvino/core/dimension.hpp"
+#include "openvino/op/convert.hpp"
 #include "openvino/op/detection_output.hpp"
-#include "openvino/op/ops.hpp"
 #include "openvino/pass/manager.hpp"
 #include "transformations/common_optimizations/dimension_tracking.hpp"
 #include "transformations/init_node_info.hpp"
@@ -15,11 +15,11 @@ bool model_has_suitable_do(const std::shared_ptr<const ov::Model>& model) {
     for (auto& result_node : model->get_results()) {
         auto do_node = result_node->input_value(0).get_node_shared_ptr();
         std::shared_ptr<ov::Node> convert_node;
-        if (ov::is_type<ov::opset1::Convert>(do_node)) {  // cases with do->convert->result
+        if (ov::is_type<ov::op::v0::Convert>(do_node)) {  // cases with do->convert->result
             convert_node = do_node;
             do_node = convert_node->get_input_node_shared_ptr(0);
         }
-        auto detectionOutputBase = std::dynamic_pointer_cast<ov::op::util::DetectionOutputBase>(do_node);
+        auto detectionOutputBase = ov::as_type_ptr<ov::op::util::DetectionOutputBase>(do_node);
         if (detectionOutputBase) {
             bDetectionOutput = true;
         }
@@ -77,13 +77,13 @@ std::shared_ptr<const ov::Model> apply_batch_affinity(const std::shared_ptr<cons
     for (auto& result_node : model->get_results()) {
         auto do_node = result_node->input_value(0).get_node_shared_ptr();
         std::shared_ptr<ov::Node> convert_node;
-        if (ov::is_type<ov::opset1::Convert>(do_node)) {  // cases with do->convert->result
+        if (ov::is_type<ov::op::v0::Convert>(do_node)) {  // cases with do->convert->result
             convert_node = do_node;
             do_node = convert_node->get_input_node_shared_ptr(0);
         }
         // the code below doesn't need to separate the versions (opsets) of the DetectionOutput
         // so base class  check is enough
-        auto detectionOutputBase = std::dynamic_pointer_cast<ov::op::util::DetectionOutputBase>(do_node);
+        auto detectionOutputBase = ov::as_type_ptr<ov::op::util::DetectionOutputBase>(do_node);
         if (detectionOutputBase) {
             result_node->get_rt_info()["affinity"] = deviceNameWithoutBatch;
             do_node->get_rt_info()["affinity"] = deviceNameWithoutBatch;

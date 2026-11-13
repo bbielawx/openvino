@@ -1,30 +1,48 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <mutex>
 #include <optional>
 
-#include "intel_npu/al/icompiled_model.hpp"
+#include "compiled_model_property_manager.hpp"
+#include "intel_npu/common/icompiled_model.hpp"
+#include "intel_npu/common/npu.hpp"
 #include "intel_npu/utils/logger/logger.hpp"
-#include "npu.hpp"
+#include "openvino/runtime/properties.hpp"
 #include "openvino/runtime/so_ptr.hpp"
 
 namespace intel_npu {
 
 class CompiledModel final : public ICompiledModel {
 public:
-    explicit CompiledModel(const std::shared_ptr<const ov::Model>& model,
-                           const std::shared_ptr<const ov::IPlugin>& plugin,
-                           const std::shared_ptr<const NetworkDescription>& networkDescription,
-                           const std::shared_ptr<IDevice>& device,
-                           const std::optional<ov::SoPtr<ICompiler>>& compiler,
-                           const Config& config);
+    /**
+     * @brief The constructor used by the "Plugin::compile_model" method.
+     * @note The compilation step has been placed inside this constructor instead of the originating call. This choice
+     * was motivated by the possibility of modifying the I/O identifiers via these passes which could potentially lead
+     * to bugs.
+     * @param model The IR of the model to be compiled
+     * @param plugin Pointer towards the NPU plugin instance
+     * @param device Backend specific object through which inference requests can be created
+     * @param graph Object holding the graph handle along with distinct fields for metadata
+     * @param config Custom configuration object
+     * @param batchSize Optional batch size value.
+     */
+    CompiledModel(const std::shared_ptr<const ov::Model>& model,
+                  const std::shared_ptr<const ov::IPlugin>& plugin,
+                  const std::shared_ptr<IDevice>& device,
+                  const std::shared_ptr<IGraph>& graph,
+                  const Config& config,
+                  const ov::AnyMap& properties,
+                  const std::optional<int64_t>& batchSize);
 
     CompiledModel(const CompiledModel&) = delete;
 
     CompiledModel& operator=(const CompiledModel&) = delete;
+
+    ~CompiledModel() override = default;
 
     std::shared_ptr<ov::IAsyncInferRequest> create_infer_request() const override;
 
@@ -38,30 +56,27 @@ public:
 
     ov::Any get_property(const std::string& name) const override;
 
-    const std::shared_ptr<const NetworkDescription>& get_network_description() const override;
+    const std::shared_ptr<IGraph>& get_graph() const override;
 
-    const Config& get_config() const override;
-
-    const ov::SoPtr<ICompiler>& get_compiler() const override;
+    void release_memory() override;
 
 private:
-    void initialize_properties();
+    // For special config, stream executors must be set accordingly to ensure correct behavior.
+    void configure_stream_executors(ov::streams::Num numStreams,
+                                    bool runInferencesSequentially,
+                                    bool useSharedExecutors,
+                                    uint64_t sharedExecutorsId);
 
-    void configure_stream_executors();
-
-    std::shared_ptr<const NetworkDescription> _networkPtr;
-    const std::shared_ptr<const ov::Model> _model;
-    const Config _config;
     Logger _logger;
+
     const std::shared_ptr<IDevice> _device;
-    mutable std::shared_ptr<IExecutor> _executorPtr;
-    std::shared_ptr<ov::threading::ITaskExecutor> _resultExecutor;
+    std::shared_ptr<IGraph> _graph;
+    std::optional<int64_t> _batchSize;
 
-    // properties map: {name -> [supported, mutable, eval function]}
-    std::map<std::string, std::tuple<bool, ov::PropertyMutability, std::function<ov::Any(const Config&)>>> _properties;
-    std::vector<ov::PropertyName> _supportedProperties;
+    std::unique_ptr<CompiledModelPropertyManager> _propertiesManager;
 
-    std::optional<ov::SoPtr<ICompiler>> _compiler;
+    std::shared_ptr<ov::threading::ITaskExecutor> _resultExecutor = nullptr;
+    mutable std::once_flag _streamExecutorsInitFlag;
 };
 
 }  //  namespace intel_npu

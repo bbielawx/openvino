@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import os
@@ -9,13 +9,13 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import openvino.runtime as ov
-from openvino.runtime import PartialShape, Model
+import openvino as ov
+from openvino import PartialShape, Model
 from openvino.test_utils import compare_functions
 from openvino.tools.ovc import ovc
 
 from common import constants
-from common.tf_layer_test_class import save_to_pb
+from common.utils.tf_utils import save_to_pb
 from common.utils.common_utils import shell
 
 
@@ -92,8 +92,9 @@ class TestOVCTool(unittest.TestCase):
 
         x1 = tf.keras.Input(shape=input_shape, name=input_names[0])
         x2 = tf.keras.Input(shape=input_shape, name=input_names[1])
-        y = tf.nn.sigmoid(tf.nn.relu(x1 + x2))
-        keras_net = tf.keras.Model(inputs=[x1, x2], outputs=[y])
+        relu = tf.keras.layers.Activation('relu')(x1 + x2)
+        sigmoid = tf.keras.layers.Activation('sigmoid')(relu)
+        keras_net = tf.keras.Model(inputs=[x1, x2], outputs=[sigmoid])
 
         tf.saved_model.save(keras_net, temp_dir + "/test_model")
 
@@ -111,13 +112,13 @@ class TestOVCTool(unittest.TestCase):
 
 
     def test_ovc_tool(self):
-        from openvino.runtime import Core
+        from openvino import Core
 
         model_path = self.create_tf_model(self.tmp_dir)
 
         core = Core()
 
-        # tests for MO cli tool
+        # tests for OVC cli tool
         exit_code, stderr = generate_ir_ovc(coverage=False, **{"input_model": model_path, "output_model": self.tmp_dir + os.sep + "model1"})
         assert not exit_code
 
@@ -126,13 +127,13 @@ class TestOVCTool(unittest.TestCase):
         assert flag, msg
 
     def test_ovc_tool_output_dir(self):
-        from openvino.runtime import Core
+        from openvino import Core
 
         model_path = self.create_tf_model(self.tmp_dir)
 
         core = Core()
 
-        # tests for MO cli tool
+        # tests for OVC cli tool
         exit_code, stderr = generate_ir_ovc(coverage=False, **{"input_model": model_path, "output_model": self.tmp_dir})
         assert not exit_code
 
@@ -140,8 +141,12 @@ class TestOVCTool(unittest.TestCase):
         flag, msg = compare_functions(ov_model, create_ref_graph(), False)
         assert flag, msg
 
+    @unittest.skipIf(
+        (sys.version_info[0], sys.version_info[1]) == (3, 12),
+        'Ticket: 152216'
+    )
     def test_ovc_tool_saved_model_dir(self):
-        from openvino.runtime import Core
+        from openvino import Core
         core = Core()
 
         model_dir, ref_model = self.create_tf_saved_model_dir(self.tmp_dir)
@@ -153,8 +158,12 @@ class TestOVCTool(unittest.TestCase):
         flag, msg = compare_functions(ov_model, ref_model, False)
         assert flag, msg
 
+    @unittest.skipIf(
+        (sys.version_info[0], sys.version_info[1]) == (3, 12),
+        'Ticket: 152216'
+    )
     def test_ovc_tool_saved_model_dir_with_sep_at_path_end(self):
-        from openvino.runtime import Core
+        from openvino import Core
         core = Core()
 
         model_dir, ref_model = self.create_tf_saved_model_dir(self.tmp_dir)
@@ -166,8 +175,12 @@ class TestOVCTool(unittest.TestCase):
         flag, msg = compare_functions(ov_model, ref_model, False)
         assert flag, msg
 
+    @unittest.skipIf(
+        (sys.version_info[0], sys.version_info[1]) == (3, 12),
+        'Ticket: 152216'
+    )
     def test_ovc_tool_non_existng_output_dir(self):
-        from openvino.runtime import Core
+        from openvino import Core
         core = Core()
 
         model_dir, ref_model = self.create_tf_saved_model_dir(self.tmp_dir)
@@ -179,9 +192,12 @@ class TestOVCTool(unittest.TestCase):
         flag, msg = compare_functions(ov_model, ref_model, False)
         assert flag, msg
 
-
+    @unittest.skipIf(
+        (sys.version_info[0], sys.version_info[1]) == (3, 12),
+        'Ticket: 152216'
+    )
     def test_ovc_tool_verbose(self):
-        from openvino.runtime import Core
+        from openvino import Core
         core = Core()
 
         model_dir, ref_model = self.create_tf_saved_model_dir(self.tmp_dir)

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -34,10 +34,12 @@ static size_t GetOptimalDivisor(const size_t input_size, size_t max_val = 16) {
 ParamsKey ResampleKernelOnnx::GetSupportedKey() const {
     ParamsKey k;
     k.EnableInputDataType(Datatype::F16);
+    k.EnableInputDataType(Datatype::BF16);
     k.EnableInputDataType(Datatype::F32);
     k.EnableInputDataType(Datatype::UINT8);
     k.EnableInputDataType(Datatype::INT8);
     k.EnableOutputDataType(Datatype::F16);
+    k.EnableOutputDataType(Datatype::BF16);
     k.EnableOutputDataType(Datatype::F32);
     k.EnableOutputDataType(Datatype::UINT8);
     k.EnableOutputDataType(Datatype::INT8);
@@ -76,12 +78,19 @@ ParamsKey ResampleKernelOnnx::GetSupportedKey() const {
     k.EnableTensorOffset();
     k.EnableTensorPitches();
     k.EnableBatching();
-    k.EnableReampleType(ResampleType::LINEAR_ONNX);
+    k.EnableResampleType(ResampleType::LINEAR_ONNX);
     return k;
 }
 
 DeviceFeaturesKey ResampleKernelOnnx::get_required_device_features_key(const Params& params) const {
     return get_common_subgroups_device_features_key(params);
+}
+
+static size_t get_vec_size(const resample_params &params) {
+    if (params.inputs[0].GetLayout() == DataLayout::fs_b_yx_fsv32) {
+        return 2;
+    }
+    return 1;
 }
 
 ResampleKernelBase::DispatchData ResampleKernelOnnx::SetDefault(const kernel_selector::resample_params& arg) const {
@@ -96,7 +105,7 @@ ResampleKernelBase::DispatchData ResampleKernelOnnx::SetDefault(const kernel_sel
     }
 
     dispatchData.gws[0] = CeilDiv(out.X().v, opt_x_block_size) * out.Y().v * out.Z().v;
-    dispatchData.gws[1] = Align(out.Feature().v, sub_group_size);
+    dispatchData.gws[1] = Align(CeilDiv(out.Feature().v, get_vec_size(arg)), sub_group_size);
     dispatchData.gws[2] = arg.outputs[0].Batch().v;
 
     dispatchData.lws[0] = 1;
@@ -118,13 +127,15 @@ KernelsPriority ResampleKernelOnnx::GetKernelsPriority(const Params& /*params*/)
 bool ResampleKernelOnnx::Validate(const Params& p) const {
     const resample_params& params = static_cast<const resample_params&>(p);
 
-    if (!Parent::Validate(p))
-        return false;
+    if (!Parent::Validate(p)) {
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     const auto& input = params.inputs[0];
     const auto& output = params.outputs[0];
-    if (input.Batch().v != output.Batch().v || input.Feature().v != output.Feature().v)
-        return false;
+    if (input.Batch().v != output.Batch().v || input.Feature().v != output.Feature().v) {
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     return true;
 }
@@ -133,13 +144,10 @@ static bool IsThreeSpatialResample(const resample_params& params) {
     const auto& input = params.inputs[0];
     const auto& output = params.outputs[0];
 
-    if (input.Dimentions() == 5 && input.Z().v != output.Z().v)
-        return true;
-
-    return false;
+    return input.Dimentions() == 5 && input.Z().v != output.Z().v;
 }
 
-JitConstants ResampleKernelOnnx::GetJitConstants(const resample_params& params) const {
+JitConstants ResampleKernelOnnx::GetJitConstants(const resample_params& params, bool legacy_scale) const {
     auto jit = Parent::GetJitConstants(params);
 
     auto opt_x_block_size = GetOptimalBlockSize(params);
@@ -151,25 +159,22 @@ JitConstants ResampleKernelOnnx::GetJitConstants(const resample_params& params) 
     jit.AddConstant(MakeJitConstant("X_BLOCKS", CeilDiv(params.outputs[0].X().v, opt_x_block_size)));
     jit.AddConstant(MakeJitConstant("SUB_GROUP_SIZE", sub_group_size));
 
-    size_t vec_size = 0;
-    if (params.inputs[0].GetLayout() == DataLayout::fs_b_yx_fsv32) {
-        vec_size = 2;
-        jit.AddConstant(MakeJitConstant("FEATURE_SLICE_SIZE", 32));
-    } else {
-        vec_size = 1;
-        jit.AddConstant(MakeJitConstant("FEATURE_SLICE_SIZE", 16));
-    }
-    if (IsThreeSpatialResample(params))
+    size_t vec_size = get_vec_size(params);
+    jit.AddConstant(MakeJitConstant("FEATURE_SLICE_SIZE", 16 * vec_size));
+
+    if (IsThreeSpatialResample(params)) {
         jit.AddConstant(MakeJitConstant("THREE_SPATIAL_RESAMPLE", ""));
+    }
 
     jit.AddConstant(MakeJitConstant("VEC_SIZE", vec_size));
 
     if (!params.fused_ops.empty()) {
         std::vector<std::string> idx_order;
-        if (params.inputs[0].Dimentions() == 5)
+        if (params.inputs[0].Dimentions() == 5) {
             idx_order = {"b", "feature_block", "z", "y", "(x + out_x)"};
-        else
+        } else {
             idx_order = {"b", "feature_block", "y", "(x + out_x)"};
+        }
         FusedOpsConfiguration conf =
             {"", idx_order, "res", GetAccumulatorType(params), vec_size, LoadType::LT_ALIGNED_READ};
         conf.SetVectorAxis(Tensor::DataChannelName::FEATURE);

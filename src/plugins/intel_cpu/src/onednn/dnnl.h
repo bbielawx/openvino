@@ -1,10 +1,10 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include <dnnl.hpp>
+#include <oneapi/dnnl/dnnl.hpp>
 
 namespace dnnl {
 
@@ -15,7 +15,7 @@ namespace utils {
 unsigned get_cache_size(int level, bool per_core);
 
 const char* fmt2str(memory::format_tag fmt);
-dnnl::memory::format_tag str2fmt(const char *str);
+dnnl::memory::format_tag str2fmt(const char* str);
 
 }  // namespace utils
 }  // namespace dnnl

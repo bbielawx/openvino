@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -16,10 +16,7 @@
 #include "pt_framework_node.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -37,7 +34,7 @@ OutputVector translate_linspace(const NodeContext& context) {
     auto dtype = element::f32;
     if (!context.input_is_none(3) && context.get_input_size() == 7) {
         // Case where dtype is provided directly in dtype input.
-        if (std::dynamic_pointer_cast<v0::Constant>(context.get_input_from_visible_context(3).get_node_shared_ptr())) {
+        if (ov::as_type_ptr<v0::Constant>(context.get_input_from_visible_context(3).get_node_shared_ptr())) {
             dtype = convert_dtype(context.const_input<int64_t>(3));
             apply_dtype = true;
         } else if (const auto& fw_node = cast_fw_node(context.get_input(3).get_node_shared_ptr(), "prim::dtype")) {
@@ -57,9 +54,10 @@ OutputVector translate_linspace(const NodeContext& context) {
     auto step_range = context.mark_node(std::make_shared<v4::Range>(const_0, steps, const_1, element::f32));
 
     auto sub_end_start = context.mark_node(std::make_shared<v1::Subtract>(end, start));
-    auto sub_steps_1 = context.mark_node(std::make_shared<v1::Subtract>(steps, const_1));
-    auto step_multiplier = context.mark_node(std::make_shared<v1::Divide>(sub_end_start, sub_steps_1));
     auto is_single_step = context.mark_node(std::make_shared<v1::Equal>(steps, const_1));
+    auto sub_steps_1 = context.mark_node(std::make_shared<v1::Subtract>(steps, const_1));
+    auto safe_steps = context.mark_node(std::make_shared<v1::Select>(is_single_step, const_1, sub_steps_1));
+    auto step_multiplier = context.mark_node(std::make_shared<v1::Divide>(sub_end_start, safe_steps));
     auto select_multiplier = context.mark_node(std::make_shared<v1::Select>(is_single_step, const_0, step_multiplier));
     auto step_values = context.mark_node(std::make_shared<v1::Multiply>(step_range, select_multiplier));
 
@@ -73,7 +71,4 @@ OutputVector translate_linspace(const NodeContext& context) {
     return {linspace};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

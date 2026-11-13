@@ -1,10 +1,9 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "ov_lpt_models/precision_propagation.hpp"
-
-#include "openvino/opsets/opset1.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
 #include "ov_ops/type_relaxed.hpp"
 #include "low_precision/network_helper.hpp"
 #include "low_precision/rt_info/precision_preserved_attribute.hpp"
@@ -16,6 +15,8 @@
 #include "ov_lpt_models/common/dequantization_operations.hpp"
 #include "ov_lpt_models/common/builders.hpp"
 #include "common_test_utils/node_builders/fake_quantize.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/max_pool.hpp"
 
 namespace ov {
 namespace builder {
@@ -167,7 +168,6 @@ std::shared_ptr<ov::Model> PrecisionPropagationFunction::getReferenceWithNeighbo
     const FakeQuantizeOnData& fqOnData3,
     const ov::element::Type precisionBeforeOp,
     const DequantizationOperations& dequantizationBefore,
-    const ov::element::Type precisionAfterOperation,
     const DequantizationOperations& dequantizationOperations1,
     const DequantizationOperations& dequantizationOperations2) {
     const auto input1 = std::make_shared<ov::opset1::Parameter>(precision, inputShape);

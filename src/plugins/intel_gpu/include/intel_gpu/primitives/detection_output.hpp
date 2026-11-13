@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -75,9 +75,8 @@ struct detection_output : public primitive_base<detection_output> {
                      const bool decrease_label_id = false,
                      const bool clip_before_nms = false,
                      const bool clip_after_nms = false,
-                     const float objectness_score = 0.0f,
-                     const padding& output_padding = padding())
-        : primitive_base(id, inputs, {output_padding}),
+                     const float objectness_score = 0.0f)
+        : primitive_base(id, inputs),
           num_classes(num_classes),
           keep_top_k(keep_top_k),
           share_location(share_location),
@@ -97,9 +96,10 @@ struct detection_output : public primitive_base<detection_output> {
           clip_before_nms(clip_before_nms),
           clip_after_nms(clip_after_nms),
           objectness_score(objectness_score) {
-        if (decrease_label_id && background_label_id != 0)
+        if (decrease_label_id && background_label_id != 0) {
             throw std::invalid_argument(
                 "Cannot use decrease_label_id and background_label_id parameter simultaneously.");
+        }
     }
 
     /// @brief Number of classes to be predicted.
@@ -166,8 +166,9 @@ struct detection_output : public primitive_base<detection_output> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const detection_output>(rhs);
 

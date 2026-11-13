@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,9 +12,7 @@
 
 using namespace ::ONNX_NAMESPACE;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
+namespace ov::frontend::onnx {
 std::string get_node_domain(const NodeProto& node_proto) {
     return node_proto.has_domain() ? node_proto.domain() : "";
 }
@@ -71,14 +69,11 @@ void Model::enable_opset_domain(const std::string& domain, const OperatorsBridge
     if (m_opset.find(domain) == std::end(m_opset)) {
         const auto opset = ops_bridge.get_operator_set(domain);
         if (opset.empty()) {
-            OPENVINO_WARN << "Couldn't enable domain: " << domain
-                          << " since it does not have any registered operators.";
+            OPENVINO_WARN("Couldn't enable domain: ", domain, " since it does not have any registered operators.");
             return;
         }
         m_opset.emplace(domain, opset);
     }
 }
 
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::onnx

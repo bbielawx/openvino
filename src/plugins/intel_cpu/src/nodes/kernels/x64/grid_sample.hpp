@@ -1,17 +1,30 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <cassert>
+#include <cstdint>
+
 #include "jit_kernel_base.hpp"
-#include <set>
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/core/visibility.hpp"
 
-namespace ov {
-namespace intel_cpu {
+#if defined(OPENVINO_ARCH_X86_64)
+#    include <xbyak/xbyak.h>
 
-enum class GridSampleInterpolationMode { BILINEAR, BICUBIC, NEAREST };
-enum class GridSamplePaddingMode { ZEROS, BORDER, REFLECTION };
+#    include <common/utils.hpp>
+#    include <cpu/x64/cpu_isa_traits.hpp>
+#    include <cpu/x64/jit_generator.hpp>
+
+#    include "nodes/kernels/x64/registers_pool.hpp"
+#endif  // OPENVINO_ARCH_X86_64
+
+namespace ov::intel_cpu {
+
+enum class GridSampleInterpolationMode : uint8_t { BILINEAR, BICUBIC, NEAREST };
+enum class GridSamplePaddingMode : uint8_t { ZEROS, BORDER, REFLECTION };
 
 namespace kernel {
 
@@ -20,78 +33,86 @@ class GridSampleKernelBase;
 #if defined(OPENVINO_ARCH_X86_64)
 
 struct GridSampleKernelConfParams {
-    bool dynamicShapes  = false;
-    bool dynamicBatch   = false;
+    bool dynamicShapes = false;
+    bool dynamicBatch = false;
     bool dynamicChannel = false;
-    bool alignCorners  = false;
+    bool alignCorners = false;
     GridSampleInterpolationMode interpolationMode = GridSampleInterpolationMode::BILINEAR;
     GridSamplePaddingMode paddingMode = GridSamplePaddingMode::ZEROS;
     ov::element::Type inDataPrc;
     ov::element::Type gridPrc;
-    uint64_t batchNum      = 1lu;
-    uint64_t cannelNum     = 1lu;
-    uint64_t srcBatchStepB = 0lu;
+    uint64_t batchNum = 1LU;
+    uint64_t cannelNum = 1LU;
+    uint32_t srcBatchStepB = 0LU;
 };
 
 struct GridSamplesKernelExecArgs {
-    const void* src;
-    const void* grid;
-    void* dst;
-    uint64_t batchNum    = 1lu;
-    uint64_t channelsNum = 1lu;
-    const float* srcWidthF;
-    const float* srcHeightF;
-    uint64_t srcBatchStepB   = 0lu;
-    uint64_t gridBatchStepB  = 0lu;
-    uint64_t dstBatchStepB   = 0lu;
-    uint64_t srcChannelStepB = 0lu;
-    uint64_t dstChannelStepB = 0lu;
-    const void* wDenormCoefF;
-    const void* hDenormCoefF;
-    const void* srcWidthB;
-    const void* srcHeightMul2F;
-    const void* srcWidthMul2F;
-    const void* srcHeightMul2Sub1F;
-    const void* srcWidthMul2Sub1F;
-    const void* srcHeightSub1F;
-    const void* srcWidthSub1F;
-    const void* dataTypeSize;
-    const void* buffer;
-    uint64_t workAmount = 0lu;
+    const void* src = nullptr;
+    const void* grid = nullptr;
+    void* dst = nullptr;
+    uint64_t batchNum = 1LU;
+    uint64_t channelsNum = 1LU;
+    const float* srcWidthF = nullptr;
+    const float* srcHeightF = nullptr;
+    uint64_t srcBatchStepB = 0LU;
+    uint64_t gridBatchStepB = 0LU;
+    uint64_t dstBatchStepB = 0LU;
+    uint64_t srcChannelStepB = 0LU;
+    uint64_t dstChannelStepB = 0LU;
+    const void* wDenormCoefF = nullptr;
+    const void* hDenormCoefF = nullptr;
+    const void* srcWidthB = nullptr;
+    const void* srcHeightMul2F = nullptr;
+    const void* srcWidthMul2F = nullptr;
+    const void* srcHeightMul2Sub1F = nullptr;
+    const void* srcWidthMul2Sub1F = nullptr;
+    const void* srcHeightSub1F = nullptr;
+    const void* srcWidthSub1F = nullptr;
+    const void* dataTypeSize = nullptr;
+    const void* buffer = nullptr;
+    uint64_t workAmount = 0LU;
 };
 
-enum coord {
-    w, h
-};
+enum coord : uint8_t { w, h };
 
-class GridSampleKernelBase: public JitKernelBase {
+class GridSampleKernelBase : public JitKernelBase {
 public:
-    void (*ker_)(const GridSamplesKernelExecArgs *);
-    void operator()(const GridSamplesKernelExecArgs *args) {
+    void (*ker_)(const GridSamplesKernelExecArgs*) = nullptr;
+    void operator()(const GridSamplesKernelExecArgs* args) const {
         assert(ker_);
         ker_(args);
     }
-    explicit GridSampleKernelBase(const char* name, const GridSampleKernelConfParams& jcp, dnnl::impl::cpu::x64::cpu_isa_t isa)
-        : JitKernelBase(name, isa), ker_(nullptr), jcp(jcp) {}
+    explicit GridSampleKernelBase(const char* name,
+                                  const GridSampleKernelConfParams& jcp,
+                                  dnnl::impl::cpu::x64::cpu_isa_t isa,
+                                  uint32_t vlen)
+        : JitKernelBase(name, isa),
+
+          jcp(jcp),
+          vlen(vlen),
+          dataTypeSize(jcp.inDataPrc.size()),
+          gridTypeSize(jcp.gridPrc.size()),
+          dataElPerVec(vlen / dataTypeSize),
+          gridElPerVec(vlen / gridTypeSize) {}
 
     virtual void create_ker() = 0;
-    uint64_t getVecLen() {
+    uint32_t getVecLen() const {
         return vlen;
     }
-    uint64_t getDataElPerVec() {
+    uint32_t getDataElPerVec() const {
         return dataElPerVec;
     }
-    uint64_t getGridElPerVec() {
+    uint32_t getGridElPerVec() const {
         return gridElPerVec;
     }
 
 protected:
     GridSampleKernelConfParams jcp;
-    uint64_t vlen         = 16lu;
-    uint64_t dataTypeSize = 1lu;
-    uint64_t gridTypeSize = 1lu;
-    uint64_t dataElPerVec = 1lu;
-    uint64_t gridElPerVec = 1lu;
+    uint32_t vlen = 16LU;
+    uint32_t dataTypeSize = 1LU;
+    uint32_t gridTypeSize = 1LU;
+    uint32_t dataElPerVec = 1LU;
+    uint32_t gridElPerVec = 1LU;
 };
 
 template <dnnl::impl::cpu::x64::cpu_isa_t isa>
@@ -104,12 +125,16 @@ public:
     void create_ker() override;
     void generate() override;
 
-    using Vmm   = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core, Xbyak::Zmm,
-                                                           isa == dnnl::impl::cpu::x64::sse41,       Xbyak::Xmm,
-                                                                                                     Xbyak::Ymm>::type;
-    using Vmask = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core, Xbyak::Opmask,
-                                                           isa == dnnl::impl::cpu::x64::sse41,       Xbyak::Xmm,
-                                                                                                     Xbyak::Ymm>::type;
+    using Vmm = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core,
+                                                         Xbyak::Zmm,
+                                                         isa == dnnl::impl::cpu::x64::sse41,
+                                                         Xbyak::Xmm,
+                                                         Xbyak::Ymm>::type;
+    using Vmask = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core,
+                                                           Xbyak::Opmask,
+                                                           isa == dnnl::impl::cpu::x64::sse41,
+                                                           Xbyak::Xmm,
+                                                           Xbyak::Ymm>::type;
 
 private:
     uint8_t dataTypeShift = 0;
@@ -138,23 +163,23 @@ private:
     RegistersPool::Reg<Vmm> vWDenormCoefF;
     RegistersPool::Reg<Vmm> vHDenormCoefF;
     RegistersPool::Reg<Vmm> vGridPermMask;
-    RegistersPool::Reg<Vmm> vDataTypeSizeB;      // for ZEROS padding
-    RegistersPool::Reg<Vmm> vSrcWidthB;          // for ZEROS padding
+    RegistersPool::Reg<Vmm> vDataTypeSizeB;  // for ZEROS padding
+    RegistersPool::Reg<Vmm> vSrcWidthB;      // for ZEROS padding
 
-    RegistersPool::Reg<Vmm> vSrcHeightSub1F;     // for BORDER padding
-    RegistersPool::Reg<Vmm> vSrcWidthSub1F;      // for BORDER padding
+    RegistersPool::Reg<Vmm> vSrcHeightSub1F;  // for BORDER padding
+    RegistersPool::Reg<Vmm> vSrcWidthSub1F;   // for BORDER padding
 
-    RegistersPool::Reg<Vmm> vSrcHeightMul2F;     // for REFLECTION padding
-    RegistersPool::Reg<Vmm> vSrcWidthMul2F;      // for REFLECTION padding
-    RegistersPool::Reg<Vmm> vSrcHeightMul2Sub1F; // for REFLECTION padding
-    RegistersPool::Reg<Vmm> vSrcWidthMul2Sub1F;  // for REFLECTION padding
-    RegistersPool::Reg<Vmm> vAbsMask;            // for REFLECTION padding
+    RegistersPool::Reg<Vmm> vSrcHeightMul2F;      // for REFLECTION padding
+    RegistersPool::Reg<Vmm> vSrcWidthMul2F;       // for REFLECTION padding
+    RegistersPool::Reg<Vmm> vSrcHeightMul2Sub1F;  // for REFLECTION padding
+    RegistersPool::Reg<Vmm> vSrcWidthMul2Sub1F;   // for REFLECTION padding
+    RegistersPool::Reg<Vmm> vAbsMask;             // for REFLECTION padding
 
-    RegistersPool::Reg<Vmm> vConst_0_75;         // for BICUBIC interpolation
-    RegistersPool::Reg<Vmm> vConst_1_25;         // for BICUBIC interpolation
-    RegistersPool::Reg<Vmm> vConst_1_50;         // for BICUBIC interpolation
-    RegistersPool::Reg<Vmm> vConst_2_00;         // for BICUBIC interpolation
-    RegistersPool::Reg<Vmm> vConst_2_25;         // for BICUBIC interpolation
+    RegistersPool::Reg<Vmm> vConst_0_75;  // for BICUBIC interpolation
+    RegistersPool::Reg<Vmm> vConst_1_25;  // for BICUBIC interpolation
+    RegistersPool::Reg<Vmm> vConst_1_50;  // for BICUBIC interpolation
+    RegistersPool::Reg<Vmm> vConst_2_00;  // for BICUBIC interpolation
+    RegistersPool::Reg<Vmm> vConst_2_25;  // for BICUBIC interpolation
 
     void initVectors();
     void process();
@@ -169,9 +194,9 @@ private:
     void zerosPadding(const Vmask& kDst, const Vmm& vHCoord, const Vmm& vWCoord);
     void zerosPaddingW(const Vmask& kDst, const Vmm& vCoord);
     void zerosPaddingH(const Vmask& kDst, const Vmm& vCoord, const Vmask& kMaskW);
-    void borderPadding(const Vmm& vCoordDst, const Vmm& vCoordOrigin, const coord dim);
-    void reflectionPadding(const Vmm& vCoordDst, const Vmm& vCoordOrigin, const coord dim);
-    void bicubicCoefficients(const Vmm& vCoef, const Vmm& vDX, const uint8_t idx);
+    void borderPadding(const Vmm& vCoordDst, const Vmm& vCoordOrigin, coord dim);
+    void reflectionPadding(const Vmm& vCoordDst, const Vmm& vCoordOrigin, coord dim);
+    void bicubicCoefficients(const Vmm& vCoef, const Vmm& vDX, uint8_t idx);
     void tail();
 
     // Aux
@@ -179,8 +204,7 @@ private:
     void hwShiftPs2dq(const Vmm& vDst, const Vmm& vHCoord, const Vmm& vWCoord, const Vmm& vWidth);
 };
 
-#endif // OPENVINO_ARCH_X86_64
+#endif  // OPENVINO_ARCH_X86_64
 
-}   // namespace kernel
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace kernel
+}  // namespace ov::intel_cpu

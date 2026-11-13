@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -14,10 +14,12 @@ ParamsKey MVNKernelBfyxOpt::GetSupportedKey() const {
     ParamsKey k;
     k.EnableInputDataType(Datatype::F16);
     k.EnableInputDataType(Datatype::F32);
+    k.EnableInputDataType(Datatype::BF16);
     k.EnableInputDataType(Datatype::INT8);
     k.EnableInputDataType(Datatype::UINT8);
     k.EnableOutputDataType(Datatype::F16);
     k.EnableOutputDataType(Datatype::F32);
+    k.EnableOutputDataType(Datatype::BF16);
     k.EnableOutputDataType(Datatype::INT8);
     k.EnableOutputDataType(Datatype::UINT8);
     k.EnableInputLayout(DataLayout::bfyx);
@@ -69,6 +71,20 @@ MVNKernelBfyxOpt::Parent::DispatchData MVNKernelBfyxOpt::SetDefault(const mvn_pa
             dispatchData.itemsNum /= 2;
         }
 
+        // One loop iteration of the kernel stores lws[0] contiguous output elements. When that spans less than a
+        // cache line the store is a partial write, which costs extra read-modify-write traffic. It shows up most
+        // clearly when a fused quantize narrows the output to 1 byte per element while the input stays at 2:
+        // a 256-element data set picks lws[0]=32 above, i.e. a 32-byte store into a 64-byte line.
+        // Keep doubling the work group until an iteration covers a full line. This can only raise lws[0], so
+        // data sets that already store a full line or more keep their previous dispatch.
+        const size_t bytes_per_cache_line = 64;
+        const size_t output_elem_size = BytesPerElement(params.outputs[0].GetDType());
+        while (dispatchData.lws[0] * output_elem_size < bytes_per_cache_line &&
+               2 * dispatchData.lws[0] <= std::min<uint64_t>(max_lws, dispatchData.dataSetSize)) {
+            dispatchData.lws[0] *= 2;
+            dispatchData.itemsNum /= 2;
+        }
+
         dispatchData.gws[0] = dispatchData.lws[0];
         dispatchData.leftovers = dispatchData.dataSetSize % dispatchData.lws[0];
     }
@@ -80,7 +96,7 @@ JitConstants MVNKernelBfyxOpt::GetJitConstants(const mvn_params& params, MVNKern
 
     if (params.has_dynamic_tensors()) {
         const auto& input = params.inputs[0];
-        DimensionAccessHelper dims(input);
+        DimensionAccessHelperJit dims(input);
         std::string data_set_size;
         std::string data_set_count;
         if (params.mvnMode == MVNMode::WITHIN_CHANNELS) {
@@ -93,18 +109,14 @@ JitConstants MVNKernelBfyxOpt::GetJitConstants(const mvn_params& params, MVNKern
         const std::string lws_0 = "get_local_size(0)";
         jit.AddConstants({
             MakeJitConstant("LWS", lws_0),
-            MakeJitConstant("SLM_SIZE", dispatchData.maxSlmSize),
             MakeJitConstant("DATA_SET_SIZE", data_set_size),
             MakeJitConstant("DATA_SETS_COUNT", data_set_count),
         });
     } else {
         jit.AddConstants({
-            MakeJitConstant("ITEMS_NUM", dispatchData.itemsNum),
             MakeJitConstant("LWS", dispatchData.lws[0]),
-            MakeJitConstant("SLM_SIZE", dispatchData.lws[0]),
             MakeJitConstant("DATA_SETS_COUNT", dispatchData.dataSetsCount),
             MakeJitConstant("DATA_SET_SIZE", dispatchData.dataSetSize),
-            MakeJitConstant("LEFTOVERS", dispatchData.leftovers),
         });
     }
     auto activation_dt = GetActivationType(params);
@@ -139,7 +151,20 @@ JitConstants MVNKernelBfyxOpt::GetJitConstants(const mvn_params& params, MVNKern
                               "((in_data_set_idx + iteration_in_data_set_offset) % OUTPUT_SIZE_X)" };
             }
         }
-        auto conf = FusedOpsConfiguration("", idx_order, "result", activation_dt, 1, LoadType::LT_UNALIGNED, BoundaryCheck::DISABLED);
+
+        auto boundary_check = BoundaryCheck::DISABLED;
+        if (params.has_dynamic_tensors()) {
+            boundary_check = BoundaryCheck::ENABLED;
+        } else {
+            for (const auto& fused_op : params.fused_ops) {
+                OPENVINO_ASSERT(fused_op.output_tensors.size() == 1, "Design changed to allow multiple layouts, this path is not expected to be impacted.");
+                if (!fused_op.output_tensors[0].SameDims(params.outputs[0])) {
+                    boundary_check = BoundaryCheck::ENABLED;
+                    break;
+                }
+            }
+        }
+        auto conf = FusedOpsConfiguration("", idx_order, "result", activation_dt, 1, LoadType::LT_UNALIGNED, boundary_check);
         jit.Merge(MakeFusedOpsJitConstants(params, { conf }));
     }
 

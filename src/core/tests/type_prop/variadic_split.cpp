@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -42,8 +42,10 @@ protected:
             in_symbols.push_back(std::make_shared<Symbol>());
 
         auto exp_symbols = in_symbols;
-        const auto n_axis = ov::util::normalize_axis("", axis, p_shape.rank());
-        exp_symbols[n_axis] = nullptr;
+        const auto rank = p_shape.rank();
+        if (rank.is_static()) {
+            exp_symbols[ov::util::try_normalize_axis(axis, rank)] = nullptr;
+        }
 
         return {in_symbols, exp_symbols};
     }
@@ -136,8 +138,7 @@ TEST_P(VariadicSplitTest, use_default_ctor) {
 }
 
 TEST_P(VariadicSplitTest, symbol_propagation) {
-    ov::TensorSymbol in_symbols, exp_symbols;
-    std::tie(in_symbols, exp_symbols) = make_in_exp_symbols();
+    const auto& [in_symbols, exp_symbols] = make_in_exp_symbols();
 
     set_shape_symbols(p_shape, in_symbols);
     const auto data = make_shared<ov::op::v0::Parameter>(element::f32, p_shape);
@@ -206,9 +207,7 @@ INSTANTIATE_TEST_SUITE_P(type_prop_bounds_propagate,
                          PrintToStringParamName());
 
 TEST_P(VariadicSplitBoundTest, propagate_symbol_and_dynamic_value) {
-    ov::TensorSymbol in_symbols;
-    std::vector<ov::TensorSymbol> exp_symbols;
-    std::tie(in_symbols, exp_symbols) = make_in_exp_symbols();
+    const auto& [in_symbols, exp_symbols] = make_in_exp_symbols();
     set_shape_symbols(p_shape, in_symbols);
 
     constexpr auto et = element::i64;

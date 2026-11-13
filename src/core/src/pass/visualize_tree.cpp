@@ -1,21 +1,25 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "openvino/pass/visualize_tree.hpp"
 
+#include <cctype>
 #include <cmath>
 #include <fstream>
 
 #include "openvino/cc/pass/itt.hpp"
+#include "openvino/core/graph_util.hpp"
 #include "openvino/core/type.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/parameter.hpp"
 #include "openvino/op/util/multi_subgraph_base.hpp"
 #include "openvino/op/util/op_types.hpp"
+#include "openvino/op/util/symbolic_info.hpp"
 #include "openvino/util/common_util.hpp"
 #include "openvino/util/env_util.hpp"
 #include "openvino/util/file_util.hpp"
+#include "transformations/symbolic_transformations/symbolic_optimizations.hpp"
 
 /*
  * As we are visualizing the graph, we will make some tweaks to the generated dot file to make
@@ -156,9 +160,7 @@ static std::string get_attribute_values(const std::map<std::string, ov::Any>& at
             item.second.print(ss);
             ss << "}";
         } else {
-            ss << "{"
-               << "[EMPTY]"
-               << "}";
+            ss << "{[EMPTY]}";
         }
 
         first = false;
@@ -166,24 +168,66 @@ static std::string get_attribute_values(const std::map<std::string, ov::Any>& at
     return ss.str();
 }
 
-static std::string name_of_subgraph_file(const std::shared_ptr<ov::Node> op,
-                                         const std::string& current_file_name,
-                                         const size_t& i) {
+static char hex_digit(unsigned char value) {
+    OPENVINO_ASSERT(value < 16, "Hexadecimal digit value must be less than 16");
+    return static_cast<char>(value < 10 ? '0' + value : 'a' + (value - 10));
+}
+
+// std::isalnum() is locale-dependent above 7-bit ASCII; this bound keeps is_safe() locale-independent.
+constexpr unsigned char ascii_limit = 0x80;
+
+// Allowlist, not a denylist of path-sensitive characters, since those are platform-dependent
+// (e.g. ':' only matters on NTFS).
+static bool is_safe(unsigned char c) {
+    return (c < ascii_limit && std::isalnum(c)) || c == '_' || c == '.' || c == '-';
+}
+
+static std::filesystem::path name_of_subgraph_file(const std::shared_ptr<ov::Node> op,
+                                                   const std::filesystem::path& current_file_name,
+                                                   const size_t i) {
     // friendly is never empty it is either friendly (set by user) or unique (auto-generated) name
-    auto node_name = op->get_friendly_name();
-    std::replace(node_name.begin(), node_name.end(), '/', '-');
-    auto postfix = "_node_" + node_name + "_subgraph_#" + std::to_string(i);
+    const auto& node_name = op->get_friendly_name();
+
+    std::string sanitized_name;
+    sanitized_name.reserve(node_name.size());
+    for (unsigned char c : node_name) {
+        if (is_safe(c)) {
+            sanitized_name += static_cast<char>(c);
+        } else {
+            // '~' is not in is_safe()'s allowlist, so it only ever appears here as an escape's
+            // lead byte, keeping this "~xy" encoding unambiguous.
+            sanitized_name += '~';
+            sanitized_name += hex_digit(c >> 4);
+            sanitized_name += hex_digit(c & 0xF);
+        }
+    }
+
     auto file_name = current_file_name;
-    auto insert_pos = file_name.find_last_of('.');
-    file_name.insert(insert_pos, postfix);
+    file_name.replace_extension("._node_" + sanitized_name + "_subgraph_#" + std::to_string(i));
     return file_name;
 }
+
+#if defined(ENABLE_OPENVINO_DEBUG) && !defined(_WIN32)
+static std::string quote_shell_argument(const std::filesystem::path& path) {
+    const auto path_string = ov::util::path_to_string(path);
+    std::string quoted_path = "'";
+    for (const auto character : path_string) {
+        if (character == '\'') {
+            quoted_path += "'\\''";
+        } else {
+            quoted_path += character;
+        }
+    }
+    quoted_path += "'";
+    return quoted_path;
+}
+#endif
 
 static void collect_symbol_print_values(const std::shared_ptr<ov::Model>& m,
                                         std::unordered_map<std::shared_ptr<ov::Symbol>, size_t>& symbol_to_number) {
     size_t n = symbol_to_number.size() + 1;
     for (const auto& node : m->get_ops()) {
-        if (auto multi_subgraph_op = std::dynamic_pointer_cast<ov::op::util::MultiSubGraphOp>(node))
+        if (auto multi_subgraph_op = ov::as_type_ptr<ov::op::util::MultiSubGraphOp>(node))
             for (size_t i = 0; i < multi_subgraph_op->get_internal_subgraphs_size(); ++i)
                 if (const auto& sub_graph = multi_subgraph_op->get_function(i))
                     collect_symbol_print_values(sub_graph, symbol_to_number);
@@ -213,6 +257,16 @@ static void collect_symbol_print_values(const std::shared_ptr<ov::Model>& m,
 
 bool ov::pass::VisualizeTree::run_on_model(const std::shared_ptr<ov::Model>& f) {
     RUN_ON_MODEL_SCOPE(VisualizeTree);
+
+    static const bool ovasp = ov::util::getenv_bool("OV_VISUALIZE_APPLY_SYMBOLIC_PROPAGATION");
+    if (ovasp) {
+        std::cerr << "Warning: OV_VISUALIZE_APPLY_SYMBOLIC_PROPAGATION enabled. ov::pass::SymbolicPropagation will be "
+                     "triggered"
+                  << std::endl;
+        ov::pass::SymbolicPropagation().run_on_model(f);
+        std::cerr << "ov::pass::SymbolicPropagation finished successfully" << std::endl;
+    }
+
     std::unordered_map<Node*, HeightMap> height_maps;
 
     for (auto& node : f->get_ops()) {
@@ -229,7 +283,7 @@ bool ov::pass::VisualizeTree::run_on_model(const std::shared_ptr<ov::Model>& f) 
 
     for (auto it = nodes.rbegin(); it != nodes.rend(); ++it) {
         auto& node = *it;
-        if (auto multi_subgraph_op = std::dynamic_pointer_cast<op::util::MultiSubGraphOp>(node)) {
+        if (auto multi_subgraph_op = ov::as_type_ptr<op::util::MultiSubGraphOp>(node)) {
             for (size_t i = 0; i < multi_subgraph_op->get_internal_subgraphs_size(); ++i)
                 if (const auto& sub_graph = multi_subgraph_op->get_function(i))
                     ov::pass::VisualizeTree(name_of_subgraph_file(multi_subgraph_op, m_name, i),
@@ -249,7 +303,7 @@ bool ov::pass::VisualizeTree::run_on_model(const std::shared_ptr<ov::Model>& f) 
 
     size_t fake_node_ctr = 0;
 
-    traverse_nodes(f, [&](std::shared_ptr<Node> node) {
+    traverse_nodes(f, [&](const std::shared_ptr<Node>& node) {
         add_node_arguments(node, height_maps, fake_node_ctr);
     });
 
@@ -257,20 +311,29 @@ bool ov::pass::VisualizeTree::run_on_model(const std::shared_ptr<ov::Model>& f) 
 
     // Clean up local variable not to hold node pointers
     m_nodes_with_attributes.clear();
-
+    if (ovasp) {
+        std::cerr << "Warning: Due to previously triggered SymbolicPropagation we need to clean-up the model from "
+                     "symbols. It includes model revalidation"
+                  << std::endl;
+        ov::remove_skip_invalidation_rti(f);
+        std::cerr << "Model revalidation finished successfully" << std::endl;
+    }
     return false;
 }
 
 ov::pass::VisualizeTree::VisualizeTree(const std::string& file_name, node_modifiers_t nm, bool dot_only)
-    : m_name{file_name},
-      m_node_modifiers{nm},
-      m_dot_only(dot_only) {}
+    : VisualizeTree(ov::util::make_path(file_name), std::move(nm), dot_only) {}
+
+ov::pass::VisualizeTree::VisualizeTree(std::filesystem::path file_name, node_modifiers_t nm, bool dot_only)
+    : m_name{std::move(file_name)},
+      m_node_modifiers{std::move(nm)},
+      m_dot_only{dot_only} {}
 
 void ov::pass::VisualizeTree::add_node_arguments(std::shared_ptr<Node> node,
                                                  std::unordered_map<Node*, HeightMap>& height_maps,
                                                  size_t& fake_node_ctr) {
     size_t arg_index = 0;
-    for (auto input_value : node->input_values()) {
+    for (const auto& input_value : node->input_values()) {
         auto arg = input_value.get_node_shared_ptr();
         size_t jump_distance = height_maps[arg.get()].max_jump_to(height_maps[node.get()]);
         if (ov::is_type<ov::op::v0::Constant>(arg) || ov::is_type<ov::op::v0::Parameter>(arg)) {
@@ -279,7 +342,7 @@ void ov::pass::VisualizeTree::add_node_arguments(std::shared_ptr<Node> node,
                 std::string("color=\"") + (arg->description() == "Parameter" ? "blue" : "black") + std::string("\"");
             std::vector<std::string> attributes{"shape=\"box\"",
                                                 "style=\"dashed\"",
-                                                color,
+                                                std::move(color),
                                                 std::string("label=\"") + get_node_name(arg) + std::string("\n") +
                                                     get_constant_value(arg) + std::string("\"")};
 
@@ -287,7 +350,7 @@ void ov::pass::VisualizeTree::add_node_arguments(std::shared_ptr<Node> node,
                 m_node_modifiers(*arg, attributes);
             }
             m_ss << "    " << clone_name << "[";
-            for (auto attr : attributes) {
+            for (const auto& attr : attributes) {
                 m_ss << " " << attr << " ";
             }
             m_ss << "]\n";
@@ -326,8 +389,8 @@ void ov::pass::VisualizeTree::add_node_arguments(std::shared_ptr<Node> node,
 std::string ov::pass::VisualizeTree::add_attributes(std::shared_ptr<Node> node) {
     std::string rc;
     if (m_nodes_with_attributes.find(node) == m_nodes_with_attributes.end()) {
-        m_nodes_with_attributes.insert(node);
         rc = get_attributes(node);
+        m_nodes_with_attributes.insert(std::move(node));
     }
     return rc;
 }
@@ -343,12 +406,14 @@ static std::string pretty_partial_shape(
             if (!first) {
                 str << ",";
             }
-            if (const auto& symbol = d.get_symbol()) {
-                const auto& root = ov::symbol::ancestor_of(symbol);
-                if (symbol_map.count(root))
-                    str << "<" << symbol_map.at(root) << ">";
-                else
-                    str << "<?>";
+            if (d.is_dynamic()) {
+                if (const auto& symbol = d.get_symbol()) {
+                    const auto& root = ov::symbol::ancestor_of(symbol);
+                    if (symbol_map.count(root))
+                        str << "<" << symbol_map.at(root) << ">";
+                    else
+                        str << "<?>";
+                }
             }
             str << d;
             first = false;
@@ -426,7 +491,6 @@ static std::string get_value(const std::shared_ptr<ov::op::v0::Constant>& consta
     std::stringstream ss;
     ss << "[ ";
     switch (constant->get_output_element_type(0)) {
-    case ov::element::Type_t::undefined:
     case ov::element::Type_t::dynamic:
     case ov::element::Type_t::u1:
     case ov::element::Type_t::u2:
@@ -437,6 +501,8 @@ static std::string get_value(const std::shared_ptr<ov::op::v0::Constant>& consta
     case ov::element::Type_t::i4:
     case ov::element::Type_t::f8e4m3:
     case ov::element::Type_t::f8e5m2:
+    case ov::element::Type_t::f4e2m1:
+    case ov::element::Type_t::f8e8m0:
         ss << constant->get_output_element_type(0).get_type_name() << " value";
         break;
     case ov::element::Type_t::bf16:
@@ -518,15 +584,7 @@ std::string ov::pass::VisualizeTree::get_constant_value(std::shared_ptr<Node> no
     ss << pretty_partial_shape(node->get_output_partial_shape(0), m_symbol_to_name);
 
     if (const auto& constant = ov::as_type_ptr<ov::op::v0::Constant>(node)) {
-        std::string value;
-        try {
-            value = get_value(constant, max_elements);
-        } catch (ov::AssertFailure& ex) {
-            value = std::string("ov::AssertFailure: ") + ex.what();
-        } catch (std::exception& ex) {
-            value = ex.what();
-        }
-        ss << "\nvalue: " << value;
+        ss << "\nvalue: " << get_value(constant, max_elements);
     }
     return ss.str();
 }
@@ -598,7 +656,7 @@ std::string ov::pass::VisualizeTree::get_attributes(std::shared_ptr<Node> node) 
     }
 
     std::stringstream ss;
-    ss << "    " << node->get_name() << " [" << ov::util::join(attributes, " ") << "]\n";
+    ss << "    " << node->get_name() << " [" << ov::util::join<std::ostream>(attributes, " ") << "]\n";
 
     return ss.str();
 }
@@ -609,7 +667,7 @@ std::string ov::pass::VisualizeTree::get_node_name(std::shared_ptr<Node> node) {
     if (node->get_friendly_name() != node->get_name()) {
         rc += "\\n" + (nvtmn ? std::string("name: ") : "") + node->get_name();
     }
-    const auto type_info = node->get_type_info();
+    const auto& type_info = node->get_type_info();
     rc += "\\n" + (nvtmn ? std::string("type_name: ") : "") + std::string(type_info.version_id) +
           "::" + std::string(type_info.name);
 
@@ -653,7 +711,7 @@ std::string ov::pass::VisualizeTree::get_node_name(std::shared_ptr<Node> node) {
 
     static const bool nvtrti = ov::util::getenv_bool("OV_VISUALIZE_TREE_RUNTIME_INFO");
     if (nvtrti) {
-        const auto rt = node->get_rt_info();
+        const auto& rt = node->get_rt_info();
         if (!rt.empty()) {
             rc += "\\nrt info: " + get_attribute_values(rt, "\\n");
         }
@@ -662,23 +720,29 @@ std::string ov::pass::VisualizeTree::get_node_name(std::shared_ptr<Node> node) {
 }
 
 void ov::pass::VisualizeTree::render() const {
-    std::string ext = ov::util::get_file_ext(m_name);
-    std::string output_format = ext.substr(1);
-    std::string dot_file = m_name;
-    if (ov::util::to_lower(ext) != ".dot") {
-        dot_file += ".dot";
+    constexpr auto dot_ext = ".dot";
+    const auto ext = m_name.extension();
+    auto dot_file = m_name;
+    if (ext != dot_ext) {
+        dot_file += dot_ext;
     }
-    std::ofstream out(dot_file);
-    if (out) {
+
+    // Keep the dump under its parent as sanitize_path() does (file_util.cpp:102).
+    dot_file = ov::util::sanitize_path(m_name.parent_path(), dot_file.filename());
+    if (std::ofstream out(dot_file); out) {
         out << "digraph \n{\n";
         out << m_ss.str();
         out << "}\n";
         out.close();
 
-        if (!m_dot_only && ov::util::to_lower(ext) != ".dot") {
-#ifndef _WIN32
+        if (!m_dot_only && ext != dot_ext) {
+#if defined(ENABLE_OPENVINO_DEBUG) && !defined(_WIN32)
             std::stringstream ss;
-            ss << "dot -T" << output_format << " " << dot_file << " -o" << m_name;
+            if (system("command -v dot > /dev/null 2>&1") != 0) {
+                OPENVINO_THROW("Graphviz 'dot' command not found in PATH");
+            }
+            ss << "dot -T" << ext.string().substr(1) << " " << quote_shell_argument(dot_file) << " -o"
+               << quote_shell_argument(m_name);
             auto cmd = ss.str();
             auto stream = popen(cmd.c_str(), "r");
             if (stream) {

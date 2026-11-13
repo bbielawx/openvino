@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -64,6 +64,9 @@ std::ostream& operator<<(std::ostream& os, const ov::test::utils::EltwiseTypes t
     case ov::test::utils::EltwiseTypes::FLOOR_MOD:
         os << "FloorMod";
         break;
+    case ov::test::utils::EltwiseTypes::FLOOR:
+        os << "Floor";
+        break;
     case ov::test::utils::EltwiseTypes::MOD:
         os << "Mod";
         break;
@@ -81,6 +84,12 @@ std::ostream& operator<<(std::ostream& os, const ov::test::utils::EltwiseTypes t
         break;
     case ov::test::utils::EltwiseTypes::BITWISE_XOR:
         os << "BitwiseXor";
+        break;
+    case ov::test::utils::EltwiseTypes::RIGHT_SHIFT:
+        os << "BitwiseRightShift";
+        break;
+    case ov::test::utils::EltwiseTypes::LEFT_SHIFT:
+        os << "BitwiseLeftShift";
         break;
     default:
         throw std::runtime_error("NOT_SUPPORTED_OP_TYPE");

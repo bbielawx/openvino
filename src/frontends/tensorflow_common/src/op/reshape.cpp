@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,10 +12,7 @@
 using namespace std;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_reshape_op(const NodeContext& node) {
     default_op_checks(node, 2, {"Reshape"}, true);
@@ -24,7 +21,7 @@ OutputVector translate_reshape_op(const NodeContext& node) {
     auto shape = node.get_input(1);
     if (complex_type_mark) {
         element::Type complex_part_type = complex_type_mark->get_complex_part_type();
-        tensor = complex_type_mark->input_value(0);
+        tensor = complex_type_mark->get_data();
 
         OutputVector concat_inputs;
         concat_inputs.push_back(shape);
@@ -41,7 +38,4 @@ OutputVector translate_reshape_op(const NodeContext& node) {
     set_node_name(node.get_name(), reshape);
     return {reshape};
 }
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

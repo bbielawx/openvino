@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -87,7 +87,7 @@ GemmKernelTiledOpt::GemmTuningData GemmKernelTiledOpt::SetTuningParams(const gem
         tuning_data.tile_k_size = tuning_data.simd_size;
         tuning_data.tile_m_size = tuning_data.simd_size;
 
-        bool leftovers = m_size % tuning_data.tile_m_size || k_size % tuning_data.tile_k_size || n_size % tuning_data.tile_n_size;
+        bool leftovers = ((m_size % tuning_data.tile_m_size) != 0u) || ((k_size % tuning_data.tile_k_size) != 0u) || ((n_size % tuning_data.tile_n_size) != 0u);
 
         if (leftovers || total_batches > 1 || params.transpose_input0 || params.transpose_input1 || !IsSIMDSizeSupported(params.engineInfo, 8)) {
             tuning_data.simd_size = 16;
@@ -96,8 +96,11 @@ GemmKernelTiledOpt::GemmTuningData GemmKernelTiledOpt::SetTuningParams(const gem
             tuning_data.tile_m_size = tuning_data.simd_size;
         }
         // Increasing tile_n_size has performance improvement when m_size and n_size are not shallow and n_size is aligned at 32.
-        if (m_size >= 128 && n_size >= 128 && (n_size % 32 == 0) && tuning_data.simd_size == 16 && params.fused_ops.empty())
+        // TODO: Support TILE_K_LEFTOVER true case at static shape
+        if (m_size >= 128 && n_size >= 128 && (n_size % 32 == 0) && tuning_data.simd_size == 16 &&
+            (k_size % tuning_data.tile_k_size == 0) && params.fused_ops.empty()) {
             tuning_data.tile_n_size = 32;
+        }
 
         GPU_DEBUG_LOG << params.layerID << ": m_size: " << m_size << ", n_size: " << n_size << ", k_size: " << k_size << std::endl;
     } else {
@@ -106,9 +109,9 @@ GemmKernelTiledOpt::GemmTuningData GemmKernelTiledOpt::SetTuningParams(const gem
         tuning_data.simd_size = 16;
         tuning_data.tile_k_size = tuning_data.simd_size;
         tuning_data.tile_m_size = tuning_data.simd_size;
-        bool output_ndim_transposed = (params.output_order.size() > 0 && (params.output_order.back() != (static_cast<int>(params.output_order.size()) - 1)));
+        bool output_ndim_transposed = (!params.output_order.empty() && (params.output_order.back() != (static_cast<int>(params.output_order.size()) - 1)));
         if ((params.transpose_input0 == 0 /*X_LAST*/) && (params.transpose_input1 == 0 /*X_LAST*/ || params.transpose_input1 == 1 /*Y_LAST*/)
-            && (!params.indirect_input0 && !params.inputs[0].has_dynamic_pad())
+            && (!params.indirect_input0 && !params.inputs[0].has_dynamic_pad() && params.indirect_axis != 1)
             && (!output_ndim_transposed || params.fused_ops.empty())
             && !params.engineInfo.supports_immad) {
             // - Not supports transposed input0 / transposed input1 for OTHER mode yet
@@ -135,10 +138,10 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
 
     jit.Merge(MakeTypeJitConstants(params.inputs[0].GetDType(), "ACCUMULATOR"));
     if (params.has_dynamic_tensors()) {
-        DimensionAccessHelper dims0(params.inputs[0]);
-        DimensionAccessHelper dims1(params.inputs[1]);
-        DimensionAccessHelper dims0_padded(params.inputs[0], true);
-        DimensionAccessHelper dims1_padded(params.inputs[1], true);
+        DimensionAccessHelperJit dims0(params.inputs[0]);
+        DimensionAccessHelperJit dims1(params.inputs[1]);
+        DimensionAccessHelperJit dims0_padded(params.inputs[0], true);
+        DimensionAccessHelperJit dims1_padded(params.inputs[1], true);
         // Note: Actually currently this kernel is not being selected if it is shape agnostic impl && transposed inputs
         // Because we cannot get the original rank
         auto input0_dims = ConvTo8dims(params.input0_order);
@@ -155,20 +158,21 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
         const std::string not_divisible_n = "(" + leftover_n + "!=0)";
         const std::string not_divisible_k = "(" + leftover_k + "!=0)";
         const std::string full_iteration_k = "(" + k_size + "/" + std::to_string(tuning_data.tile_k_size) + ")";
-
-        bool tile_k_may_have_leftover = false;
-        if (k_size.find("shape_info") == std::string::npos) {
-            tile_k_may_have_leftover = ((std::stoi(k_size) % tuning_data.tile_k_size) != 0);
+        std::string n_aligned_4byte = "0";
+        std::string k_aligned_4byte = "0";
+        if (BytesPerElement(params.inputs[0].GetDType()) == 4 || BytesPerElement(params.inputs[0].GetDType()) == 8) {
+            n_aligned_4byte = "1";
+            k_aligned_4byte = "1";
         } else {
-            tile_k_may_have_leftover = true;
+            auto bytes_per_element = std::to_string(BytesPerElement(params.inputs[0].GetDType()));
+            if (n_size.find("shape_info") == std::string::npos) {
+                n_aligned_4byte = "(" + n_size + "*" + bytes_per_element + " % 4 == 0)";
+            }
+            if (k_size.find("shape_info") == std::string::npos) {
+                k_aligned_4byte = "(" + k_size + "*" + bytes_per_element + " % 4 == 0)";
+            }
         }
-
-        bool tile_n_may_have_leftover = false;
-        if (n_size.find("shape_info") == std::string::npos) {
-            tile_n_may_have_leftover = ((std::stoi(n_size) % tuning_data.tile_n_size) != 0);
-        } else {
-            tile_n_may_have_leftover = true;
-        }
+        const std::string n_aligned_with_simd_tile = "(" + leftover_n + "==0)";
 
         jit.AddConstants({
             MakeJitConstant("M", m_size),
@@ -176,16 +180,17 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
             MakeJitConstant("N", n_size),
             MakeJitConstant("K_PADDED_IN0", k_padded_size_in0),
             MakeJitConstant("N_PADDED", n_padded_size),
+            MakeJitConstant("K_IS_ALIGNED_4BYTE", k_aligned_4byte),
+            MakeJitConstant("N_IS_ALIGNED_4BYTE", n_aligned_4byte),
+            MakeJitConstant("N_IS_ALIGNED_WITH_SIMD_TILE", n_aligned_with_simd_tile),
             MakeJitConstant("SIMD_WIDTH", tuning_data.simd_size),
             MakeJitConstant("TILE_M", tuning_data.tile_m_size),
             MakeJitConstant("TILE_K", tuning_data.tile_k_size),
             MakeJitConstant("TILE_N", tuning_data.tile_n_size),
             MakeJitConstant("K_FULL_ITERATIONS", full_iteration_k),
             MakeJitConstant("TILE_M_NOT_DIVISIBLE", not_divisible_m),
-            MakeJitConstant("TILE_K_NOT_DIVISIBLE", tile_k_may_have_leftover),
-            MakeJitConstant("TILE_K_NOT_DIVISIBLE_CALC", not_divisible_k),
-            MakeJitConstant("TILE_N_NOT_DIVISIBLE", tile_n_may_have_leftover),
-            MakeJitConstant("TILE_N_NOT_DIVISIBLE_CALC", not_divisible_n),
+            MakeJitConstant("TILE_K_NOT_DIVISIBLE", not_divisible_k),
+            MakeJitConstant("TILE_N_NOT_DIVISIBLE", not_divisible_n),
             MakeJitConstant("TILE_M_LEFTOVER", leftover_m),
             MakeJitConstant("TILE_K_LEFTOVER", leftover_k),
             MakeJitConstant("TILE_N_LEFTOVER", leftover_n),
@@ -197,20 +202,19 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
             MakeJitConstant("TR_X", GetTransposedDims(params.output_order, true).at(7)),
         });
 
-        bool transpose_output = (params.output_order.size() > 0 && (params.output_order.back() != (static_cast<int>(params.output_order.size()) - 1)));
-        if (transpose_output)
+        bool transpose_output = (!params.output_order.empty() && (params.output_order.back() != (static_cast<int>(params.output_order.size()) - 1)));
+        if (transpose_output) {
             jit.AddConstant(MakeJitConstant("TRANSPOSE_OUTPUT", 2 /* set as TRANSPOSE_OTHER */));
-        else
+        } else {
             jit.AddConstant(MakeJitConstant("TRANSPOSE_OUTPUT", 0 /* set as TRANSPOSE_X_LAST */));
+        }
 
-        bool has_dynamic_k_padding = params.transpose_input0 ? params.inputs[0].Y().pad.is_dynamic
-                                                             : params.inputs[0].X().pad.is_dynamic;
-        bool has_dynamic_n_padding = params.transpose_input1 ? params.inputs[1].Y().pad.is_dynamic
-                                                             : params.inputs[1].X().pad.is_dynamic;
-        if (has_dynamic_k_padding)
-            jit.AddConstant(MakeJitConstant("HAS_DYNAMIC_K_PADDING", 1));
-        if (has_dynamic_n_padding)
-            jit.AddConstant(MakeJitConstant("HAS_DYNAMIC_N_PADDING", 1));
+        if (dims0_padded.has_dynamic_pad) {
+            jit.AddConstant(MakeJitConstant("INPUT0_HAS_DYNAMIC_PADDING", 1));
+        }
+        if (dims1_padded.has_dynamic_pad) {
+            jit.AddConstant(MakeJitConstant("INPUT1_HAS_DYNAMIC_PADDING", 1));
+        }
     } else {
         auto get_transposed_dim_size = [](const kernel_selector::DataTensor &data_tensor,
                                           const std::vector<int64_t>& dims_order, const std::string dim) {
@@ -218,32 +222,37 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
             const size_t rank = data_tensor.GetDims().size();
             if (dims_order.size() > 1 && dim.compare("Y") == 0) {
                 target_dim_idx = dims_order.at(dims_order.size() - 2);
-            } else if (dims_order.size() > 0 && dim.compare("X") == 0) {
+            } else if (!dims_order.empty() && dim.compare("X") == 0) {
                 target_dim_idx = dims_order.back();
-            } else if (dims_order.size() == 0 && dim.compare("Y") == 0) {
+            } else if (dims_order.empty() && dim.compare("Y") == 0) {
                 target_dim_idx = rank - 2;
-            } else if (dims_order.size() == 0 && dim.compare("X") == 0) {
+            } else if (dims_order.empty() && dim.compare("X") == 0) {
                 target_dim_idx = rank - 1;
             } else {
                 OPENVINO_THROW("Unsupported dimension: ", dim);
             }
 
             size_t loc = static_cast<size_t>(target_dim_idx);
-            if (dims_order.size() > 0) {
+            if (!dims_order.empty()) {
                 loc += (dims_order.size() < rank) ? (rank - dims_order.size()) : 0;
             }
 
             if (loc == 0) {
                 return data_tensor.Batch().v;
-            } else if (loc == 1) {
+            }
+            if (loc == 1) {
                 return data_tensor.Feature().v;
-            } else if (loc == (rank - 1) && rank >= 3) {
+            }
+            if (loc == (rank - 1) && rank >= 3) {
                 return data_tensor.X().v;
-            } else if (loc == (rank - 2) && rank >= 4) {
+            }
+            if (loc == (rank - 2) && rank >= 4) {
                 return data_tensor.Y().v;
-            } else if (loc == (rank - 3) && rank >= 5) {
+            }
+            if (loc == (rank - 3) && rank >= 5) {
                 return data_tensor.Z().v;
-            } else if (loc == (rank - 4) && rank >= 6) {
+            }
+            if (loc == (rank - 4) && rank >= 6) {
                 return data_tensor.W().v;
             }
             OPENVINO_THROW("Target dimension is not found.");
@@ -257,6 +266,7 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
         auto leftover_k = k_size % tuning_data.tile_k_size;
         auto n_aligned_4byte = (n_size * BytesPerElement(params.inputs[0].GetDType())) % 4 == 0;
         auto k_aligned_4byte = (k_size * BytesPerElement(params.inputs[0].GetDType())) % 4 == 0;
+        auto n_aligned_with_simd_tile = leftover_n == 0;
 
         jit.AddConstants({
             MakeJitConstant("M", m_size),
@@ -266,6 +276,7 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
             MakeJitConstant("N_PADDED", n_size),
             MakeJitConstant("K_IS_ALIGNED_4BYTE", k_aligned_4byte),
             MakeJitConstant("N_IS_ALIGNED_4BYTE", n_aligned_4byte),
+            MakeJitConstant("N_IS_ALIGNED_WITH_SIMD_TILE", n_aligned_with_simd_tile),
             MakeJitConstant("SIMD_WIDTH", tuning_data.simd_size),
             MakeJitConstant("TILE_M", tuning_data.tile_m_size),
             MakeJitConstant("TILE_K", tuning_data.tile_k_size),
@@ -285,10 +296,12 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
             MakeJitConstant("TR_X", GetTransposedDims(params.output_order, true).at(7)),
         });
 
-        if (params.inputs[0].LogicalSize() != params.inputs[0].PhysicalSize())
+        if (params.inputs[0].LogicalSize() != params.inputs[0].PhysicalSize()) {
             jit.AddConstant(MakeJitConstant("INPUT0_HAS_PADDING", 1));
-        if (params.inputs[1].LogicalSize() != params.inputs[1].PhysicalSize())
+        }
+        if (params.inputs[1].LogicalSize() != params.inputs[1].PhysicalSize()) {
             jit.AddConstant(MakeJitConstant("INPUT1_HAS_PADDING", 1));
+        }
     }
 
     if (tuning_data.tile_k_size > tuning_data.simd_size) {
@@ -303,10 +316,21 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
         });
     }
 
+    // FP32 accumulator is only used for static shape.
+    // In shape‑agnostic, the use of an FP32 accumulator leads to a 2–3× performance slowdown.
+    bool is_fp16_acc = (params.inputs[0].GetDType() == Datatype::F16) || (params.inputs[1].GetDType() == Datatype::F16);
+    if (is_fp16_acc && !params.is_shape_agnostic) {
+        jit.AddConstants({MakeJitConstant("USE_FP16_ACC", is_fp16_acc)});
+    } else {
+        is_fp16_acc = false;
+    }
+
     if (tuning_data.tile_n_size > tuning_data.simd_size) {
         jit.AddConstants({
             MakeJitConstant("B_VEC_SIZE", b_vec_size),
             MakeJitConstant("B_FLOATN", std::string("CAT(INPUT1_TYPE, ") + toCodeString(b_vec_size) + ")"),
+            MakeJitConstant("ACC_FLOATN", is_fp16_acc ? (std::string("CAT(float, ") + toCodeString(b_vec_size) + ")")
+                                                      : (std::string("CAT(INPUT1_TYPE, ") + toCodeString(b_vec_size) + ")")),
             MakeJitConstant("OUTPUT_TYPE_VEC", std::string("CAT(OUTPUT_TYPE, ") + toCodeString(b_vec_size) + ")"),
             MakeJitConstant("ACCUMULATOR_TYPE_VEC", std::string("CAT(ACCUMULATOR_TYPE, ") + toCodeString(b_vec_size) + ")"),
         });
@@ -315,9 +339,22 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
         jit.AddConstants({
             MakeJitConstant("B_VEC_SIZE", b_vec_size),
             MakeJitConstant("B_FLOATN", std::string("INPUT1_TYPE")),
+            MakeJitConstant("ACC_FLOATN", is_fp16_acc ? std::string("float") : std::string("INPUT1_TYPE")),
             MakeJitConstant("OUTPUT_TYPE_VEC", std::string("OUTPUT_TYPE")),
             MakeJitConstant("ACCUMULATOR_TYPE_VEC", std::string("ACCUMULATOR_TYPE")),
         });
+    }
+
+    // Define type conversion macros
+    if (is_fp16_acc) {
+        jit.AddConstant(MakeJitConstant("TO_ACCUMULATOR_TYPE_VEC(x)", b_vec_size > 1 ? "CAT(convert_, ACCUMULATOR_TYPE_VEC)(x)" : "(x)"));
+        jit.AddConstant(MakeJitConstant("ACC_CAST_A(x)", "convert_float(x)"));
+        jit.AddConstant(MakeJitConstant("ACC_CAST_B(x)", b_vec_size > 1 ? std::string("CAT(convert_float, B_VEC_SIZE)((CAT(INPUT1_TYPE, B_VEC_SIZE))(x))")
+                                                                        : "convert_float(x)"));
+    } else {
+        jit.AddConstant(MakeJitConstant("TO_ACCUMULATOR_TYPE_VEC(x)", "(x)"));
+        jit.AddConstant(MakeJitConstant("ACC_CAST_A(x)", "(INPUT0_TYPE)(x)"));
+        jit.AddConstant(MakeJitConstant("ACC_CAST_B(x)", "(x)"));
     }
 
     if (!params.fused_ops.empty()) {
@@ -330,6 +367,14 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
                 if ((vec_axis_dim == 1 && op.tensors[0].LogicalSize() != 1) && (params.inputs[1].X().v != vec_axis_dim)) {
                     vec_load_type = LoadType::LT_UNALIGNED;
                 }
+
+                // In case of a fused operation where input data has dynamic innermost dimension,
+                // we shouldn't use block reads, as the dynamic dimension may only have a single
+                // broadcastable value. Therefore, we should force scalar fusions (to read elements
+                // one by one using _SAFE index calculation) and apply them in the loop over vec_size
+                if (vec_axis_dim == 0) {
+                    jit.AddConstants({MakeJitConstant("FUSE_SCALAR", 1)});
+                }
             }
         }
         FusedOpsConfiguration conf_vec = { "_VEC", {"b", "f", "(y + write_id)", "x"},
@@ -341,8 +386,8 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
                                            IndexType::TENSOR_COORD,
                                            Tensor::DataChannelName::X };
 
-        FusedOpsConfiguration conf_scalar = { "_SCALAR", {"b", "f", "(y + write_id)", "x"},
-                                               "dequantized",
+        FusedOpsConfiguration conf_scalar = { "_SCALAR", {"b", "f", "(y + write_id)", "xs"},
+                                               "dequantized_scalar",
                                                input_dt,
                                                1,
                                                LoadType::LT_UNALIGNED,
@@ -356,7 +401,59 @@ JitConstants GemmKernelTiledOpt::GetJitConstants(const gemm_params& params) cons
 }
 
 KernelsData GemmKernelTiledOpt::GetKernelsData(const Params& params) const {
-    return GetCommonKernelsData(params);
+    if (!Validate(params)) {
+        return KernelsData();
+    }
+
+    const auto& prim_params = static_cast<const gemm_params&>(params);
+    size_t num_kernels = params.is_shape_agnostic ? 4 : 1;
+    auto dispatchData = SetDefault(prim_params);
+    KernelData k_data = KernelData::Default<gemm_params>(params, num_kernels);
+    GetUpdateDispatchDataFunc(k_data);
+    auto cldnn_jit = GetJitConstants(prim_params);
+    for (size_t i = 0; i < num_kernels; i++) {
+        if (params.is_shape_agnostic) {
+            cldnn_jit.RemoveConstant("TILE_K_NOT_DIVISIBLE");
+            cldnn_jit.RemoveConstant("TILE_N_NOT_DIVISIBLE");
+            cldnn_jit.RemoveConstant("N_IS_ALIGNED_WITH_SIMD_TILE");
+            if (i == 0) {
+                cldnn_jit.AddConstant(MakeJitConstant("TILE_K_NOT_DIVISIBLE", "0"));
+                cldnn_jit.AddConstant(MakeJitConstant("TILE_N_NOT_DIVISIBLE", "0"));
+                cldnn_jit.AddConstant(MakeJitConstant("N_IS_ALIGNED_WITH_SIMD_TILE", "1"));
+            } else if (i == 1) {
+                cldnn_jit.AddConstant(MakeJitConstant("TILE_K_NOT_DIVISIBLE", "0"));
+                cldnn_jit.AddConstant(MakeJitConstant("TILE_N_NOT_DIVISIBLE", "1"));
+                cldnn_jit.AddConstant(MakeJitConstant("N_IS_ALIGNED_WITH_SIMD_TILE", "0"));
+            } else if (i == 2) {
+                cldnn_jit.AddConstant(MakeJitConstant("TILE_K_NOT_DIVISIBLE", "1"));
+                cldnn_jit.AddConstant(MakeJitConstant("TILE_N_NOT_DIVISIBLE", "0"));
+                cldnn_jit.AddConstant(MakeJitConstant("N_IS_ALIGNED_WITH_SIMD_TILE", "1"));
+            } else if (i == 3) {
+                cldnn_jit.AddConstant(MakeJitConstant("TILE_K_NOT_DIVISIBLE", "1"));
+                cldnn_jit.AddConstant(MakeJitConstant("TILE_N_NOT_DIVISIBLE", "1"));
+                cldnn_jit.AddConstant(MakeJitConstant("N_IS_ALIGNED_WITH_SIMD_TILE", "0"));
+            }
+        }
+        auto entry_point = GetEntryPoint(kernelName, prim_params.layerID, params, i);
+        auto jit = CreateJit(kernelName, cldnn_jit, entry_point);
+
+        auto& kernel = k_data.kernels[i];
+        FillCLKernelData(kernel,
+                        dispatchData,
+                        params.engineInfo,
+                        kernelName,
+                        jit,
+                        entry_point,
+                        EXE_MODE_DEFAULT,
+                        false,
+                        false,
+                        (uint32_t)prim_params.inputs.size(),
+                        GetFusedPrimitiveInputsCount(params),
+                        1,
+                        prim_params.is_shape_agnostic);
+    }
+
+    return {k_data};
 }
 
 KernelsPriority GemmKernelTiledOpt::GetKernelsPriority(const Params& params) const {
@@ -366,19 +463,21 @@ KernelsPriority GemmKernelTiledOpt::GetKernelsPriority(const Params& params) con
 }
 
 bool GemmKernelTiledOpt::Validate(const Params& params) const {
-    if (!Parent::Validate(params))
-        return false;
+    if (!Parent::Validate(params)) {
+        DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     const auto& gmm_params = static_cast<const gemm_params&>(params);
 
-    if (gmm_params.outputs[0].PitchesDifferFromLogicalDims())
-        return false;
+    if (gmm_params.outputs[0].PitchesDifferFromLogicalDims()) {
+        DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
     size_t num_inputs = (gmm_params.indirect_input0 || gmm_params.indirect_input1) ? gmm_params.inputs.size() - 1 : gmm_params.inputs.size();
     for (size_t input_idx = 0; input_idx < num_inputs; ++input_idx) {
-        auto& input = gmm_params.inputs[input_idx];
+        const auto& input = gmm_params.inputs[input_idx];
         if (!Tensor::SimpleLayout(input.GetLayout())) {
-            return false;
+            DO_NOT_USE_THIS_KERNEL(params.layerID);
         }
         // Supports outer padding as first element offset and dynamic padding for Batch, Feature, X, Y dimensions for first and second inputs
         // in case of shape agnostic kernel
@@ -391,17 +490,81 @@ bool GemmKernelTiledOpt::Validate(const Params& params) const {
             proper_pad_y |= input.Y().pad.is_dynamic;
         }
 
-        if (!proper_pad_x || !proper_pad_y || input.Z().pad.Total() != 0 || !proper_pad_f)
-            return false;
+        if (!proper_pad_x || !proper_pad_y || input.Z().pad.Total() != 0 || !proper_pad_f) {
+            DO_NOT_USE_THIS_KERNEL(params.layerID);
+        }
     }
 
-    if (gmm_params.has_dynamic_inputs() && !gmm_params.is_shape_agnostic)
-        return false;
+    if (gmm_params.has_dynamic_inputs() && !gmm_params.is_shape_agnostic) {
+        DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
 
-    for (size_t i = 1; i < num_inputs; i++)
-        if (gmm_params.inputs[0].GetDType() != gmm_params.inputs[i].GetDType())
-            return false;
+    for (size_t i = 1; i < num_inputs; i++) {
+        if (gmm_params.inputs[0].GetDType() != gmm_params.inputs[i].GetDType()) {
+            DO_NOT_USE_THIS_KERNEL(params.layerID);
+        }
+    }
 
     return true;
+}
+
+void GemmKernelTiledOpt::GetUpdateDispatchDataFunc(KernelData& kd) const {
+    if (kd.kernels.size() == 1) {
+        Parent::GetUpdateDispatchDataFunc(kd);
+    } else {
+        kd.update_dispatch_data_func = [this](const Params& params, KernelData& kd) {
+            const auto& prim_params = static_cast<const gemm_params&>(params);
+
+            auto getTensorValue = [](const DataTensor& t, const int64_t dim_idx) -> size_t {
+                switch (dim_idx) {
+                    case 1:
+                        return t.Feature().v;
+                    case 2:
+                        return t.U().v;
+                    case 3:
+                        return t.V().v;
+                    case 4:
+                        return t.W().v;
+                    case 5:
+                        return t.Z().v;
+                    case 6:
+                        return t.Y().v;
+                    case 7:
+                        return t.X().v;
+                    default:
+                        return t.Batch().v;
+                }
+            };
+
+            GemmTuningData tuning_data = SetTuningParams(prim_params);
+            auto input0_dims = ConvTo8dims(prim_params.input0_order);
+            auto input1_dims = ConvTo8dims(prim_params.input1_order);
+            auto k_size = getTensorValue(prim_params.inputs[0], input0_dims[7]);
+            auto n_size = getTensorValue(prim_params.inputs[1], input1_dims[7]);
+            bool not_divisible_k = ((k_size % tuning_data.tile_k_size) != 0);
+            bool not_divisible_n = ((n_size % tuning_data.tile_n_size) != 0);
+            size_t execute_kernel_idx = 0;
+            if (!not_divisible_k && !not_divisible_n) {
+                execute_kernel_idx = 0;
+            } else if (!not_divisible_k && not_divisible_n) {
+                execute_kernel_idx = 1;
+            } else if (not_divisible_k && !not_divisible_n) {
+                execute_kernel_idx = 2;
+            } else if (not_divisible_k && not_divisible_n) {
+                execute_kernel_idx = 3;
+            }
+
+            auto dispatchData = SetDefault(prim_params);
+            for (size_t i = 0; i < kd.kernels.size(); i++) {
+                kd.kernels[i].params.workGroups.global = dispatchData.gws;
+                kd.kernels[i].params.workGroups.local = dispatchData.lws;
+                if (execute_kernel_idx == i) {
+                    kd.kernels[i].skip_execution = KernelData::SkipKernelExecution(prim_params);
+                } else {
+                    kd.kernels[i].skip_execution = true;
+                }
+            }
+        };
+    }
 }
 }  // namespace kernel_selector

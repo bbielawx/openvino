@@ -1,11 +1,14 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
+
+#include <filesystem>
 
 #include "openvino/frontend/exception.hpp"
 #include "openvino/frontend/manager.hpp"
 #include "openvino/frontend/visibility.hpp"
-#include "openvino/opsets/opset8.hpp"
+#include "openvino/op/add.hpp"
+#include "openvino/op/constant.hpp"
 
 #define MOCK_C_API OPENVINO_EXTERN_C OPENVINO_CORE_EXPORTS
 
@@ -134,9 +137,12 @@ public:
     bool supported_impl(const std::vector<ov::Any>& variants) const override {
         // Last boolean flag in `variants` (if presented) is reserved for FE configuration
         size_t extra_variants_num = variants.size() > 0 && variants[variants.size() - 1].is<bool>() ? 1 : 0;
-        if (variants.size() == 1 + extra_variants_num && variants[0].is<std::string>()) {
-            std::string command = variants[0].as<std::string>();
-            FRONT_END_GENERAL_CHECK(command != "throw_now", "Test exception");
+        if (variants.size() == 1 + extra_variants_num) {
+            if (variants[0].is<std::string>()) {
+                FRONT_END_GENERAL_CHECK(variants[0].as<std::string>() != "throw_now", "Test exception");
+            } else if (variants[0].is<std::filesystem::path>()) {
+                FRONT_END_GENERAL_CHECK(variants[0].as<std::filesystem::path>() != "throw_now", "Test exception");
+            }
         }
         return false;
     }
@@ -184,11 +190,11 @@ public:
     std::shared_ptr<ov::Model> convert(const InputModel::Ptr& model) const override {
         FRONT_END_GENERAL_CHECK(!m_throw_next, "Test exception");
         auto shape = ov::Shape{1, 2, 300, 300};
-        auto param = std::make_shared<ov::opset8::Parameter>(ov::element::f32, shape);
+        auto param = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, shape);
         std::vector<float> data(ov::shape_size(shape), 1.f);
-        auto constant = ov::opset8::Constant::create(ov::element::f32, shape, data);
-        auto op = std::make_shared<ov::opset8::Add>(param, constant);
-        auto res = std::make_shared<ov::opset8::Result>(op);
+        auto constant = ov::op::v0::Constant::create(ov::element::f32, shape, data);
+        auto op = std::make_shared<ov::op::v1::Add>(param, constant);
+        auto res = std::make_shared<ov::op::v0::Result>(op);
         auto ov_model =
             std::make_shared<ov::Model>(ov::ResultVector({res}), ov::ParameterVector({param}), "mock1_model");
         ov_model->get_rt_info()["mock_test"] = std::string(1024, 't');

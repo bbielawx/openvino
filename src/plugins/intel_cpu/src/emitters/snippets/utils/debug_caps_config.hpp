@@ -1,15 +1,13 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #ifdef SNIPPETS_DEBUG_CAPS
 
-#pragma once
+#    pragma once
 
-#include <string>
-#include <cstdlib>
+#    include <cstdlib>
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
 class SnippetsDebugCapsConfig {
 public:
@@ -17,13 +15,12 @@ public:
         readProperties();
     }
 
-    bool enable_segfault_detector;
+    bool enable_segfault_detector = false;
 
 private:
     void readProperties();
 };
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu
 
-#endif // SNIPPETS_DEBUG_CAPS
+#endif  // SNIPPETS_DEBUG_CAPS

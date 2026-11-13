@@ -1,11 +1,12 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import os
 import sys
+import platform
 from datetime import datetime
 
-from openvino.runtime import Dimension,properties
+from openvino import Dimension, properties
 
 from openvino.tools.benchmark.benchmark import Benchmark
 from openvino.tools.benchmark.parameters import parse_args
@@ -21,6 +22,28 @@ from openvino.tools.benchmark.utils.utils import next_step, get_number_iteration
     check_for_static, can_measure_as_static, parse_value_for_virtual_device, is_virtual_device, is_virtual_device_found
 from openvino.tools.benchmark.utils.statistics_report import StatisticsReport, JsonStatisticsReport, CsvStatisticsReport, \
     averageCntReport, detailedCntReport
+
+def get_peak_memory_usage():
+    if platform.system() == "Linux":
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmPeak:"):
+                    return int(line.split()[1])  # The value in KB
+        raise RuntimeError("VmPeak attribute not found. Unable to determine peak memory usage.")
+
+    # No Windows support due to the lack of the ‘psutil’ module in the CI infrastructure
+    # No Macos support due to no /proc/self/status file
+    return None
+
+def log_memory_usage(logger, start_mem_usage, end_mem_usage, action_name):
+    if start_mem_usage is None or end_mem_usage is None:
+        return
+
+    capitalized_action_name = action_name.capitalize()
+    action_name = "compilation" if action_name == "compile" else action_name
+    logger.info(f"Start of {action_name} memory usage: Peak {start_mem_usage} KB")
+    logger.info(f"End of {action_name} memory usage: Peak {end_mem_usage} KB")
+    logger.info(f"{capitalized_action_name} model ram used {end_mem_usage - start_mem_usage} KB")
 
 def parse_and_check_command_line():
     def arg_not_empty(arg_value,empty_value):
@@ -49,7 +72,23 @@ def parse_and_check_command_line():
         raise Exception("Cannot set precision for a compiled model. " \
                         "Please re-compile your model with required precision.")
 
+    if args.api_type == "":
+        args.api_type = "sync" if args.perf_hint == "latency" else "async"
+
+    if args.api_type == "sync":
+        if args.time is None and args.number_iterations is not None and args.number_iterations != 0 \
+                and args.number_infer_requests > args.number_iterations:
+            raise Exception("Number of infer requests should be less than or equal to number of iterations in sync mode.")
+
     return args, is_network_compiled
+
+def use_console_microseconds(avg_latency_ms):
+    return avg_latency_ms < 1.0
+
+def format_console_latency(value_ms, avg_latency_ms):
+    if use_console_microseconds(avg_latency_ms):
+        return f'{value_ms * 1000:.2f} us'
+    return f'{value_ms:.2f} ms'
 
 def main():
     statistics = None
@@ -68,6 +107,12 @@ def main():
         def is_flag_set_in_command_line(flag):
             return any(x.strip('-') == flag for x, y in command_line_arguments)
 
+        # When number_iterations is explicitly set to 0 (via -niter 0 or --number_iterations 0),
+        # compile the model and exit without running inference. The default is None, so == 0
+        # is only true on an explicit user request. Useful for validating compilation of models
+        # with dynamic shapes that would otherwise require -shape, -data_shape, or -i.
+        compile_only = args.number_iterations == 0
+
         device_name = args.target_device
 
         devices = parse_devices(device_name)
@@ -85,7 +130,8 @@ def main():
         next_step(step_id=2)
 
         benchmark = Benchmark(args.target_device, args.number_infer_requests,
-                              args.number_iterations, args.time, args.api_type, args.inference_only)
+                              args.number_iterations, args.time, args.api_type,
+                              args.inference_only, args.maximum_inference_rate)
 
         if args.extensions:
             benchmark.add_extension(path_to_extensions=args.extensions)
@@ -122,9 +168,11 @@ def main():
                     else:
                         raise RuntimeError("Incorrect performance hint. Please set -hint option to"
                             "`throughput`(tput), `latency', 'cumulative_throughput'(ctput) value or 'none'.")
+                elif device in config and properties.hint.performance_mode() in config[device]:
+                    return
                 else:
                     perf_hint = properties.hint.PerformanceMode.LATENCY if benchmark.api_type == "sync" else properties.hint.PerformanceMode.THROUGHPUT
-                    logger.warning(f"Performance hint was not explicitly specified in command line. " +
+                    logger.warning(f"Performance hint was not explicitly specified in command line or config file. " +
                     f"Device({device}) performance hint will be set to {perf_hint}.")
                 config[device][properties.hint.performance_mode()] = perf_hint
             else:
@@ -284,11 +332,6 @@ def main():
                 return
 
             def set_nthreads_pin(property_name, property_value):
-                if property_name == properties.affinity():
-                    if property_value == "YES":
-                        property_value = properties.Affinity.CORE
-                    elif property_value == "NO":
-                        property_value = properties.Affinity.NONE
                 if property_name in supported_properties or device_name == AUTO_DEVICE_NAME:
                     # create nthreads/pin primary property for HW device or AUTO if -d is AUTO directly.
                     config[device][property_name] = property_value
@@ -305,7 +348,7 @@ def main():
 
             if is_flag_set_in_command_line('pin'):
                 ## set for CPU to user defined value
-                set_nthreads_pin(properties.affinity(), args.infer_threads_pinning)
+                set_nthreads_pin(properties.hint.enable_cpu_pinning(), args.infer_threads_pinning)
 
             set_throughput_streams()
             set_infer_precision()
@@ -315,9 +358,13 @@ def main():
                     del device_number_streams[device]
 
         device_config = {}
-        for device in config:
-            if benchmark.device.find(device) == 0:
-                device_config = config[device]
+        # In case of multiple devices found prefer the one given in CLI argument
+        if benchmark.device.find(device_name) == 0 and device_name in config.keys():
+            device_config = config[device_name]
+        else:
+            for device in config:
+                if benchmark.device.find(device) == 0:
+                    device_config = config[device]
         if args.cache_dir:
             benchmark.set_cache_dir(args.cache_dir)
 
@@ -342,10 +389,15 @@ def main():
             # --------------------- 7. Loading the model to the device -------------------------------------------------
             next_step()
 
+            start_mem_usage = get_peak_memory_usage()
             start_time = datetime.utcnow()
+
             compiled_model = benchmark.core.compile_model(args.path_to_model, benchmark.device, device_config)
+
             duration_ms = f"{(datetime.utcnow() - start_time).total_seconds() * 1000:.2f}"
+            end_mem_usage = get_peak_memory_usage()
             logger.info(f"Compile model took {duration_ms} ms")
+            log_memory_usage(logger, start_mem_usage, end_mem_usage, "compile")
             if statistics:
                 statistics.add_parameters(StatisticsReport.Category.EXECUTION_RESULTS,
                                           [
@@ -376,6 +428,10 @@ def main():
             # --------------------- 5. Resizing network to match image sizes and given batch ---------------------------
             next_step()
 
+            for port in model.inputs:
+                if not port.get_names():
+                    port.set_names({port.node.get_friendly_name()})
+
             app_inputs_info, reshape = get_inputs_info(args.shape, args.data_shape, args.layout, args.batch_size, args.scale_values, args.mean_values, model.inputs)
 
             # use batch size according to provided layout and shapes
@@ -404,11 +460,15 @@ def main():
 
             # --------------------- 7. Loading the model to the device -------------------------------------------------
             next_step()
+            start_mem_usage = get_peak_memory_usage()
             start_time = datetime.utcnow()
+
             compiled_model = benchmark.core.compile_model(model, benchmark.device, device_config)
 
             duration_ms = f"{(datetime.utcnow() - start_time).total_seconds() * 1000:.2f}"
+            end_mem_usage = get_peak_memory_usage()
             logger.info(f"Compile model took {duration_ms} ms")
+            log_memory_usage(logger, start_mem_usage, end_mem_usage, "compile")
             if statistics:
                 statistics.add_parameters(StatisticsReport.Category.EXECUTION_RESULTS,
                                           [
@@ -428,10 +488,15 @@ def main():
             # --------------------- 7. Loading the model to the device -------------------------------------------------
             next_step()
 
+            start_mem_usage = get_peak_memory_usage()
             start_time = datetime.utcnow()
+
             compiled_model = benchmark.core.import_model(args.path_to_model, benchmark.device, device_config)
+
             duration_ms = f"{(datetime.utcnow() - start_time).total_seconds() * 1000:.2f}"
+            end_mem_usage = get_peak_memory_usage()
             logger.info(f"Import model took {duration_ms} ms")
+            log_memory_usage(logger, start_mem_usage, end_mem_usage, "import")
             if statistics:
                 statistics.add_parameters(StatisticsReport.Category.EXECUTION_RESULTS,
                                           [
@@ -439,6 +504,19 @@ def main():
                                           ])
             app_inputs_info, _ = get_inputs_info(args.shape, args.data_shape, args.layout, args.batch_size, args.scale_values, args.mean_values, compiled_model.inputs)
             batch_size = get_network_batch_size(app_inputs_info)
+
+        if compile_only:
+            logger.info("Model compiled successfully. Skipping inference due to -niter 0.")
+            next_step(additional_info='skipped')  # 8 - Querying optimal runtime parameters
+            next_step(additional_info='skipped')  # 9 - Creating infer requests and preparing input tensors
+            next_step(additional_info='skipped')  # 10 - Measuring performance
+            next_step()                           # 11 - Dumping statistics report
+            if args.dump_config:
+                dump_config(args.dump_config, config)
+                logger.info(f"OpenVINO configuration settings were dumped to {args.dump_config}")
+            if statistics:
+                statistics.dump()
+            return
 
         # --------------------- 8. Querying optimal runtime parameters --------------------------------------------------
         next_step()
@@ -555,13 +633,17 @@ def main():
             logger.info("Benchmarking in inference only mode (inputs filling are not included in measurement loop).")
         else:
             logger.info("Benchmarking in full mode (inputs filling are included in measurement loop).")
-        duration_ms = f"{benchmark.first_infer(requests):.2f}"
-        logger.info(f"First inference took {duration_ms} ms")
-        if statistics:
-            statistics.add_parameters(StatisticsReport.Category.EXECUTION_RESULTS,
-                                    [
-                                        ('first inference time (ms)', duration_ms)
-                                    ])
+        if not args.no_warmup:
+            duration_ms = f"{benchmark.first_infer(requests):.2f}"
+            logger.info(f"First inference took {duration_ms} ms")
+            if statistics:
+                statistics.add_parameters(StatisticsReport.Category.EXECUTION_RESULTS,
+                                        [
+                                            ('first inference time (ms)', duration_ms)
+                                        ])
+        else:
+            logger.info("Skipping warmup inference due to -no_warmup flag")
+
 
         pcseq = args.pcseq
         if static_mode or len(benchmark.latency_groups) == 1:
@@ -659,24 +741,24 @@ def main():
         if MULTI_DEVICE_NAME not in device_name:
             logger.info('Latency:')
             if args.latency_percentile == 50:
-                logger.info(f'   Median:        {median_latency_ms:.2f} ms')
+                logger.info(f'   Median:        {format_console_latency(median_latency_ms, avg_latency_ms)}')
             elif args.latency_percentile != 50:
-                logger.info(f'   {args.latency_percentile} percentile:     {median_latency_ms:.2f} ms')
-            logger.info(f'   Average:       {avg_latency_ms:.2f} ms')
-            logger.info(f'   Min:           {min_latency_ms:.2f} ms')
-            logger.info(f'   Max:           {max_latency_ms:.2f} ms')
+                logger.info(f'   {args.latency_percentile} percentile:     {format_console_latency(median_latency_ms, avg_latency_ms)}')
+            logger.info(f'   Average:       {format_console_latency(avg_latency_ms, avg_latency_ms)}')
+            logger.info(f'   Min:           {format_console_latency(min_latency_ms, avg_latency_ms)}')
+            logger.info(f'   Max:           {format_console_latency(max_latency_ms, avg_latency_ms)}')
 
             if pcseq:
                 logger.info("Latency for each data shape group:")
                 for idx,group in enumerate(benchmark.latency_groups):
                     logger.info(f"{idx+1}.{str(group)}")
                     if args.latency_percentile == 50:
-                        logger.info(f'   Median:     {group.median:.2f} ms')
+                        logger.info(f'   Median:     {format_console_latency(group.median, group.avg)}')
                     elif args.latency_percentile != 50:
-                        logger.info(f'   {args.latency_percentile} percentile:     {group.median:.2f} ms')
-                    logger.info(f'   Average:    {group.avg:.2f} ms')
-                    logger.info(f'   Min:        {group.min:.2f} ms')
-                    logger.info(f'   Max:        {group.max:.2f} ms')
+                        logger.info(f'   {args.latency_percentile} percentile:     {format_console_latency(group.median, group.avg)}')
+                    logger.info(f'   Average:    {format_console_latency(group.avg, group.avg)}')
+                    logger.info(f'   Min:        {format_console_latency(group.min, group.avg)}')
+                    logger.info(f'   Max:        {format_console_latency(group.max, group.avg)}')
 
         logger.info(f'Throughput:   {fps:.2f} FPS')
 

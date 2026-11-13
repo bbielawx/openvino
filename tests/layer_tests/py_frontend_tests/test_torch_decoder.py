@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import torch
 import pytest
-
+from packaging import version
+from openvino.frontend.pytorch.torchdynamo.backend_utils import _is_testing
 
 class AtenDiv(torch.nn.Module):
     # aten::div can have str or NoneType constant
@@ -96,9 +97,53 @@ def test_pytorch_decoder_get_input_type_none():
 
 
 @pytest.mark.precommit
+def test_pytorch_decoder_can_convert_f8_e4m3_tensor():
+    from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
+    from openvino import PartialShape, Type
+
+    class SomeTensor(torch.nn.Module):
+        def forward(self):
+            return torch.tensor([1, 2], dtype=torch.float8_e4m3fn)
+
+    model = get_scripted_model(SomeTensor())
+    consts = [n for n in model.inlined_graph.nodes() if n.kind() ==
+              "prim::Constant"]
+    assert len(consts) > 0
+    some_const = consts[0]
+    nc_decoder = TorchScriptPythonDecoder(model, some_const)
+    ov_const = nc_decoder.as_constant()
+    assert ov_const is not None
+    assert len(ov_const) == 1
+    assert ov_const[0].get_element_type() == Type.f8e4m3
+    assert ov_const[0].get_partial_shape() == PartialShape([2])
+
+
+@pytest.mark.precommit
+def test_pytorch_decoder_can_convert_f8_e5m2_tensor():
+    from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
+    from openvino import PartialShape, Type
+
+    class SomeTensor(torch.nn.Module):
+        def forward(self):
+            return torch.tensor([1, 2], dtype=torch.float8_e5m2)
+
+    model = get_scripted_model(SomeTensor())
+    consts = [n for n in model.inlined_graph.nodes() if n.kind() ==
+              "prim::Constant"]
+    assert len(consts) > 0
+    some_const = consts[0]
+    nc_decoder = TorchScriptPythonDecoder(model, some_const)
+    ov_const = nc_decoder.as_constant()
+    assert ov_const is not None
+    assert len(ov_const) == 1
+    assert ov_const[0].get_element_type() == Type.f8e5m2
+    assert ov_const[0].get_partial_shape() == PartialShape([2])
+
+
+@pytest.mark.precommit
 def test_pytorch_decoder_can_convert_fp16_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -120,7 +165,7 @@ def test_pytorch_decoder_can_convert_fp16_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_bf16_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -142,7 +187,7 @@ def test_pytorch_decoder_can_convert_bf16_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_fp32_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -164,7 +209,7 @@ def test_pytorch_decoder_can_convert_fp32_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_fp64_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -184,9 +229,57 @@ def test_pytorch_decoder_can_convert_fp64_tensor():
 
 
 @pytest.mark.precommit
+def test_pytorch_decoder_can_convert_complex64_tensor():
+    from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
+    from openvino import PartialShape, Type
+
+    class SomeTensor(torch.nn.Module):
+        def forward(self):
+            r = torch.tensor([1, 2], dtype=torch.float32)
+            i = torch.tensor([3, 4], dtype=torch.float32)
+            return torch.complex(r, i)
+
+    model = get_scripted_model(SomeTensor())
+    consts = [n for n in model.inlined_graph.nodes() if n.kind() ==
+              "prim::Constant"]
+    assert len(consts) > 0
+    some_const = consts[0]
+    nc_decoder = TorchScriptPythonDecoder(model, some_const)
+    ov_const = nc_decoder.as_constant()
+    assert ov_const is not None
+    assert len(ov_const) == 1
+    assert ov_const[0].get_element_type() == Type.f32
+    assert ov_const[0].get_partial_shape() == PartialShape([2, 2])
+
+
+@pytest.mark.precommit
+def test_pytorch_decoder_can_convert_complex128_tensor():
+    from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
+    from openvino import PartialShape, Type
+
+    class SomeTensor(torch.nn.Module):
+        def forward(self):
+            r = torch.tensor([1, 2], dtype=torch.float64)
+            i = torch.tensor([3, 4], dtype=torch.float64)
+            return torch.complex(r, i)
+
+    model = get_scripted_model(SomeTensor())
+    consts = [n for n in model.inlined_graph.nodes() if n.kind() ==
+              "prim::Constant"]
+    assert len(consts) > 0
+    some_const = consts[0]
+    nc_decoder = TorchScriptPythonDecoder(model, some_const)
+    ov_const = nc_decoder.as_constant()
+    assert ov_const is not None
+    assert len(ov_const) == 1
+    assert ov_const[0].get_element_type() == Type.f64
+    assert ov_const[0].get_partial_shape() == PartialShape([2, 2])
+
+
+@pytest.mark.precommit
 def test_pytorch_decoder_can_convert_bool_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -208,7 +301,7 @@ def test_pytorch_decoder_can_convert_bool_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_u8_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -230,7 +323,7 @@ def test_pytorch_decoder_can_convert_u8_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_i8_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -252,7 +345,7 @@ def test_pytorch_decoder_can_convert_i8_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_i16_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -274,7 +367,7 @@ def test_pytorch_decoder_can_convert_i16_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_i32_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -296,7 +389,7 @@ def test_pytorch_decoder_can_convert_i32_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_i64_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
@@ -336,7 +429,7 @@ def test_pytorch_decoder_can_convert_int64_max():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_int_list():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class ListConst(torch.nn.Module):
         def forward(self):
@@ -359,7 +452,7 @@ def test_pytorch_decoder_can_convert_int_list():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_float_list():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class ListConst(torch.nn.Module):
         def forward(self):
@@ -382,7 +475,7 @@ def test_pytorch_decoder_can_convert_float_list():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_bool_list():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class ListConst(torch.nn.Module):
         def forward(self):
@@ -405,7 +498,7 @@ def test_pytorch_decoder_can_convert_bool_list():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_int_tuple():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class ListConst(torch.nn.Module):
         def forward(self):
@@ -428,7 +521,7 @@ def test_pytorch_decoder_can_convert_int_tuple():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_float_tuple():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class ListConst(torch.nn.Module):
         def forward(self):
@@ -451,7 +544,7 @@ def test_pytorch_decoder_can_convert_float_tuple():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_bool_tuple():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class ListConst(torch.nn.Module):
         def forward(self):
@@ -474,7 +567,7 @@ def test_pytorch_decoder_can_convert_bool_tuple():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_empty_list():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class aten_roll(torch.nn.Module):
         def __init__(self, shifts):
@@ -502,7 +595,7 @@ def test_pytorch_decoder_can_convert_empty_list():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_int_scalar_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def __init__(self) -> None:
@@ -533,7 +626,7 @@ def test_pytorch_decoder_can_convert_int_scalar_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_float_scalar_tensor():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
+    from openvino import PartialShape, Type
 
     class SomeTensor(torch.nn.Module):
         def __init__(self) -> None:
@@ -564,12 +657,12 @@ def test_pytorch_decoder_can_convert_float_scalar_tensor():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_tensor_list():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from openvino.runtime import PartialShape, Type
-    from typing import List, Optional
+    from openvino import PartialShape, Type
+    from typing import Optional
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
-            l = torch.jit.annotate(List[Optional[torch.Tensor]], [
+            l = torch.jit.annotate(list[Optional[torch.Tensor]], [
                                    torch.ones((1, 3, 3), dtype=torch.float),])
             return l
 
@@ -602,11 +695,11 @@ def test_pytorch_decoder_can_convert_tensor_list():
 @pytest.mark.precommit
 def test_pytorch_decoder_can_convert_tensor_list_empty():
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
-    from typing import List, Optional
+    from typing import Optional
 
     class SomeTensor(torch.nn.Module):
         def forward(self):
-            l = torch.jit.annotate(List[Optional[torch.Tensor]], [])
+            l = torch.jit.annotate(list[Optional[torch.Tensor]], [])
             return l
 
     model = get_scripted_model(SomeTensor())
@@ -667,3 +760,143 @@ def test_pytorch_decoder_can_convert_scripted_function():
     scripted = torch.jit.script(f)
     model = convert_model(scripted, input=[Type.f32, Type.f32])
     assert model is not None
+
+
+@pytest.mark.precommit
+@pytest.mark.skipif(version.parse(torch.__version__) < version.parse("2.4.0"),
+                    reason="Unsupported on torch<2.4.0")
+def test_pytorch_fx_decoder_extracts_signature():
+    from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
+
+    class TestModel(torch.nn.Module):
+        def forward(self, a, b):
+            return a["x"] + a["y"] + b
+
+    example = ({"x": torch.tensor(1), "y": torch.tensor(2)}, torch.tensor(3))
+    em = torch.export.export(TestModel(), example)
+    nc_decoder = TorchFXPythonDecoder(em.module())
+    assert nc_decoder.get_input_signature_name(0) == "a"
+    assert nc_decoder.get_input_signature_name(1) == "b"
+    assert nc_decoder._input_signature == ["a", "b"]
+
+
+@pytest.mark.precommit
+@pytest.mark.parametrize("return_indices", [False, True])
+def test_pytorch_fx_pool_without_output_metadata(return_indices):
+    import numpy as np
+    from torch.fx.experimental.proxy_tensor import make_fx
+    from openvino import Core, convert_model
+    from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
+
+    def model(data):
+        return torch.nn.functional.max_pool2d(data, 2, return_indices=return_indices)
+
+    data = torch.arange(16, dtype=torch.float32).reshape(1, 1, 4, 4)
+    graph = make_fx(model)(data)
+    for node in graph.graph.nodes:
+        if node.target == torch.ops.aten.max_pool2d_with_indices.default:
+            node.meta.clear()
+    converted = convert_model(TorchFXPythonDecoder(graph))
+    compiled = Core().compile_model(converted, "CPU")
+    actual = compiled([data.numpy()])
+    expected = model(data)
+    if not return_indices:
+        expected = (expected,)
+    assert len(actual) == len(expected)
+    for index, value in enumerate(expected):
+        np.testing.assert_array_equal(actual[index], value.numpy())
+
+
+@pytest.mark.parametrize(
+    ("testing_value", "expected"),
+    [
+        ("false", False),
+        ("0", False),
+        (False, False),
+        ("true", True),
+        ("1", True),
+        (True, True),
+    ],
+)
+def test_is_testing_flag(testing_value, expected):
+    """Test that the _is_testing flag evaluates correctly."""
+    assert _is_testing({"testing": testing_value}) == expected
+
+
+@pytest.mark.precommit
+@pytest.mark.parametrize("ir,expected", [
+    ("graph(%values : Tensor[]):\n  %a : Tensor, %b : Tensor = prim::ListUnpack(%values)\n  return (%a, %b)\n", [0, 1]),
+    ("graph(%values : (Tensor, Tensor)):\n  %a : Tensor, %b : Tensor = prim::TupleUnpack(%values)\n  return (%a, %b)\n", [0, 1]),
+    ("graph(%value : Tensor):\n  %a : Tensor = aten::alias(%value)\n  return (%a)\n", []),
+])
+def test_pytorch_decoder_input_sequence(ir, expected):
+    from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
+
+    graph = torch._C.parse_ir(ir)
+    node = list(graph.nodes())[-1]
+    decoder = TorchScriptPythonDecoder(None, node, alias_db=graph.alias_db())
+    assert decoder.get_input_sequences() == ({0: expected} if expected else {})
+
+
+@pytest.mark.precommit
+@pytest.mark.parametrize("metadata", [False, True])
+@pytest.mark.parametrize("wrapped,legacy", [(False, True), (True, False), (True, True)])
+def test_pytorch_decoder_conversion_without_sequence_override(metadata, wrapped, legacy):
+    import numpy as np
+    import openvino as ov
+    from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
+    from openvino.frontend.pytorch.py_pytorch_frontend import _FrontEndPytorchDecoder
+
+    class LegacyDecoder(_FrontEndPytorchDecoder):
+        def __init__(self, wrapped):
+            super().__init__()
+            self.wrapped = wrapped
+            self.children = []
+
+        def __getattr__(self, name):
+            if name == "get_input_sequences":
+                raise AttributeError(name)
+            return getattr(self.wrapped, name)
+
+        def visit_subgraph(self, visitor):
+            def wrap_child(child):
+                decoder = LegacyDecoder(child)
+                self.children.append(decoder)
+                visitor(decoder)
+            self.wrapped.visit_subgraph(wrap_child)
+
+    ir = """graph(%left : Tensor, %right : Tensor):
+      %pair : (Tensor, Tensor) = prim::TupleConstruct(%left, %right)
+      %first : Tensor, %second : Tensor = prim::TupleUnpack(%pair)
+      %one : int = prim::Constant[value=1]()
+      %updated : Tensor = aten::add_(%second, %one, %one)
+      return (%left, %right, %first, %second)
+    """
+    if metadata:
+        ir = ir.replace("aten::add_(%second, %one, %one)", "aten::unsqueeze_(%second, %one)")
+    if wrapped:
+        ir = ir.replace("%first : Tensor, %second : Tensor = prim::TupleUnpack(%pair)", """
+      %wrapped : ((Tensor, Tensor)) = prim::TupleConstruct(%pair)
+      %alias : (Tensor, Tensor) = prim::TupleUnpack(%wrapped)
+      %first : Tensor, %second : Tensor = prim::TupleUnpack(%alias)""").replace(
+            "return (%left, %right, %first, %second)",
+            "return (%left, %right, %first, %second, %pair, %alias)")
+    graph = torch._C.parse_ir(ir)
+    decoder = TorchScriptPythonDecoder(None, graph, alias_db=graph.alias_db())
+    if legacy:
+        decoder = LegacyDecoder(decoder)
+    frontend = ov.frontend.FrontEndManager().load_by_framework("pytorch")
+    input_model = frontend.load(decoder)
+    for place in input_model.get_inputs():
+        input_model.set_element_type(place, ov.Type.f32)
+        input_model.set_partial_shape(place, ov.PartialShape([2, 3]))
+    converted = frontend.convert(input_model)
+    compiled = ov.Core().compile_model(converted, "CPU")
+    data = torch.arange(6, dtype=torch.float32).reshape(2, 3).numpy()
+    right = data + 10
+    actual = list(compiled([data, right]).values())
+    updated = right[:, None, :] if metadata else right + 1
+    expected = (data, updated, data, updated) + ((data, updated, data, updated) if wrapped else ())
+    assert len(actual) == len(expected)
+    for result, expected in zip(actual, expected):
+        np.testing.assert_array_equal(result, expected)

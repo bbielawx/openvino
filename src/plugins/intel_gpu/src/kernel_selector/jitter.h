@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -72,13 +72,15 @@ inline std::string GetTypeName<double>() {
 std::string toCLType(WeightsType wType);
 std::string toCLType(Datatype dType);
 std::string getMeanOpString(MeanOp op);
+std::string GetTensorHasMultipleElementsCondition(const std::string& tensor_name);
 inline std::string toVectorMulString(const std::vector<std::string>& vec) {
     std::stringstream ss;
     ss << "(";
     for (size_t i = 0; i < vec.size(); i++) {
         ss << vec[i];
-        if (i != vec.size() - 1)
+        if (i != vec.size() - 1) {
             ss << "*";
+        }
     }
     ss << ")";
     return ss.str();
@@ -118,10 +120,12 @@ inline std::string toVectorInitString(const VecT& vec,
                                       Func fetchFunc) {
     std::stringstream ss;
     ss << "{ ";
-    for (size_t i = 0; i < vec.size(); i++)
+    for (size_t i = 0; i < vec.size(); i++) {
         ss << toCodeString(fetchFunc(vec[i])) << ",";
-    for (size_t i = vec.size(); i < maxDim; i++)
+    }
+    for (size_t i = vec.size(); i < maxDim; i++) {
         ss << padFillingVal << ",";
+    }
     ss << " } ";
     return ss.str();
 }
@@ -133,8 +137,9 @@ inline std::string toVectorString(const VecT& vec,
                                   ValT padFillingVal,
                                   Func fetchFunc) {
     std::stringstream ss;
-    if (vectorType.length())
+    if (!vectorType.empty()) {
         ss << "(" << vectorType << " [])";
+    }
     ss << toVectorInitString(vec, vectorType, maxDim, padFillingVal, fetchFunc);
     return ss.str();
 }
@@ -150,7 +155,7 @@ protected:
 public:
     std::string GetJitName() { return _name; }
     virtual JitDefinitions GetDefinitions() const = 0;
-    virtual ~JitConstant() {}
+    virtual ~JitConstant() = default;
 };
 
 class simple_jit_constant : public JitConstant {
@@ -323,7 +328,7 @@ JitConstants MakeConstantLoopUnrollJitConstants(uint32_t loopCount);
 JitConstants MakeTypeJitConstants(Datatype dataType, const std::string& macroName);
 JitConstants MakeTypeJitConstants(WeightsType weightsType, const std::string& macroName);
 inline JitConstants MakeUnitTypeJitConstants(Datatype dataType) { return MakeTypeJitConstants(dataType, "UNIT"); }
-JitConstants make_int4_packed_type_jit_constant(const std::string& macro_name, WeightsType wt, size_t pack_size);
+JitConstants make_sub_byte_packed_type_jit_constant(const std::string& macro_name, WeightsType wt, size_t pack_size);
 
 class FusedOpsCodeGenerator {
 public:
@@ -351,7 +356,7 @@ public:
                 case 6: b = idx[0]; f = idx[1]; w = idx[2]; z = idx[3]; y = idx[4]; x = idx[5]; break;
                 case 7: b = idx[0]; f = idx[1]; u = idx[2]; w = idx[3]; z = idx[4]; y = idx[5]; x = idx[6]; break;
                 case 8: b = idx[0]; f = idx[1]; v = idx[2]; u = idx[3]; w = idx[4]; z = idx[5]; y = idx[6]; x = idx[7]; break;
-                default: throw std::runtime_error("More than 8 dimenstions is not supported in fused op generator");
+                default: throw std::runtime_error("More than 8 dimensions is not supported in fused op generator");
             }
 
             if (t.Batch().v == 1) {
@@ -392,20 +397,22 @@ public:
 
     std::string GetTypeStr() const;
     std::string GetInputTensorName(size_t input_id) const;
-    std::string GetOutputTensorName() const;
+    std::string GetOutputTensorName(size_t idx = 0) const;
     std::string GetInputTypeName(size_t input_id, size_t vec_size) const;
     std::string GetJitLoad(const FusedOpsConfiguration& conf, size_t input_id, const DataTensor prim_output,
                            bool reuse_index = false, std::string reused_idx = "") const;
     std::string GetIdx(size_t input_id, idx_desc idx, bool should_be_safe) const;
     std::string GetInputPtrName(size_t input_id) const;
     std::string GetInputVarName(size_t input_id, bool is_shuffled = false, std::string shuffle_var = "") const;
+    std::string GetDecodedInputVarName(size_t input_id, bool is_shuffled = false, std::string shuffle_var = "", size_t vec_size = 1) const;
     std::string GetOutputVarName(std::string input_var_name, size_t op_id) const;
-    std::string ConvertToOutputType(std::string var, size_t vec_size = 1) const;
+    std::string ConvertToOutputType(std::string var, size_t vec_size = 1, size_t idx = 0) const;
+    std::string DecodeComputeType(std::string var, Datatype dt, size_t vec_size = 1) const;
     std::string ConvertToType(std::string var, Datatype dt, size_t vec_size = 1) const;
     std::string CastToType(std::string var, Datatype dt, size_t vec_size = 1) const;
     std::string Broadcast(std::string var,  Datatype dt, size_t vec_size = 1) const;
-    std::string ConvertToOutputTypeSat(std::string var, size_t vec_size = 1) const;
-    std::string GetOutputType(size_t vec_size = 1) const;
+    std::string ConvertToOutputTypeSat(std::string var, size_t vec_size = 1, size_t idx = 0) const;
+    std::string GetOutputType(size_t vec_size = 1, size_t idx = 0) const;
     std::string GetType(Datatype dt, size_t vec_size = 1) const;
 
 private:

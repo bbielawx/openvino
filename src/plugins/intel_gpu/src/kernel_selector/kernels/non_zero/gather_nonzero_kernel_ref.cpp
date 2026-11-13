@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2022 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -46,7 +46,7 @@ JitConstants GatherNonzeroKernelRef::GetJitConstants(const gather_nonzero_params
     jit.AddConstant(MakeJitConstant("MAX_LOCAL_MEM_SIZE", max_local_mem_size));
 
     if (input.is_dynamic()) {
-        DimensionAccessHelper dims(input);
+        DimensionAccessHelperJit dims(input);
         const std::string total_data_size = toVectorMulString({dims.x(), dims.y(), dims.z(), dims.w(), dims.f(), dims.b()});
         jit.AddConstant(MakeJitConstant("TOTAL_DATA_SIZE", total_data_size));
     } else {
@@ -115,8 +115,9 @@ KernelsPriority GatherNonzeroKernelRef::GetKernelsPriority(const Params& /*param
 }
 
 bool GatherNonzeroKernelRef::Validate(const Params& p) const {
-    if (!KernelBaseOpenCL::Validate(p))
-        return false;
+    if (!KernelBaseOpenCL::Validate(p)) {
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     const auto& rp = static_cast<const gather_nonzero_params&>(p);
 

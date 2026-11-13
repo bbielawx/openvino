@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -29,6 +29,14 @@ public:
                               const Output<Node>& value,
                               const Output<Node>& attn_mask,
                               const Output<Node>& scale,
+                              const Output<Node>& sink,
+                              bool causal);
+
+    ScaledDotProductAttention(const Output<Node>& query,
+                              const Output<Node>& key,
+                              const Output<Node>& value,
+                              const Output<Node>& attn_mask,
+                              const Output<Node>& scale,
                               bool causal);
 
     ScaledDotProductAttention(const Output<Node>& query,
@@ -50,8 +58,12 @@ public:
         return m_causal;
     }
 
+    void set_causal(bool causal) {
+        m_causal = causal;
+    }
+
 private:
-    bool m_causal;
+    bool m_causal = false;
 };
 
 }  // namespace v13

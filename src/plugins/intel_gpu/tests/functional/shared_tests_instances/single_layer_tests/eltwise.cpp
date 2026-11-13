@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -34,6 +34,14 @@ std::vector<std::vector<ov::Shape>>  inShapes = {
         {{1, 3, 2, 2, 2, 3, 2}, {1, 3, 2, 2, 2, 3, 2}},
 };
 
+std::vector<std::vector<ov::Shape>> numpyBroadcastDivShapes = {
+        {{1, 1, 1, 8}, {1, 4, 1, 8}},
+};
+
+std::vector<std::vector<ov::Shape>> numpyBroadcastPowerShapes = {
+        {{2}, {1, 1, 1, 1}},
+};
+
 std::vector<ov::test::ElementType> netPrecisions = {
         ov::element::f32,
         ov::element::f16,
@@ -66,7 +74,41 @@ std::vector<EltwiseTypes> eltwiseOpTypes = {
         EltwiseTypes::MOD
 };
 
+std::vector<EltwiseTypes> smoke_intOnly_eltwiseOpTypes = {
+        EltwiseTypes::RIGHT_SHIFT,
+        EltwiseTypes::BITWISE_AND
+};
+
+std::vector<ov::test::ElementType> intOnly_netPrecisions = {
+        ov::element::i32,
+        ov::element::i16,
+        ov::element::u16
+};
+
+const std::vector<std::vector<ov::Shape>> intModuloShapes = {
+        {{4, 4}, {4, 4}},
+};
+
+const std::vector<ov::test::ElementType> intModuloPrecisions = {
+        ov::element::u8,
+        ov::element::u16,
+};
+
 ov::AnyMap additional_config = {};
+
+INSTANTIATE_TEST_SUITE_P(
+    smoke_intOnly_CompareWithRefs,
+    EltwiseLayerTest,
+    ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(inShapes)),
+                       ::testing::ValuesIn(smoke_intOnly_eltwiseOpTypes),
+                       ::testing::ValuesIn(secondaryInputTypes),
+                       ::testing::ValuesIn(opTypes),
+                       ::testing::ValuesIn(intOnly_netPrecisions),
+                       ::testing::Values(ov::element::dynamic),
+                       ::testing::Values(ov::element::dynamic),
+                       ::testing::Values(ov::test::utils::DEVICE_GPU),
+                       ::testing::Values(additional_config)),
+    EltwiseLayerTest::getTestCaseName);
 
 INSTANTIATE_TEST_SUITE_P(
     smoke_CompareWithRefs,
@@ -76,24 +118,91 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::ValuesIn(secondaryInputTypes),
                        ::testing::ValuesIn(opTypes),
                        ::testing::ValuesIn(netPrecisions),
-                       ::testing::Values(ov::element::undefined),
-                       ::testing::Values(ov::element::undefined),
+                       ::testing::Values(ov::element::dynamic),
+                       ::testing::Values(ov::element::dynamic),
                        ::testing::Values(ov::test::utils::DEVICE_GPU),
                        ::testing::Values(additional_config)),
     EltwiseLayerTest::getTestCaseName);
 
 INSTANTIATE_TEST_SUITE_P(
-    CompareWithRefs,
+        CompareWithRefs,
+        EltwiseLayerTest,
+        ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(inShapes)),
+                                           ::testing::ValuesIn(eltwiseOpTypes),
+                                           ::testing::ValuesIn(secondaryInputTypes),
+                                           ::testing::ValuesIn(opTypes),
+                                           ::testing::ValuesIn(netPrecisions),
+                                           ::testing::Values(ov::element::dynamic),
+                                           ::testing::Values(ov::element::dynamic),
+                                           ::testing::Values(ov::test::utils::DEVICE_GPU),
+                                           ::testing::Values(additional_config)),
+        EltwiseLayerTest::getTestCaseName);
+
+INSTANTIATE_TEST_SUITE_P(smoke_IntModulo_CompareWithRefs,
+                         EltwiseLayerTest,
+                         ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(intModuloShapes)),
+                                            ::testing::Values(EltwiseTypes::MOD),
+                                            ::testing::Values(InputLayerType::CONSTANT),
+                                            ::testing::Values(OpType::VECTOR),
+                                            ::testing::ValuesIn(intModuloPrecisions),
+                                            ::testing::Values(ov::element::dynamic),
+                                            ::testing::Values(ov::element::dynamic),
+                                            ::testing::Values(ov::test::utils::DEVICE_GPU),
+                                            ::testing::Values(additional_config)),
+                         EltwiseLayerTest::getTestCaseName);
+
+INSTANTIATE_TEST_SUITE_P(
+    smoke_NumpyBroadcastDiv,
     EltwiseLayerTest,
-    ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(inShapes)),
-                       ::testing::ValuesIn(eltwiseOpTypes),
-                       ::testing::ValuesIn(secondaryInputTypes),
-                       ::testing::ValuesIn(opTypes),
-                       ::testing::ValuesIn(netPrecisions),
-                       ::testing::Values(ov::element::undefined),
-                       ::testing::Values(ov::element::undefined),
+    ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(numpyBroadcastDivShapes)),
+                       ::testing::Values(EltwiseTypes::DIVIDE),
+                       ::testing::Values(InputLayerType::PARAMETER),
+                       ::testing::Values(OpType::VECTOR),
+                       ::testing::Values(ov::element::f32),
+                       ::testing::Values(ov::element::dynamic),
+                       ::testing::Values(ov::element::dynamic),
                        ::testing::Values(ov::test::utils::DEVICE_GPU),
                        ::testing::Values(additional_config)),
     EltwiseLayerTest::getTestCaseName);
+
+INSTANTIATE_TEST_SUITE_P(smoke_NumpyBroadcastPower,
+                         EltwiseLayerTest,
+                         ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(numpyBroadcastPowerShapes)),
+                                            ::testing::Values(EltwiseTypes::POWER),
+                                            ::testing::Values(InputLayerType::CONSTANT),
+                                            ::testing::Values(OpType::VECTOR),
+                                            ::testing::Values(ov::element::f32),
+                                            ::testing::Values(ov::element::dynamic),
+                                            ::testing::Values(ov::element::dynamic),
+                                            ::testing::Values(ov::test::utils::DEVICE_GPU),
+                                            ::testing::Values(additional_config)),
+                         EltwiseLayerTest::getTestCaseName);
+
+
+std::vector<std::vector<ov::Shape>> bf16Shapes = {
+        {{2, 200}},
+        {{1, 10, 100}},
+        {{4, 4, 16}},
+        {{2, 17, 5, 4}, {1, 17, 1, 1}},
+};
+
+std::vector<EltwiseTypes> bf16_eltwiseOpTypes = {
+        EltwiseTypes::ADD,
+        EltwiseTypes::MULTIPLY,
+        EltwiseTypes::SUBTRACT,
+};
+
+INSTANTIATE_TEST_SUITE_P(smoke_BF16_CompareWithRefs,
+                         EltwiseLayerTest,
+                         ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(bf16Shapes)),
+                                            ::testing::ValuesIn(bf16_eltwiseOpTypes),
+                                            ::testing::ValuesIn(secondaryInputTypes),
+                                            ::testing::Values(OpType::VECTOR),
+                                            ::testing::Values(ov::element::bf16),
+                                            ::testing::Values(ov::element::dynamic),
+                                            ::testing::Values(ov::element::dynamic),
+                                            ::testing::Values(ov::test::utils::DEVICE_GPU),
+                                            ::testing::Values(additional_config)),
+                         EltwiseLayerTest::getTestCaseName);
 
 }  // namespace

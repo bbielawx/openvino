@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -29,11 +29,8 @@ public:
     std::shared_ptr<NiceMock<MockIPlugin>> m_hardware_plugin;
 
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<plugin_compile_model_param> obj) {
-        ov::AnyMap core_properities;
-        ov::AnyMap plugin_properities;
-        uint32_t expect_batch_size;
-        std::tie(core_properities, plugin_properities, expect_batch_size) = obj.param;
+    static std::string getTestCaseName(const testing::TestParamInfo<plugin_compile_model_param>& obj) {
+        const auto& [core_properities, plugin_properities, expect_batch_size] = obj.param;
 
         std::string res;
         for (auto& c : core_properities) {
@@ -103,12 +100,12 @@ public:
 
 TEST_P(PluginCompileModelTest, PluginCompileModelTestCase) {
     m_model = ov::test::utils::make_multi_single_conv();
-    ASSERT_NO_THROW(m_plugin->compile_model(m_model, m_plugin_properities));
+    OV_ASSERT_NO_THROW(m_plugin->compile_model(m_model, m_plugin_properities));
 }
 
 TEST_P(PluginCompileModelTest, PluginCompileModelWithRemoteContextTestCase) {
     m_model = ov::test::utils::make_multi_single_conv();
-    ASSERT_NO_THROW(m_plugin->compile_model(m_model, m_plugin_properities, m_remote_context));
+    OV_ASSERT_NO_THROW(m_plugin->compile_model(m_model, m_plugin_properities, m_remote_context));
 }
 
 TEST_P(PluginCompileModelTest, PluginCompileModelBatchedModelTestCase) {
@@ -117,7 +114,7 @@ TEST_P(PluginCompileModelTest, PluginCompileModelBatchedModelTestCase) {
     batch.set_symbol(std::make_shared<ov::Symbol>());
     auto p_shape = ov::PartialShape{batch, 1, 32, 32};
     m_model->reshape(p_shape);
-    ASSERT_NO_THROW(m_plugin->compile_model(m_model, m_plugin_properities));
+    OV_ASSERT_NO_THROW(m_plugin->compile_model(m_model, m_plugin_properities));
 }
 
 TEST_P(PluginCompileModelTest, PluginCompileModelBatchedModelWithRemoteContextTestCase) {
@@ -126,11 +123,11 @@ TEST_P(PluginCompileModelTest, PluginCompileModelBatchedModelWithRemoteContextTe
     batch.set_symbol(std::make_shared<ov::Symbol>());
     auto p_shape = ov::PartialShape{batch, 1, 32, 32};
     m_model->reshape(p_shape);
-    ASSERT_NO_THROW(m_plugin->compile_model(m_model, m_plugin_properities, m_remote_context));
+    OV_ASSERT_NO_THROW(m_plugin->compile_model(m_model, m_plugin_properities, m_remote_context));
 }
 
 const std::vector<plugin_compile_model_param> plugin_compile_model_param_test = {
-    // Case 1: explict apply batch size by config of AUTO_BATCH_DEVICE_CONFIG
+    // Case 1: explicitly apply batch size by config of AUTO_BATCH_DEVICE_CONFIG
     plugin_compile_model_param{{{ov::hint::performance_mode.name(), ov::hint::PerformanceMode::THROUGHPUT},
                                 {ov::optimal_batch_size.name(), static_cast<unsigned int>(16)},
                                 {ov::hint::num_requests(12)},

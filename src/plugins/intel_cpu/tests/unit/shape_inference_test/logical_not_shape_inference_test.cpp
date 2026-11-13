@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,12 +13,7 @@ using namespace ov;
 using namespace ov::intel_cpu;
 using namespace testing;
 
-class LogicalNotStaticShapeInferenceTest : public OpStaticShapeInferenceTest<op::v1::LogicalNot> {
-protected:
-    void SetUp() override {
-        this->output_shapes = ShapeVector(1);
-    }
-};
+class LogicalNotStaticShapeInferenceTest : public OpStaticShapeInferenceTest<op::v1::LogicalNot> {};
 
 TEST_F(LogicalNotStaticShapeInferenceTest, static_rank) {
     const auto a = std::make_shared<op::v0::Parameter>(element::boolean, PartialShape{-1, -1, -1, -1});

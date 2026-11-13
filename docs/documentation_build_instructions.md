@@ -21,17 +21,22 @@ $ apt install -y doxygen graphviz texlive
 ```
 $ python3 -m venv env
 $ source env/bin/activate
+(env) $ pip install --upgrade setuptools pip
 (env) $ pip install -r docs/requirements.txt
 ```
 5. Install the sphinx theme
 ```
-(env) $ cd docs/openvino_sphinx_theme && python setup.py install && cd -
-``````
-6. Create build folder:
+(env) $ python -m pip install docs/openvino_sphinx_theme
+```
+6. Install the custom sphinx sitemap
+```
+(env) $ pip install docs/openvino_custom_sphinx_sitemap
+```
+7. Create build folder:
 ```
 (env) $ mkdir build && cd build
 ```
-7. Build documentation using these commands:
+8. Build documentation using these commands:
 ```
 (env) $ cmake .. -DENABLE_DOCS=ON
 (env) $ cmake --build . --target sphinx_docs
@@ -39,6 +44,9 @@ $ source env/bin/activate
 Depending on the needs, following variables can be added to first cmake call:
 - building C/C++ API:  `-DENABLE_CPP_API=ON`
 - building Python API: `-DENABLE_PYTHON_API=ON`
+- building GenAI API:  `-DENABLE_GENAI_API=ON`
 - building Notebooks:  `-DENABLE_NOTEBOOKS=ON`
-- building OMZ:        `-DENABLE_OMZ=ON`
 - building OVMS:       `-DENABLE_OVMS=ON -DOVMS_DOCS_DIR=<path_to_OVMS_repo>`
+
+> **Note:** When building the Python API documentation, the OpenVINO package version specified in [conf.py](./sphinx_setup/conf.py) is automatically downloaded using the [installation script](./scripts/install_appropriate_openvino_version.py).  
+> If you need a specific version or want to use an already installed OpenVINO package, modify these files accordingly.

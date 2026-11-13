@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2023 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
@@ -8,7 +8,7 @@ import torch
 from pytorch_layer_test_class import PytorchLayerTest
 
 
-@pytest.mark.parametrize('input_tensor', (torch.tensor([1, float('inf'), 2, float('-inf'), float('nan')])))
+@pytest.mark.parametrize('input_tensor', (np.array([2, 0, 1, -2]),))
 class TestIsFinite(PytorchLayerTest):
 
     def _prepare_input(self):
@@ -19,13 +19,12 @@ class TestIsFinite(PytorchLayerTest):
         class aten_isfinite(torch.nn.Module):
 
             def forward(self, input_tensor):
-                return torch.isfinite(input_tensor)
+                return torch.isfinite(torch.pow(input_tensor.to(torch.float32), 1000))
 
-        ref_net = None
-
-        return aten_isfinite(), ref_net, "aten::isfinite"
+        return aten_isfinite(), "aten::isfinite"
 
     @pytest.mark.precommit_fx_backend
+    @pytest.mark.precommit_torch_export
     def test_isfinite(self, ie_device, precision, ir_version, input_tensor):
         self.input_tensor = input_tensor
         self._test(*self.create_model(), ie_device, precision, ir_version)

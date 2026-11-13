@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -92,6 +92,7 @@ endfunction()
 #
 
 include(cross_compile/find_commands)
+include(cross_compile/python_helpers)
 include(cross_compile/native_compile)
 
 #
@@ -120,6 +121,9 @@ if(CMAKE_GENERATOR STREQUAL "Ninja Multi-Config")
     # 'Ninja Multi-Config' specific, see:
     # https://cmake.org/cmake/help/latest/variable/CMAKE_DEFAULT_BUILD_TYPE.html
     set(CMAKE_DEFAULT_BUILD_TYPE "Release" CACHE STRING "CMake default build type")
+    if (WIN32)
+        set(CMAKE_NINJA_FORCE_RESPONSE_FILE TRUE CACHE INTERNAL "Force Ninja to use response files.")
+    endif()
 elseif(NOT OV_GENERATOR_MULTI_CONFIG)
     if(NOT CMAKE_BUILD_TYPE)
         # default value
@@ -178,15 +182,14 @@ else()
 endif()
 add_definitions(-DOV_BUILD_POSTFIX=\"${OV_BUILD_POSTFIX}\")
 
-# for BW compatibility; removed before 2024.0
-set(IE_BUILD_POSTFIX ${OV_BUILD_POSTFIX})
-add_definitions(-DIE_BUILD_POSTFIX=\"${IE_BUILD_POSTFIX}\")
-
 ov_set_if_not_defined(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${OUTPUT_ROOT}/${BIN_FOLDER})
 ov_set_if_not_defined(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${OUTPUT_ROOT}/${BIN_FOLDER})
-ov_set_if_not_defined(CMAKE_COMPILE_PDB_OUTPUT_DIRECTORY ${OUTPUT_ROOT}/${BIN_FOLDER})
 ov_set_if_not_defined(CMAKE_PDB_OUTPUT_DIRECTORY ${OUTPUT_ROOT}/${BIN_FOLDER})
 ov_set_if_not_defined(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_ROOT}/${BIN_FOLDER})
+set(OV_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
+set(OV_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
+set(OV_PDB_OUTPUT_DIRECTORY ${CMAKE_PDB_OUTPUT_DIRECTORY})
+set(OV_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
 include(packaging/packaging)
 
@@ -208,21 +211,34 @@ set(CMAKE_POLICY_DEFAULT_CMP0026 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0042 NEW)
 # CMake 3.1+: Simplify variable reference and escape sequence evaluation.
 set(CMAKE_POLICY_DEFAULT_CMP0053 NEW)
+# CMake 3.3+: Honor visibility properties for all target types
+set(CMAKE_POLICY_DEFAULT_CMP0063 NEW)
 # CMake 3.9+: `RPATH` settings on macOS do not affect `install_name`.
 set(CMAKE_POLICY_DEFAULT_CMP0068 NEW)
 # CMake 3.12+: find_package() uses <PackageName>_ROOT variables.
 set(CMAKE_POLICY_DEFAULT_CMP0074 NEW)
 # CMake 3.13+: option() honors normal variables.
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
-# CMake 3.15: Modules FindPython3, FindPython2 and FindPython use LOCATION for lookup strategy
+# CMake 3.15+: export(PACKAGE) does not populate package registry by default.
+set(CMAKE_POLICY_DEFAULT_CMP0090 NEW)
+# CMake 3.15+: Modules FindPython3, FindPython2 and FindPython use LOCATION for lookup strategy
 set(CMAKE_POLICY_DEFAULT_CMP0094 NEW)
 # CMake 3.19+: An imported target missing its location property fails during generation.
 set(CMAKE_POLICY_DEFAULT_CMP0111 NEW)
-# CMake 3.22+ :cmake_dependent_option() supports full Condition Syntax
+# CMake 3.22+: cmake_dependent_option() supports full Condition Syntax
 set(CMAKE_POLICY_DEFAULT_CMP0127 NEW)
-# CMake 3.24+ :prefers to set the timestamps of all extracted contents to the time of the extraction
+# CMake 3.24+: prefers to set the timestamps of all extracted contents to the time of the extraction
 set(CMAKE_POLICY_DEFAULT_CMP0135 NEW)
+# CMake 3.27+: Visual Studio Generators select latest Windows SDK by default.
+set(CMAKE_POLICY_DEFAULT_CMP0149 NEW)
+# CMake 3.31+: install() DESTINATION paths are normalized.
+set(CMAKE_POLICY_DEFAULT_CMP0177 NEW)
 
+set(CMAKE_FIND_USE_PACKAGE_REGISTRY OFF CACHE BOOL "Disables search in user / system package registries")
+set(CMAKE_FIND_PACKAGE_NO_PACKAGE_REGISTRY ON CACHE BOOL "Disables search in user package registries")
+set(CMAKE_FIND_PACKAGE_NO_SYSTEM_PACKAGE_REGISTRY ON CACHE BOOL "Disables search in system package registries")
+set(CMAKE_EXPORT_PACKAGE_REGISTRY OFF CACHE BOOL "Disables package registry. Required for 3rd party projects like rapidjson, gflags")
+set(CMAKE_EXPORT_NO_PACKAGE_REGISTRY ON CACHE BOOL "Disables package registry. Required for 3rd party projects like rapidjson, gflags")
 set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "Don't warn about obsolete cmake versions in 3rdparty")
 set(CMAKE_WARN_ON_ABSOLUTE_INSTALL_DESTINATION ON CACHE BOOL "Warn about absolute paths in destination")
 
@@ -237,8 +253,7 @@ if(ENABLE_LTO)
                         LANGUAGES C CXX)
 
     if(NOT IPO_SUPPORTED)
-        set(ENABLE_LTO "OFF" CACHE STRING "Enable Link Time Optimization" FORCE)
-        message(WARNING "IPO / LTO is not supported: ${OUTPUT_MESSAGE}")
+        message(FATAL_ERROR "ENABLE_LTO is ON but IPO / LTO is not supported: ${OUTPUT_MESSAGE}")
     endif()
 endif()
 
@@ -297,9 +312,8 @@ include(python_requirements)
 
 # Code style utils
 
-include(cpplint/cpplint)
 include(clang_format/clang_format)
+include(clang_tidy/clang_tidy)
 include(ncc_naming_style/ncc_naming_style)
-
 # Restore state
 set(CMAKE_MODULE_PATH ${OLD_CMAKE_MODULE_PATH})

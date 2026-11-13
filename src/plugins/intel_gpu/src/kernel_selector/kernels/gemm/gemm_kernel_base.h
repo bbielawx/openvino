@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,30 +13,32 @@ namespace kernel_selector {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 struct gemm_params : public base_params {
     gemm_params()
-        : base_params(KernelType::GEMM), alpha(1.0f), beta(0.0f), transpose_input0(false), transpose_input1(false) {}
+        : base_params(KernelType::GEMM), alpha(1.0f), beta(0.0f), transpose_input0(0u), transpose_input1(0u) {}
 
     float alpha;
     float beta;
     uint32_t transpose_input0;
     uint32_t transpose_input1;
-    std::vector<int32_t> input0_target_shape;
-    std::vector<int32_t> input1_target_shape;
-    std::vector<int64_t> input0_output_pattern;
-    std::vector<int64_t> input1_output_pattern;
     std::vector<int64_t> input0_order;
     std::vector<int64_t> input1_order;
     std::vector<int64_t> output_order;
+    int64_t input0_reshape_axes = 0;
+    int64_t input1_reshape_axes = 0;
+    int64_t input0_broadcast_val = 0;
+    int64_t input1_broadcast_val = 0;
     DataTensor beam_table;
     bool indirect_input0 = false;
     bool indirect_input1 = false;
+    int64_t indirect_axis = 0;
     QuantizationType quantization = QuantizationType::NONE;
 
     ParamsKey GetParamsKey() const override {
         ParamsKey k = base_params::GetParamsKey();
         k.EnableQuantization(quantization);
 
-        if (indirect_input0 || indirect_input1)
+        if (indirect_input0 || indirect_input1) {
             k.EnableIndirectGemm();
+        }
         return k;
     }
 };
@@ -49,7 +51,7 @@ public:
     using KernelBaseOpenCL::KernelBaseOpenCL;
     using FusedOpDesc = fused_operation_desc;
     using DispatchData = CommonDispatchData;
-    virtual ~GemmKernelBase() {}
+    ~GemmKernelBase() override = default;
 
 protected:
     virtual JitConstants GetJitConstants(const gemm_params& params) const;

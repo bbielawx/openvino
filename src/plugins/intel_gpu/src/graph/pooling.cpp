@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -37,7 +37,7 @@ layout pooling_inst::calc_output_layout(parent::typed_node const& node, kernel_i
     }
 
     if (impl_param.has_fused_primitives()) {
-        output_type = impl_param.get_fused_output_layout().data_type;
+        output_type = impl_param.get_output_element_type();
 
         // pooling doesn't support i32 data type
         // FIXME: Someday delete this, when pooling supports i32 output.
@@ -48,11 +48,11 @@ layout pooling_inst::calc_output_layout(parent::typed_node const& node, kernel_i
 
     auto stride_z = stride.size() >= 3 ? stride[stride.size() - 3] : 1;
     auto stride_y = stride.size() >= 2 ? stride[stride.size() - 2] : 1;
-    auto stride_x = stride.size() >= 1 ? stride[stride.size() - 1] : 1;
+    auto stride_x = !stride.empty() ? stride[stride.size() - 1] : 1;
 
     auto kernel_z = window_size.size() >= 3 ? window_size[window_size.size() - 3] : 1;
     auto kernel_y = window_size.size() >= 2 ? window_size[window_size.size() - 2] : 1;
-    auto kernel_x = window_size.size() >= 1 ? window_size[window_size.size() - 1] : 1;
+    auto kernel_x = !window_size.empty() ? window_size[window_size.size() - 1] : 1;
 
     // TODO: Consider moving general parameter verification to arguments constructor.
     CLDNN_ERROR_LESS_OR_EQUAL_THAN(desc->id,
@@ -157,7 +157,7 @@ std::vector<layout> pooling_inst::calc_output_layouts(pooling_node const& /*node
         }
     }
     if (impl_param.has_fused_primitives()) {
-        output_dtype = impl_param.get_fused_output_layout().data_type;
+        output_dtype = impl_param.get_output_element_type();
 
         // pooling doesn't support i32 data type
         // FIXME: Someday delete this, when pooling supports i32 output.
@@ -170,8 +170,18 @@ std::vector<layout> pooling_inst::calc_output_layouts(pooling_node const& /*node
     output_shape[0] = input_shape[0];
     output_shape[1] = input_shape[1];
 
+    std::vector<layout> out_layouts = {
+        layout{output_shape, output_dtype, input_layout.format}
+    };
+
+    if (desc->num_outputs == 2) {
+        auto l = out_layouts[0];
+        l.data_type = desc->index_element_type;
+        out_layouts.push_back(l);
+    }
+
     if (input_shape.is_dynamic()) {
-        return { layout{output_shape, input_layout.data_type, input_layout.format} };
+        return out_layouts;
     }
 
     if (desc->with_output_size) {
@@ -206,7 +216,8 @@ std::vector<layout> pooling_inst::calc_output_layouts(pooling_node const& /*node
     auto stride = desc->stride;
     auto dilation = desc->dilation.empty() ? ov::Strides(stride.size(), 1)
                                            : desc->dilation;
-    bool ceil_mod = desc->rounding_type == ov::op::RoundingType::CEIL;
+    const bool ceil_mode = desc->rounding_type == ov::op::RoundingType::CEIL ||
+                           desc->rounding_type == ov::op::RoundingType::CEIL_TORCH;
 
     auto is_positive_values = [](const std::vector<size_t>& values) {
         return !std::any_of(values.begin(), values.end(), [](size_t val) { return val == 0; });
@@ -231,12 +242,20 @@ std::vector<layout> pooling_inst::calc_output_layouts(pooling_node const& /*node
     for (size_t i = 0; i < spatial_size; ++i) {
         int64_t padded_input_dim = input_shape[i + 2].get_length() + pads_begin[i] + pads_end[i];
         int64_t kernel_dilated_dim = dilation[i] * (kernel_size[i] - 1) + 1;
-        int64_t out_dim = ceil_mod ? ceil_div(padded_input_dim - kernel_dilated_dim, stride[i]) + 1 :
-                                     (padded_input_dim - kernel_dilated_dim) / stride[i] + 1;
+        int64_t out_dim = ceil_mode ? ceil_div(padded_input_dim - kernel_dilated_dim, stride[i]) + 1 :
+                                      (padded_input_dim - kernel_dilated_dim) / stride[i] + 1;
+        if (desc->rounding_type == ov::op::RoundingType::CEIL_TORCH &&
+            (out_dim - 1) * static_cast<int64_t>(stride[i]) >= input_shape[i + 2].get_length() + pads_begin[i]) {
+            --out_dim;
+        }
         output_shape[i + 2] = out_dim;
     }
 
-    return { layout{output_shape, output_dtype, input_layout.format} };
+    for (auto& ol : out_layouts) {
+        ol.set_partial_shape(output_shape);
+    }
+
+    return out_layouts;
 }
 
 template std::vector<layout> pooling_inst::calc_output_layouts<ov::PartialShape>(pooling_node const& node, const kernel_impl_params& impl_param);
@@ -244,7 +263,7 @@ template std::vector<layout> pooling_inst::calc_output_layouts<ov::PartialShape>
 std::string pooling_inst::to_string(pooling_node const& node) {
     auto desc = node.get_primitive();
     auto strd = desc->stride;
-    auto mode = desc->mode == pooling_mode::max ? "max" : "average";
+    const auto* mode = desc->mode == pooling_mode::max ? "max" : "average";
     auto node_info = node.desc_to_json();
     auto kernel_size = desc->size;
 

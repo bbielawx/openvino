@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -26,9 +26,8 @@ struct softmax : public primitive_base<softmax> {
     /// @param dimension Defines a scope of normalization
     softmax(const primitive_id& id,
             const input_info& input,
-            const int64_t dimension = 1,
-            const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}), dimension(dimension) {}
+            const int64_t dimension = 1)
+        : primitive_base(id, {input}), dimension(dimension) {}
 
     /// @brief Defines a scope of a single softmax normalization.
     /// @details
@@ -48,8 +47,9 @@ struct softmax : public primitive_base<softmax> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const softmax>(rhs);
 

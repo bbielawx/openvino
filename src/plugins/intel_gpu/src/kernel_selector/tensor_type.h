@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -36,6 +36,7 @@ enum DataLayout {
     bfxy,                   // 3D+batch
     byfx,
     bxfy,
+    ybfx,
     b_fs_yx_fsv2,
     b_fs_zyx_fsv2,
     b_fs_yx_fsv4,           // reordering format for swizzled input for convolution using IMAD
@@ -112,6 +113,8 @@ enum WeightsLayout {
     os_i_osv16__ai8,
     os_i_osv16,
     os_is_yx_osv16_isv16,           // weights for int8 blocked conv
+    os_is_yx_osv32_isv2,            // weights for fully connected kernels with int4 compressed data type
+    os_is_yx_osv64_isv2,            // weights for fully connected kernels with int4 compressed data type
     os_is_zyx_osv16_isv16,
     os_is_zyx_osv32_isv16,
     os_is_zyx_osv64_isv16,
@@ -137,6 +140,8 @@ enum WeightsLayout {
                                                  // 1,5...
     os_is_zyx_osa4_isa8_osv8_isv4_swizzled_by_4,  // for MMAD convolution swizzled from ofm 0..7 to 0,4,8,12,16,20,24,28,
                                                   // 1,5...
+    os_is_yx_osa2_isa8_osv16_isv4_swizzled_by_2,
+    os_is_zyx_osa2_isa8_osv16_isv4_swizzled_by_2,
     os_is_yx_osv16_isv4,                 // swizzled weights for convolution using IMAD
     os_is_yx_osv8_isv4,                      // weights for int8 blocked conv
     os_is_yx_osv32_isv4_swizzled_by_2,   //  weights for bfyx -> b_fs_yx_fsv32 convolution using IMAD with swizzled ofm (0, 2, 4..), (1, 3, 5...)
@@ -192,8 +197,10 @@ struct Pad {
     Pad(size_t before, size_t after, bool is_dynamic = false) : before(before), after(after), is_dynamic(is_dynamic) {}
 
     static size_t NumPadOffsetsPerDim() { return 2; /*pad_before/pad_after*/}
-    size_t Total() const {
-        OPENVINO_ASSERT(!is_dynamic, "Total() is called for dynamic pad!");
+    size_t Total(bool is_runtime = false) const {
+        if (!is_runtime) {
+            OPENVINO_ASSERT(!is_dynamic, "Total() is called for dynamic pad!");
+        }
         return before + after;
     }
 };
@@ -253,6 +260,7 @@ inline bool SimpleLayout(DataLayout l) {
         case DataLayout::fb:
         case DataLayout::bfyx:
         case DataLayout::yxfb:
+        case DataLayout::ybfx:
         case DataLayout::byxf:
         case DataLayout::byfx:
         case DataLayout::bxfy:
@@ -483,8 +491,9 @@ protected:
         size_t channel = static_cast<size_t>(channelName);
 
         for (auto& entry : channelArr) {
-            if (entry.first == l)
+            if (entry.first == l) {
                 return entry.second[channel];
+            }
         }
 
         return -1;
@@ -503,9 +512,10 @@ protected:
                          std::end(channelArr),
                          [&](typename std::tuple_element<0, ArrayT>::type entry) { return entry.first == l; });
 
-        if (entry == channelArr.end())
+        if (entry == channelArr.end()) {
             throw std::invalid_argument("Failed to get channels count for layout " +
                                         std::to_string(static_cast<uint32_t>(l)));
+        }
 
         return std::accumulate(entry->second.begin(), entry->second.end(), 0U, [](uint32_t count, int v) {
             return count + ((v != -1) ? 1 : 0);

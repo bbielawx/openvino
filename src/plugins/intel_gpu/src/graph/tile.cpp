@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -30,7 +30,7 @@ layout tile_inst::calc_output_layout(tile_node const& node, kernel_impl_params c
     for (size_t i = 0; i < repeats.size(); ++i) {
         out_shape[i] *= repeats[i];
     }
-    return layout{input_layout.data_type, input_format, tensor(input_format, out_shape)};
+    return layout{ov::PartialShape(out_shape), input_layout.data_type, input_format};
 }
 
 template<typename ShapeType>
@@ -40,7 +40,7 @@ std::vector<layout> tile_inst::calc_output_layouts(tile_node const& /*node*/, co
 
     auto output_type = input0_layout.data_type;
     if (impl_param.has_fused_primitives()) {
-        output_type = impl_param.get_fused_output_layout().data_type;
+        output_type = impl_param.get_output_element_type();
     }
 
     ShapeType repeats_shape = impl_param.input_layouts.size() == 2 ? impl_param.get_input_layout(1).get<ShapeType>()

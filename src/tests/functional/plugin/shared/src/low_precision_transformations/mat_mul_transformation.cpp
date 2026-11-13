@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,11 +17,7 @@
 namespace LayerTestsDefinitions {
 
 std::string MatMulTransformation::getTestCaseName(const testing::TestParamInfo<MatMulTransformationParams>& obj) {
-    ov::element::Type precision;
-    ov::PartialShape inputShape;
-    std::string targetDevice;
-    MatMulTransformationTestValues testValues;
-    std::tie(precision, inputShape, targetDevice, testValues) = obj.param;
+    const auto& [precision, inputShape, targetDevice, testValues] = obj.param;
 
     std::ostringstream result;
     result <<
@@ -30,17 +26,17 @@ std::string MatMulTransformation::getTestCaseName(const testing::TestParamInfo<M
         testValues.inputShape1 << "_" <<
         testValues.fqOnData1 << "_" <<
         testValues.inputShape2 << "_" <<
-        testValues.fqOnData2;
+        testValues.fqOnData2 << "_" <<
+        testValues.expectedRuntimePrecision << "_" <<
+        testValues.expectedKernelName;
 
     return result.str();
 }
 
 
 void MatMulTransformation::SetUp() {
-    ov::element::Type precision;
-    ov::PartialShape inputShape;
-    MatMulTransformationTestValues testValues;
-    std::tie(precision, inputShape, targetDevice, testValues) = this->GetParam();
+    const auto& [precision, inputShape, _targetDevice, testValues] = this->GetParam();
+    targetDevice = _targetDevice;
 
     init_input_shapes({ testValues.inputShape1, testValues.inputShape2 });
 

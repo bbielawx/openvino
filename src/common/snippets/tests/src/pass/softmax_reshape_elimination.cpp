@@ -1,12 +1,12 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <gtest/gtest.h>
 
-#include <snippets/snippets_isa.hpp>
+#include <openvino/op/shape_of.hpp>
+#include <openvino/opsets/opset1.hpp>
 #include <snippets/pass/softmax_reshape_elimination.hpp>
-
 #include <transformations/init_node_info.hpp>
 
 #include "common_test_utils/ov_test_utils.hpp"
@@ -22,14 +22,14 @@ TEST_F(TransformationTestsF, SoftmaxV1ReshapeElimination) {
         auto softmax_v1 = std::make_shared<ov::op::v1::Softmax>(reshape0, 1);
         auto shape1 = std::make_shared<ov::op::v0::Constant>(ov::element::i32, ov::Shape{3}, std::vector<int32_t>{2, 3, 240});
         auto reshape1 = std::make_shared<ov::op::v1::Reshape>(softmax_v1, shape1, false);
-        model = std::make_shared<Model>(NodeVector{reshape1}, ParameterVector{data});
+        model = std::make_shared<Model>(OutputVector{reshape1}, ParameterVector{data});
 
         manager.register_pass<snippets::pass::SoftmaxReshapeElimination>();
     }
     {
         auto data = std::make_shared<ov::op::v0::Parameter>(element::f32, Shape{2, 3, 240});
         auto softmax_v1 = std::make_shared<ov::op::v1::Softmax>(data, 2);
-        model_ref = std::make_shared<Model>(NodeVector{softmax_v1}, ParameterVector{data});
+        model_ref = std::make_shared<Model>(OutputVector{softmax_v1}, ParameterVector{data});
     }
 }
 
@@ -41,14 +41,14 @@ TEST_F(TransformationTestsF, SoftmaxV8ReshapeElimination) {
         auto softmax_v1 = std::make_shared<ov::op::v8::Softmax>(reshape0, -1);
         auto shape1 = std::make_shared<ov::op::v0::Constant>(ov::element::i32, ov::Shape{4}, std::vector<int32_t>{1, 2, 340, 240});
         auto reshape1 = std::make_shared<ov::op::v1::Reshape>(softmax_v1, shape1, false);
-        model = std::make_shared<Model>(NodeVector{reshape1}, ParameterVector{data});
+        model = std::make_shared<Model>(OutputVector{reshape1}, ParameterVector{data});
 
         manager.register_pass<snippets::pass::SoftmaxReshapeElimination>();
     }
     {
         auto data = std::make_shared<ov::op::v0::Parameter>(element::f32, Shape{1, 2, 340, 240});
         auto softmax_v1 = std::make_shared<ov::op::v8::Softmax>(data, 3);
-        model_ref = std::make_shared<Model>(NodeVector{softmax_v1}, ParameterVector{data});
+        model_ref = std::make_shared<Model>(OutputVector{softmax_v1}, ParameterVector{data});
     }
 }
 
@@ -60,8 +60,51 @@ TEST_F(TransformationTestsF, SoftmaxReshapeElimination_IncorrectReshape) {
         auto softmax_v1 = std::make_shared<ov::op::v8::Softmax>(reshape0, -1);
         auto shape1 = std::make_shared<ov::op::v0::Constant>(ov::element::i32, ov::Shape{4}, std::vector<int32_t>{1, 2, 340, 240});
         auto reshape1 = std::make_shared<ov::op::v1::Reshape>(softmax_v1, shape1, false);
-        model = std::make_shared<Model>(NodeVector{reshape1}, ParameterVector{data});
+        model = std::make_shared<Model>(OutputVector{reshape1}, ParameterVector{data});
 
         manager.register_pass<snippets::pass::SoftmaxReshapeElimination>();
     }
+}
+
+TEST_F(TransformationTestsF, SoftmaxV8ReshapeElimination_DynamicBatch) {
+    {
+        auto data = std::make_shared<ov::op::v0::Parameter>(element::f32, ov::PartialShape{-1, 2, 340, 240});
+        auto shape0 = std::make_shared<ov::op::v0::Constant>(ov::element::i32, ov::Shape{2}, std::vector<int32_t>{-1, 240});
+        auto reshape0 = std::make_shared<ov::op::v1::Reshape>(data, shape0, false);
+        auto softmax_v1 = std::make_shared<ov::op::v8::Softmax>(reshape0, -1);
+        auto shape1 = std::make_shared<ov::op::v0::Constant>(ov::element::i32, ov::Shape{4}, std::vector<int32_t>{-1, 2, 340, 240});
+        auto reshape1 = std::make_shared<ov::op::v1::Reshape>(softmax_v1, shape1, false);
+        model = std::make_shared<Model>(OutputVector{reshape1}, ParameterVector{data});
+
+        manager.register_pass<snippets::pass::SoftmaxReshapeElimination>();
+    }
+    {
+        auto data = std::make_shared<ov::op::v0::Parameter>(element::f32, ov::PartialShape{-1, 2, 340, 240});
+        auto softmax_v1 = std::make_shared<ov::op::v8::Softmax>(data, 3);
+        model_ref = std::make_shared<Model>(OutputVector{softmax_v1}, ParameterVector{data});
+    }
+}
+
+TEST_F(TransformationTestsF, SoftmaxReshapeElimination_UnknownReductionDimension) {
+    const auto data = std::make_shared<op::v0::Parameter>(element::f32, PartialShape{-1, -1, 4});
+    const auto pattern = std::make_shared<op::v0::Parameter>(element::i64, Shape{2});
+    const auto reshape0 = std::make_shared<op::v1::Reshape>(data, pattern, false);
+    const auto softmax = std::make_shared<op::v8::Softmax>(reshape0, -1);
+    const auto restore = std::make_shared<op::v3::ShapeOf>(data);
+    const auto reshape1 = std::make_shared<op::v1::Reshape>(softmax, restore, false);
+    model = std::make_shared<Model>(OutputVector{reshape1}, ParameterVector{data, pattern});
+    EXPECT_FALSE(snippets::pass::SoftmaxReshapeElimination::eliminate(reshape0, softmax, reshape1));
+}
+
+TEST_F(TransformationTestsF, SoftmaxReshapeElimination_ArbitraryRestoreShape) {
+    const auto data = std::make_shared<op::v0::Parameter>(element::f32, PartialShape{-1, -1, 4});
+    const auto prefix = std::make_shared<op::v0::Parameter>(element::i64, Shape{2});
+    const auto last_dim = op::v0::Constant::create(element::i64, Shape{1}, {4});
+    const auto pattern = op::v0::Constant::create(element::i64, Shape{2}, {-1, 4});
+    const auto reshape0 = std::make_shared<op::v1::Reshape>(data, pattern, false);
+    const auto softmax = std::make_shared<op::v8::Softmax>(reshape0, -1);
+    const auto restore = std::make_shared<op::v0::Concat>(OutputVector{prefix, last_dim}, 0);
+    const auto reshape1 = std::make_shared<op::v1::Reshape>(softmax, restore, false);
+    model = std::make_shared<Model>(OutputVector{reshape1}, ParameterVector{data, prefix});
+    EXPECT_FALSE(snippets::pass::SoftmaxReshapeElimination::eliminate(reshape0, softmax, reshape1));
 }

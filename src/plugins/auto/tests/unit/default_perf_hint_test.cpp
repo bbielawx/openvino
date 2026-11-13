@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,11 +13,8 @@ static std::vector<ConfigParams> testConfigs;
 
 class AutoDefaultPerfHintTest : public tests::AutoTest, public ::testing::TestWithParam<ConfigParams> {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ConfigParams> obj) {
-        std::string deviceName;
-        std::vector<std::string> targetDevices;
-        ov::AnyMap deviceConfigs;
-        std::tie(deviceName, targetDevices, deviceConfigs) = obj.param;
+    static std::string getTestCaseName(const testing::TestParamInfo<ConfigParams>& obj) {
+        const auto& [deviceName, targetDevices, deviceConfigs] = obj.param;
         std::ostringstream result;
         result << deviceName;
         result << "_loadnetwork_to_";
@@ -181,6 +178,9 @@ public:
     void SetUp() override {
         std::vector<std::string> availableDevs = {"CPU", "GPU"};
         ON_CALL(*core, get_available_devices()).WillByDefault(Return(availableDevs));
+        std::vector<std::string> deviceIDs = {};
+        ON_CALL(*core, get_property(StrEq("GPU"), StrEq(ov::available_devices.name()), _))
+            .WillByDefault(RETURN_MOCK_VALUE(deviceIDs));
 
         ON_CALL(*core,
                 compile_model(::testing::Matcher<const std::shared_ptr<const ov::Model>&>(_),
@@ -201,11 +201,8 @@ using PerHintAndDefaultPerfHintMockTest = AutoDefaultPerfHintTest;
 using SecPropAndDefaultPerfHintMockTest = AutoDefaultPerfHintTest;
 
 TEST_P(NumStreamsAndDefaultPerfHintMockTest, NumStreamsAndDefaultPerfHintTest) {
-    std::string device;
-    std::vector<std::string> targetDevices;
-    ov::AnyMap config;
     bool bIsAuto = false;
-    std::tie(device, targetDevices, config) = this->GetParam();
+    const auto& [device, targetDevices, config] = this->GetParam();
     if (device.find("AUTO") != std::string::npos) {
         bIsAuto = true;
         plugin->set_device_name("AUTO");
@@ -256,7 +253,7 @@ TEST_P(NumStreamsAndDefaultPerfHintMockTest, NumStreamsAndDefaultPerfHintTest) {
             .Times(1);
     }
 
-    ASSERT_NO_THROW(plugin->compile_model(model, config));
+    OV_ASSERT_NO_THROW(plugin->compile_model(model, config));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -266,11 +263,8 @@ INSTANTIATE_TEST_SUITE_P(
     NumStreamsAndDefaultPerfHintMockTest::getTestCaseName);
 
 TEST_P(PerHintAndDefaultPerfHintMockTest, PerfHintAndDefaultPerfHintTest) {
-    std::string device;
-    std::vector<std::string> targetDevices;
-    ov::AnyMap config;
     bool bIsAuto = false;
-    std::tie(device, targetDevices, config) = this->GetParam();
+    const auto& [device, targetDevices, config] = this->GetParam();
     if (device.find("AUTO") != std::string::npos) {
         bIsAuto = true;
         plugin->set_device_name("AUTO");
@@ -319,7 +313,7 @@ TEST_P(PerHintAndDefaultPerfHintMockTest, PerfHintAndDefaultPerfHintTest) {
             .Times(1);
     }
 
-    ASSERT_NO_THROW(plugin->compile_model(model, config));
+    OV_ASSERT_NO_THROW(plugin->compile_model(model, config));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -329,11 +323,8 @@ INSTANTIATE_TEST_SUITE_P(
     PerHintAndDefaultPerfHintMockTest::getTestCaseName);
 
 TEST_P(SecPropAndDefaultPerfHintMockTest, SecPropAndDefaultPerfHintTest) {
-    std::string device;
-    std::vector<std::string> targetDevices;
-    ov::AnyMap config;
     bool bIsAuto = false;
-    std::tie(device, targetDevices, config) = this->GetParam();
+    const auto& [device, targetDevices, config] = this->GetParam();
     if (device.find("AUTO") != std::string::npos) {
         bIsAuto = true;
         plugin->set_device_name("AUTO");
@@ -382,7 +373,7 @@ TEST_P(SecPropAndDefaultPerfHintMockTest, SecPropAndDefaultPerfHintTest) {
             .Times(1);
     }
 
-    ASSERT_NO_THROW(plugin->compile_model(model, config));
+    OV_ASSERT_NO_THROW(plugin->compile_model(model, config));
 }
 
 INSTANTIATE_TEST_SUITE_P(

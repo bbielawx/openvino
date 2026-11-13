@@ -1,32 +1,26 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/argmin.hpp"
-
+#include "core/operator_set.hpp"
 #include "exceptions.hpp"
 #include "utils/arg_min_max_factory.hpp"
-
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx {
+namespace opset_1 {
 ov::OutputVector argmin(const ov::frontend::onnx::Node& node) {
     const utils::ArgMinMaxFactory arg_factory(node);
     return {arg_factory.make_arg_min()};
 }
 
-}  // namespace set_1
+ONNX_OP("ArgMin", OPSET_RANGE(1, 11), ai_onnx::opset_1::argmin);
+}  // namespace opset_1
 
-namespace set_12 {
+namespace opset_12 {
 ov::OutputVector argmin(const ov::frontend::onnx::Node& node) {
     const utils::ArgMinMaxFactory arg_factory(node);
     return {arg_factory.make_arg_min()};
 }
 
-}  // namespace set_12
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("ArgMin", OPSET_SINCE(12), ai_onnx::opset_12::argmin);
+}  // namespace opset_12
+}  // namespace ov::frontend::onnx::ai_onnx

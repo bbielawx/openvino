@@ -1,8 +1,7 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
-
-#include "openvino/opsets/opset1.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
 #include <ov_ops/type_relaxed.hpp>
 
 #include "low_precision/network_helper.hpp"
@@ -10,6 +9,9 @@
 
 #include "ov_lpt_models/markup_avg_pool_precisions.hpp"
 #include "common_test_utils/node_builders/fake_quantize.hpp"
+#include "openvino/op/avg_pool.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/max_pool.hpp"
 
 namespace ov {
 namespace builder {
@@ -18,7 +20,6 @@ namespace subgraph {
 
 std::shared_ptr<Node> createConvolution(
     const ov::element::Type precision,
-    const ov::element::Type inputPrecision,
     const ov::Shape& inputShape,
     const std::shared_ptr<Node>& parent) {
     const size_t outputChannels = 6ul;
@@ -138,10 +139,10 @@ std::shared_ptr<ov::Model> MarkupAvgPoolPrecisionsFunction::getOriginal(
 
     if (convoutionBranch != -1) {
         if (convoutionBranch != 1) {
-            parent1 = createConvolution(precision, inputPrecision, inputShape, parent1);
+            parent1 = createConvolution(precision, inputShape, parent1);
         }
         if (convoutionBranch != 0) {
-            parent2 = createConvolution(precision, inputPrecision, inputShape, parent2);
+            parent2 = createConvolution(precision, inputShape, parent2);
         }
     }
 

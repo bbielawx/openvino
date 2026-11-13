@@ -1,7 +1,5 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-
-import platform
 
 import numpy as np
 import pytest
@@ -36,21 +34,15 @@ class TestStaticRegexReplace(CommonTFLayerTest):
         return tf_net, ref_net
 
     @pytest.mark.parametrize('input_shape', [[], [2], [3, 4], [1, 3, 2]])
-    @pytest.mark.parametrize('pattern', ['(\s)|(-)', '[A-Z]{2,}', '^\s+|\s+$'])
+    @pytest.mark.parametrize('pattern', [r'(\s)|(-)', r'[A-Z]{2,}', r'^\s+|\s+$'])
     @pytest.mark.parametrize('rewrite', ['', 'replacement word'])
     @pytest.mark.parametrize('replace_global', [None, True, False])
     @pytest.mark.precommit
     @pytest.mark.nightly
-    @pytest.mark.xfail(condition=platform.system() in ('Darwin', 'Linux') and platform.machine() in ['arm', 'armv7l',
-                                                                                                     'aarch64',
-                                                                                                     'arm64', 'ARM64'],
-                       reason='Ticket - 126314, 132699')
     def test_static_regex_replace(self, input_shape, pattern, rewrite, replace_global,
-                                  ie_device, precision, ir_version, temp_dir,
-                                  use_legacy_frontend):
+                                  ie_device, precision, ir_version, temp_dir):
         if ie_device == 'GPU' or run_in_jenkins():
             pytest.skip("operation extension is not supported on GPU")
         self._test(*self.create_static_regex_replace_net(input_shape=input_shape, pattern=pattern, rewrite=rewrite,
                                                          replace_global=replace_global),
-                   ie_device, precision, ir_version, temp_dir=temp_dir,
-                   use_legacy_frontend=use_legacy_frontend)
+                   ie_device, precision, ir_version, temp_dir=temp_dir)

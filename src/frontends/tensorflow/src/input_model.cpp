@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <queue>
+#include <stack>
 
 #include "openvino/frontend/exception.hpp"
 #include "openvino/frontend/graph_iterator.hpp"
@@ -16,15 +17,13 @@
 #include "place.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
+namespace ov::frontend::tensorflow {
 void extract_operation_name_and_port(const std::string& port_name,
                                      std::string& operation_name,
                                      size_t& port_index,
                                      std::string& port_type) {
-    constexpr char delimeter[] = ":";
-    auto pos = port_name.find(delimeter);
+    constexpr char delimiter[] = ":";
+    auto pos = port_name.find(delimiter);
     if (pos == std::string::npos) {
         operation_name = port_name;
         port_type = "none";
@@ -208,7 +207,7 @@ void InputModel::InputModelTFImpl::load_places() {
                 // so we need to check if Any object is initialized first
                 pshape = shape_any.as<ov::PartialShape>();
             } else {
-                OPENVINO_DEBUG << "TensorFlow Frontend: Placeholder " << op_name << " does not have 'shape' attribute";
+                OPENVINO_DEBUG("TensorFlow Frontend: Placeholder ", op_name, " does not have 'shape' attribute");
             }
             auto output_shapes_any = node_decoder->get_attribute("_output_shapes");
             if (pshape.rank().is_static() && pshape.rank().get_length() == 0 &&
@@ -219,8 +218,9 @@ void InputModel::InputModelTFImpl::load_places() {
                 auto output_shapes = output_shapes_any.as<std::vector<ov::PartialShape>>();
                 if (output_shapes.size() == 1 && output_shapes[0].rank().is_static()) {
                     pshape = output_shapes[0];
-                    OPENVINO_DEBUG << "TensorFlow Frontend: Placeholder " << op_name
-                                   << " has shape from '_output_shapes' attribute.";
+                    OPENVINO_DEBUG("TensorFlow Frontend: Placeholder ",
+                                   op_name,
+                                   " has shape from '_output_shapes' attribute.");
                 }
             }
             auto dtype_any = node_decoder->get_attribute("dtype");
@@ -229,14 +229,21 @@ void InputModel::InputModelTFImpl::load_places() {
             if (dtype_any.is<ov::element::Type>()) {
                 type = dtype_any.as<ov::element::Type>();
             }
-            std::vector<std::string> names = {op_name + ":0"};
-            auto tensor_place = std::make_shared<TensorPlace>(m_input_model, pshape, type, names);
-
-            m_default_places[op_name + ":0"] = tensor_place;
+            std::string internal_tensor_name = op_name + ":0";
+            std::vector<std::string> names{internal_tensor_name};
+            auto tensor_place = std::make_shared<TensorPlace>(m_input_model, pshape, type, names, op_name);
+            m_default_places[internal_tensor_name] = tensor_place;
 
             if (op_type == "Placeholder") {
-                // by default, PlaceholderWithDefault is NOT used as input
-                m_inputs.push_back(tensor_place);
+                if (m_saved_model_input_names && (m_saved_model_input_names->size() > 0)) {
+                    // if input signature is defined,
+                    // found input must present in this signature
+                    if (m_saved_model_input_names->find(internal_tensor_name) != m_saved_model_input_names->end()) {
+                        m_inputs.push_back(tensor_place);
+                    }
+                } else {
+                    m_inputs.push_back(tensor_place);
+                }
             }
         } else if (op_type == "input_arg") {
             if (m_input_names.size() > 0 &&
@@ -256,7 +263,8 @@ void InputModel::InputModelTFImpl::load_places() {
             auto tensor_place = std::make_shared<TensorPlace>(m_input_model,
                                                               ov::PartialShape::dynamic(),
                                                               type,
-                                                              std::vector<std::string>{op_name});
+                                                              std::vector<std::string>{op_name},
+                                                              op_name);
             m_inputs.push_back(tensor_place);
         }
     }
@@ -299,7 +307,7 @@ void InputModel::InputModelTFImpl::load_places() {
                                                               ov::PartialShape({}),
                                                               ov::element::dynamic,
                                                               std::vector<std::string>{output_name + ":0"});
-            // TODO: Create tensor places for each ouput port, ticket-129464
+            // TODO: Create tensor places for each output port, ticket-129464
             m_default_places[output_name + ":0"] = output_place;
             m_outputs.push_back(output_place);
         }
@@ -376,11 +384,12 @@ std::vector<std::shared_ptr<OpPlace>> InputModel::InputModelTFImpl::topologicall
         ops_to_do.push(output_operation_place);
     }
 
-    // walk through all NextIteration nodes and put their producers into ops_to_do
-    // this is needed to avoid missed nodes in the body graph of TF1 While operation
     for (const auto& op_place : m_op_places) {
         auto op_decoder = op_place->get_decoder();
+        auto op_name = op_decoder->get_op_name();
         if (op_decoder->get_op_type() == "NextIteration") {
+            // walk through all NextIteration nodes and put their producers into ops_to_do
+            // this is needed to avoid missed nodes in the body graph of TF1 While operation
             std::string producer_name;
             std::string producer_output_port_name;
             size_t producer_output_port_idx;
@@ -390,6 +399,15 @@ std::vector<std::shared_ptr<OpPlace>> InputModel::InputModelTFImpl::topologicall
                                     "NextIteration is not found among operation places " +
                                         producer_name);
             ops_to_do.push(m_op_places_map.at(producer_name));
+        } else if (op_decoder->get_op_type() == "LookupTableImport" ||
+                   op_decoder->get_op_type() == "LookupTableImportV2") {
+            // all LookupTableImport nodes must be preserved in a graph for conversion because
+            // they can be terminating nodes and contain input values for HashTable initialization
+            FRONT_END_GENERAL_CHECK(m_op_places_map.count(op_name),
+                                    "[TensorFlow Frontend] internal error or inconsistent model: LookupTableImport "
+                                    "operation is not found among operation places " +
+                                        op_name);
+            ops_to_do.push(m_op_places_map.at(op_name));
         }
     }
 
@@ -814,6 +832,10 @@ ov::frontend::Place::Ptr InputModel::get_place_by_tensor_name(const std::string&
     return _impl->get_place_by_tensor_name(tensorName);
 }
 
+ov::frontend::Place::Ptr InputModel::get_place_by_input_index(size_t input_idx) const {
+    FRONT_END_NOT_IMPLEMENTED(get_place_by_input_index);
+}
+
 void InputModel::override_all_outputs(const std::vector<ov::frontend::Place::Ptr>& outputs) {
     _impl->override_all_outputs(outputs);
 }
@@ -846,6 +868,4 @@ ov::element::Type InputModel::get_element_type(const ov::frontend::Place::Ptr& p
 void InputModel::set_tensor_value(const ov::frontend::Place::Ptr& place, const void* value) {
     _impl->set_tensor_value(place, value);
 }
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow

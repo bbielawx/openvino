@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
@@ -61,6 +61,12 @@ def test_dtype_ovtype_conversion(dtype_string, dtype, ovtype):
     (Type.u32, True, False, False, True, False, False, "u32", 4, 32),
     (Type.u64, True, False, False, True, False, False, "u64", 8, 64),
     (Type.boolean, True, False, False, True, True, False, "boolean", 1, 8),
+    (Type.u1, True, False, False, True, False, False, "u1", 1, 1),
+    (Type.u2, True, False, False, True, False, False, "u2", 1, 2),
+    (Type.u3, True, False, False, True, False, False, "u3", 1, 3),
+    (Type.u4, True, False, False, True, False, False, "u4", 1, 4),
+    (Type.i4, True, False, False, True, True, True, "i4", 1, 4),
+    (Type.u6, True, False, False, True, False, False, "u6", 1, 6),
 ])
 def test_basic_ovtypes(ovtype,
                        static_flag,
@@ -88,29 +94,6 @@ def test_basic_ovtypes(ovtype,
     assert ovtype.size == type_size
     assert ovtype.get_bitwidth() == type_bitwidth
     assert ovtype.bitwidth == type_bitwidth
-
-
-def test_undefined_ovtype():
-    ov_type = Type.undefined
-    assert ov_type.is_static() is True
-    assert ov_type.is_dynamic() is False
-    assert ov_type.is_real() is False
-    assert ov_type.real is False
-    assert ov_type.is_integral() is True
-    assert ov_type.integral is True
-    assert ov_type.is_signed() is False
-    assert ov_type.signed is False
-    assert ov_type.is_quantized() is False
-    assert ov_type.quantized is False
-    assert ov_type.get_type_name() == "undefined"
-    assert ov_type.type_name == "undefined"
-    assert ov_type.get_size() == 0
-    assert ov_type.size == 0
-
-    # Note: might depend on the system
-    import sys
-    assert ov_type.bitwidth == sys.maxsize * 2 + 1
-    assert ov_type.get_bitwidth() == sys.maxsize * 2 + 1
 
 
 def test_dynamic_ov_type():

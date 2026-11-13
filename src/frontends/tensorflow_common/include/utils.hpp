@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,9 +12,7 @@
 #include "openvino/op/transpose.hpp"
 #include "openvino/pass/graph_rewrite.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
+namespace ov::frontend::tensorflow {
 using NameTensorMap = std::unordered_map<std::string, NamedOutputVector>;
 using NameTensorMapPtr = std::shared_ptr<NameTensorMap>;
 
@@ -155,6 +153,26 @@ ov::Output<ov::Node> get_data_slice(const ov::Output<ov::Node>& data,
 
 ov::Output<ov::Node> compute_broadcast_args(const ov::Output<ov::Node>& shape1, const ov::Output<ov::Node>& shape2);
 
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+std::shared_ptr<std::tuple<std::shared_ptr<ov::Node>, std::shared_ptr<ov::Node>, std::shared_ptr<ov::Node>>> rgb_to_hsv(
+    const ov::Output<ov::Node>& images);
+
+std::shared_ptr<ov::Node> hsv_to_rgb(const ov::Output<ov::Node>& h,
+                                     const ov::Output<ov::Node>& s,
+                                     const ov::Output<ov::Node>& v);
+
+ov::Output<ov::Node> create_dense_tensor(const ov::Output<ov::Node>& indices,
+                                         const ov::Output<ov::Node>& shape,
+                                         const ov::Output<ov::Node>& values);
+
+std::pair<ov::Output<ov::Node>, ov::Output<ov::Node>> complex_rectangular_to_polar(
+    const ov::frontend::NodeContext& node_context,
+    const ov::Output<ov::Node>& real_part,
+    const ov::Output<ov::Node>& imag_part);
+
+std::pair<ov::Output<ov::Node>, ov::Output<ov::Node>> complex_polar_to_rectangular(
+    const ov::Output<ov::Node>& real_part,
+    const ov::Output<ov::Node>& imag_part);
+
+ov::OutputVector pre_translate_string_tensor_input(const ov::Output<ov::Node>& input);
+
+}  // namespace ov::frontend::tensorflow

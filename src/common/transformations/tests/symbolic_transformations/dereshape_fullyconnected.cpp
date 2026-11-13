@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,13 +12,15 @@
 #include "openvino/op/matmul.hpp"
 #include "openvino/op/parameter.hpp"
 #include "openvino/op/reshape.hpp"
-#include "transformations/symbolic_transformations/dereshape_matmul.hpp"
+#include "transformations/symbolic_transformations/symbolic_optimizations.hpp"
 #include "transformations/utils/utils.hpp"
 
 using namespace ov;
-using namespace ov::op;
 using namespace std;
 
+namespace v0 = ov::op::v0;
+namespace v1 = ov::op::v1;
+namespace op_util = ov::op::util;
 TEST_F(TransformationTestsF, DeReshapeFC) {
     auto shape = PartialShape{-1, -1, 40};
     set_shape_symbols(shape);  // we label shape with consecutive labels: A, B, C
@@ -30,20 +32,20 @@ TEST_F(TransformationTestsF, DeReshapeFC) {
 
         auto matmul = make_shared<v0::MatMul>(in_reshape, second_input);
 
-        auto batch_dims = ov::op::util::node_to_get_shape_value_of_indices_from_shape_source(data, {0, 1});
+        auto batch_dims = op_util::node_to_get_shape_value_of_indices_from_shape_source(data, {0, 1});
         auto pattern =
             make_shared<v0::Concat>(OutputVector{batch_dims, v0::Constant::create(element::i64, {1}, {80})}, 0);
         auto out_reshape = make_shared<v1::Reshape>(matmul, pattern, false);
 
-        model = make_shared<Model>(NodeVector{out_reshape}, ParameterVector{data, second_input});
-        manager.register_pass<pass::DeReshapeFullyConnected>();
+        model = make_shared<Model>(OutputVector{out_reshape}, ParameterVector{data, second_input});
+        manager.register_pass<pass::SymbolicOptimizations>();
     }
     {
         auto data = make_shared<v0::Parameter>(element::f32, shape);
         auto second_input = make_shared<v0::Parameter>(element::f32, Shape{40, 80});
         auto matmul = make_shared<v0::MatMul>(data, second_input);
 
-        model_ref = make_shared<Model>(NodeVector{matmul}, ParameterVector{data, second_input});
+        model_ref = make_shared<Model>(OutputVector{matmul}, ParameterVector{data, second_input});
     }
 }
 
@@ -58,13 +60,13 @@ TEST_F(TransformationTestsF, DeReshapeFCWithConvert) {
 
         auto matmul = make_shared<v0::MatMul>(convert, second_input);
 
-        auto batch_dims = ov::op::util::node_to_get_shape_value_of_indices_from_shape_source(data, {0, 1});
+        auto batch_dims = op_util::node_to_get_shape_value_of_indices_from_shape_source(data, {0, 1});
         auto pattern =
             make_shared<v0::Concat>(OutputVector{batch_dims, v0::Constant::create(element::i64, {1}, {80})}, 0);
         auto out_reshape = make_shared<v1::Reshape>(matmul, pattern, false);
 
-        model = make_shared<Model>(NodeVector{out_reshape}, ParameterVector{data, second_input});
-        manager.register_pass<pass::DeReshapeFullyConnected>();
+        model = make_shared<Model>(OutputVector{out_reshape}, ParameterVector{data, second_input});
+        manager.register_pass<pass::SymbolicOptimizations>();
     }
     {
         auto data = make_shared<v0::Parameter>(element::f16, shape);
@@ -72,7 +74,7 @@ TEST_F(TransformationTestsF, DeReshapeFCWithConvert) {
         auto second_input = make_shared<v0::Parameter>(element::f32, Shape{40, 80});
         auto matmul = make_shared<v0::MatMul>(convert, second_input);
 
-        model_ref = make_shared<Model>(NodeVector{matmul}, ParameterVector{data, second_input});
+        model_ref = make_shared<Model>(OutputVector{matmul}, ParameterVector{data, second_input});
     }
 }
 
@@ -90,7 +92,7 @@ TEST_F(TransformationTestsF, DeReshapeFCNegative) {
         auto pattern = v0::Constant::create(element::i64, {3}, {4, -1, 80});
         auto out_reshape = make_shared<v1::Reshape>(matmul, pattern, false);
 
-        model = make_shared<Model>(NodeVector{out_reshape}, ParameterVector{data, second_input});
-        manager.register_pass<pass::DeReshapeFullyConnected>();
+        model = make_shared<Model>(OutputVector{out_reshape}, ParameterVector{data, second_input});
+        manager.register_pass<pass::SymbolicOptimizations>();
     }
 }

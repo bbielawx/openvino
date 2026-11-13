@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -14,7 +14,6 @@ struct multiclass_nms_params : public base_params {
 
     SortResultType sort_result_type = SortResultType::CLASSID;
     bool sort_result_across_batch = false;
-    Datatype indices_output_type = Datatype::F16;
     float iou_threshold = 0.0f;
     float score_threshold = 0.0f;
     int nms_top_k = 0;
@@ -29,7 +28,7 @@ class MulticlassNmsKernelRef : public KernelBaseOpenCL {
 public:
     MulticlassNmsKernelRef() : KernelBaseOpenCL("multiclass_nms_ref") {}
 
-    ~MulticlassNmsKernelRef() = default;
+    ~MulticlassNmsKernelRef() override = default;
 
     using DispatchData = CommonDispatchData;
 

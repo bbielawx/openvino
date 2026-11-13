@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -14,8 +14,7 @@
 #include "openvino/frontend/place.hpp"
 #include "openvino/frontend/visibility.hpp"
 
-namespace ov {
-namespace frontend {
+namespace ov::frontend {
 class FrontEnd;
 /// \brief InputModel class represents an original, not yet converted model graph in a
 /// framework format given services to find places of interest in a graph or specialize/edit
@@ -51,7 +50,7 @@ public:
     InputModel& operator=(const InputModel&) = delete;
     InputModel& operator=(InputModel&&) = delete;
 
-    virtual ~InputModel() = default;
+    virtual ~InputModel();
 
     /////  Searching for places  /////
 
@@ -81,6 +80,11 @@ public:
     /// \param tensor_name Name of tensor
     /// \return Tensor place corresponding to specified tensor name or nullptr if not exists
     virtual Place::Ptr get_place_by_tensor_name(const std::string& tensor_name) const;
+
+    /// \brief Returns a tensor place by an input index.
+    /// \param input_idx Index of model input
+    /// \return Tensor place corresponding to specified input index or nullptr
+    virtual Place::Ptr get_place_by_input_index(size_t input_idx) const;
 
     /// \brief Returns an operation place by an operation name following framework
     /// conventions, or nullptr if an operation with this name doesn't exist.
@@ -216,5 +220,4 @@ public:
     virtual void set_tensor_partial_value(const Place::Ptr& place, const void* min_value, const void* max_value);
 };
 
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend

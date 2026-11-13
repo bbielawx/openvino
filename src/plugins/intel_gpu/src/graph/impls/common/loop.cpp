@@ -1,12 +1,13 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
+#include "intel_gpu/graph/kernel_impl_params.hpp"
+#include "loop.hpp"
 #include "loop_inst.h"
-#include "implementation_map.hpp"
+#include "registry/implementation_map.hpp"
 #include "register.hpp"
 #include "mutable_data_inst.h"
 #include "input_layout_inst.h"
-#include "intel_gpu/runtime/error_handler.hpp"
 #include <vector>
 #include <algorithm>
 
@@ -20,22 +21,22 @@ static int64_t read_scalar_value(memory::ptr mem, stream& stream) {
 
     switch (prim_layout.data_type) {
     case data_types::u8: {
-        mem_lock<uint8_t> lock_prim_output{mem, stream};
+        mem_lock<uint8_t, mem_lock_type::read> lock_prim_output{mem, stream};
         trip_count = *lock_prim_output.data();
         break;
     }
     case data_types::i8: {
-        mem_lock<int8_t> lock_prim_output{mem, stream};
+        mem_lock<int8_t, mem_lock_type::read> lock_prim_output{mem, stream};
         trip_count = *lock_prim_output.data();
         break;
     }
     case data_types::i32: {
-        mem_lock<int32_t> lock_prim_output{mem, stream};
+        mem_lock<int32_t, mem_lock_type::read> lock_prim_output{mem, stream};
         trip_count = *lock_prim_output.data();
         break;
     }
     case data_types::i64: {
-        mem_lock<int64_t> lock_prim_output{mem, stream};
+        mem_lock<int64_t, mem_lock_type::read> lock_prim_output{mem, stream};
         trip_count = *lock_prim_output.data();
         break;
     }
@@ -90,15 +91,14 @@ struct loop_impl : typed_primitive_impl<loop> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::common::loop_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<loop_impl>(*this);
+        return std::make_unique<loop_impl>(*this);
     }
 
     void init_kernels(const kernels_cache& , const kernel_impl_params&) override {}
 
     loop_impl() : parent() {}
 
-    loop_impl(const loop_impl& other) : typed_primitive_impl<loop>(other),
-        _back_edges(other._back_edges) {}
+    loop_impl(const loop_impl& other) = default;
 
     explicit loop_impl(const loop_node& node) {
         set_node_params(node);
@@ -123,24 +123,24 @@ struct loop_impl : typed_primitive_impl<loop> {
 
         if (is_dynamic) {
             instance.update_shape();
-            if (instance.shape_changed()) {
+            if (instance.get_flag(ExecutionFlags::SHAPE_CHANGED)) {
                 instance.preproc_memories_done = false;
                 instance.reset_memory();
             }
         }
 
         body_network->set_shape_predictor(outer_network.get_shape_predictor());
-        OPENVINO_ASSERT(!primitive->num_iteration_id.empty(), "loop operation should have num_iteration_id");
+        OPENVINO_ASSERT(!instance.get_num_iterations_id().empty(), "loop operation should have num_iteration_id");
 
         // shortcut of execution_condition memory in body network
         memory::ptr body_execution_condition_mem = nullptr;
-        if (!primitive->body_execution_condition_id.empty()) {
-            body_execution_condition_mem = body_network->get_primitive(primitive->body_execution_condition_id)->output_memory_ptr();
+        if (!instance.get_condition_id().empty()) {
+            body_execution_condition_mem = body_network->get_primitive(instance.get_condition_id())->output_memory_ptr();
         }
 
         // shortcut of current_iteration memory in body network
-        if (!primitive->body_current_iteration_id.empty()) {
-            memory::ptr body_current_iteration_mem = body_network->get_primitive(primitive->body_current_iteration_id)->output_memory_ptr();
+        if (!instance.get_current_iteration_id().empty()) {
+            memory::ptr body_current_iteration_mem = body_network->get_primitive(instance.get_current_iteration_id())->output_memory_ptr();
             write_scalar_value(body_current_iteration_mem, body_network->get_stream(), 0);
         }
 
@@ -149,11 +149,11 @@ struct loop_impl : typed_primitive_impl<loop> {
 
         // read trip_count from outer network
         int64_t trip_count = -1;
-        if (!primitive->trip_count_id.empty()) {
-            memory::ptr trip_count_mem = outer_network.get_primitive(primitive->trip_count_id)->output_memory_ptr();
+        if (!instance.get_trip_count_id().empty()) {
+            memory::ptr trip_count_mem = outer_network.get_primitive(instance.get_trip_count_id())->output_memory_ptr();
             trip_count = read_scalar_value(std::move(trip_count_mem), stream);
         } else {
-            OPENVINO_ASSERT(!primitive->body_execution_condition_id.empty()
+            OPENVINO_ASSERT(!instance.get_condition_id().empty()
                             || num_iterations > 0 || primitive->max_num_iterations > 0,
                             "num_iterations should be positive when trip_count_id is not existed");
             // If trip_count_id is not existed, the original ngraph operation is TensorIterator.
@@ -166,11 +166,12 @@ struct loop_impl : typed_primitive_impl<loop> {
 
         // read initial execution condition from outer network
         int64_t execution_condition = 1;
-        if (!primitive->first_execution_condition_id.empty()) {
+        if (!instance.get_initial_execution_id().empty()) {
             // Wait for completion of the execution_condition of outer_network
-            if (outer_network.has_event(primitive->first_execution_condition_id))
-                outer_network.get_primitive_event(primitive->first_execution_condition_id)->wait();
-            memory::ptr first_execution_condition_mem = outer_network.get_primitive(primitive->first_execution_condition_id)->output_memory_ptr();
+            if (outer_network.has_event(instance.get_initial_execution_id())) {
+                outer_network.get_primitive_event(instance.get_initial_execution_id())->wait();
+            }
+            memory::ptr first_execution_condition_mem = outer_network.get_primitive(instance.get_initial_execution_id())->output_memory_ptr();
             execution_condition = read_scalar_value(first_execution_condition_mem, stream);
         }
         GPU_DEBUG_LOG << "execution_condition: " << execution_condition << std::endl;
@@ -178,10 +179,11 @@ struct loop_impl : typed_primitive_impl<loop> {
         // When execution_condition is false or trip_count is zero, return execute_impl without any body_network execution.
         if (!execution_condition || trip_count == 0) {
             // Update num_iterations (actual number of iterations)
-            memory::ptr num_actual_iterations_mem = outer_network.get_primitive(primitive->num_iteration_id)->output_memory_ptr();
+            memory::ptr num_actual_iterations_mem = outer_network.get_primitive(instance.get_num_iterations_id())->output_memory_ptr();
             write_scalar_value(num_actual_iterations_mem, stream, current_iteration_idx);
 
-            instance.update_output_layout();
+            stream.wait_for_events(events);
+            instance.handle_zero_iterations();
             ev->set();
             return ev;
         }
@@ -199,9 +201,7 @@ struct loop_impl : typed_primitive_impl<loop> {
         // If there are concatenated_input_mem_mappings or backedge_memory_mappings we need to wait for
         // previous tasks before accessing memory in get_sliced_mem() and setup_iteration() functions
         if (!concatenated_input_mem_mappings.empty() || !backedge_memory_mappings.empty()) {
-            for (auto& e : events) {
-                e->wait();
-            }
+            stream.wait_for_events(events);
         }
 
         // Set sliced input data
@@ -234,7 +234,7 @@ struct loop_impl : typed_primitive_impl<loop> {
             }
 
             // Collect output events for waiting for all iterations finishing
-            for (auto& out : body_network->get_outputs()) {
+            for (const auto& out : body_network->get_outputs()) {
                 auto output_id = out->id();
                 if (body_network->has_event(output_id)) {
                     auto output_event = body_network->get_primitive_event(output_id);
@@ -255,7 +255,7 @@ struct loop_impl : typed_primitive_impl<loop> {
 
             // execution condition is the result of body network execution
             if (body_execution_condition_mem != nullptr) {
-                auto execution_id = primitive->body_execution_condition_id;
+                auto execution_id = instance.get_condition_id();
                 if (body_network->has_event(execution_id)) {
                     auto ev = body_network->get_primitive_event(execution_id);
                     if (ev) ev->wait();
@@ -275,13 +275,14 @@ struct loop_impl : typed_primitive_impl<loop> {
 
         // Update actual num iteration
         // update num_iterations (actual number of iterations)
-        memory::ptr num_actual_iterations_mem = outer_network.get_primitive(primitive->num_iteration_id)->output_memory_ptr();
+        memory::ptr num_actual_iterations_mem = outer_network.get_primitive(instance.get_num_iterations_id())->output_memory_ptr();
         write_scalar_value(num_actual_iterations_mem, stream, current_iteration_idx);
-        GPU_DEBUG_LOG << "current_iteration_idx(" << primitive->num_iteration_id << ", "
+        GPU_DEBUG_LOG << "current_iteration_idx(" << instance.get_num_iterations_id() << ", "
                         << num_actual_iterations_mem << ")  : " << current_iteration_idx << std::endl;
 
-        if (is_dynamic)
+        if (is_dynamic) {
             instance.update_output_layout();
+        }
         instance.postprocess_output_memory(is_dynamic, current_iteration_idx);
 
         ev->set();
@@ -289,7 +290,7 @@ struct loop_impl : typed_primitive_impl<loop> {
     }
 
     static std::unique_ptr<primitive_impl> create(const loop_node& arg, const kernel_impl_params&) {
-        return make_unique<loop_impl>(arg);
+        return std::make_unique<loop_impl>(arg);
     }
 
     void save(BinaryOutputBuffer& ob) const override {
@@ -306,12 +307,17 @@ private:
     std::vector<cldnn::loop::backedge_mapping> _back_edges;
 };
 
+std::unique_ptr<primitive_impl> LoopImplementationManager::create_impl(const program_node& node, const kernel_impl_params& params) const {
+    assert(node.is_type<loop>());
+    return loop_impl::create(static_cast<const loop_node&>(node), params);
+}
+
 namespace detail {
 attach_loop_common::attach_loop_common() {
     implementation_map<loop>::add(impl_types::common,
                                     shape_types::dynamic_shape,
                                     loop_impl::create,
-                                    {},
+                                    std::vector<data_types>{},
                                     {});
     implementation_map<loop>::add(impl_types::common, loop_impl::create, {});
 }

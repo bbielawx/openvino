@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -127,7 +127,7 @@ TEST(smoke_LPT_LayerTransformation, getDataPrecision_reqNone_I8zp_to_undefzp) {
     auto const dequantization = ov::pass::low_precision::QuantizationDetails::getDetails(fakeQuantize);
 
     auto const precisionDetails = ov::pass::low_precision::LayerTransformation::getDataPrecision(fakeQuantize, dequantization, {});
-    ASSERT_EQ(element::undefined, precisionDetails.precision);
+    ASSERT_EQ(element::dynamic, precisionDetails.precision);
     ASSERT_EQ(0.f, precisionDetails.min);
     ASSERT_EQ(0.f, precisionDetails.max);
     ASSERT_EQ(false, precisionDetails.hasZeroPoint);
@@ -143,7 +143,7 @@ TEST(smoke_LPT_LayerTransformation, getDataPrecision_reqNone_U8zp_to_undefzp) {
     auto const dequantization = ov::pass::low_precision::QuantizationDetails::getDetails(fakeQuantize);
 
     auto const precisionDetails = ov::pass::low_precision::LayerTransformation::getDataPrecision(fakeQuantize, dequantization, {});
-    ASSERT_EQ(element::undefined, precisionDetails.precision);
+    ASSERT_EQ(element::dynamic, precisionDetails.precision);
     ASSERT_EQ(0.f, precisionDetails.min);
     ASSERT_EQ(0.f, precisionDetails.max);
     ASSERT_EQ(false, precisionDetails.hasZeroPoint);

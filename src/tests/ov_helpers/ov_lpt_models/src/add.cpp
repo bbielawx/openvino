@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,10 +7,11 @@
 #include "low_precision/network_helper.hpp"
 #include "low_precision/layer_transformation.hpp"
 
-#include "openvino/opsets/opset1.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
 
 #include "common_test_utils/node_builders/fake_quantize.hpp"
 #include "ov_lpt_models/common/dequantization_operations.hpp"
+#include "openvino/op/group_conv.hpp"
 
 using namespace ov::pass::low_precision;
 
@@ -45,7 +46,6 @@ std::shared_ptr<ov::Model> AddFunction::getOriginal(
     const ov::PartialShape& inputShape1,
     const ov::PartialShape& inputShape2,
     const bool broadcast,
-    const ov::pass::low_precision::LayerTransformation::Params& params,
     const ov::element::Type& precision1,
     const ov::builder::subgraph::DequantizationOperations& dequantization1,
     const ov::element::Type& precision2,
@@ -220,7 +220,6 @@ std::shared_ptr<ov::Model> AddFunction::getReference(
     const ov::PartialShape& inputShape1,
     const ov::PartialShape& inputShape2,
     const bool broadcast,
-    const ov::pass::low_precision::LayerTransformation::Params& params,
     const ov::element::Type& precision1,
     const ov::builder::subgraph::DequantizationOperations& dequantization1,
     const ov::element::Type& precision2,

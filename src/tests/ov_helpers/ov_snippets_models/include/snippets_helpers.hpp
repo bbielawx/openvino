@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #pragma once
@@ -57,6 +57,7 @@ protected:
     const std::vector<PartialShape> input_shapes;
 
     virtual void validate_function(const std::shared_ptr<Model> &f) const;
+    static void validate_params_shape(const std::vector<PartialShape>& input_shapes, const ov::ParameterVector& params);
 };
 
 /// \brief Base class for snippets subgraphs with customizable embedded op sequences. Note that the custom_ops allowed types are
@@ -77,6 +78,13 @@ protected:
     std::vector<size_t> custom_ops_num_inputs;
     void ResetCustomOpsInputs();
 };
+
+template <typename TestType>
+inline void execute_and_validate_function(TestType& test, const SnippetsFunctionBase& f) {
+    test.model = f.getOriginal();
+    test.model_ref = f.getReference();
+    test.run();
+}
 }  // namespace snippets
 }  // namespace test
 }  // namespace ov

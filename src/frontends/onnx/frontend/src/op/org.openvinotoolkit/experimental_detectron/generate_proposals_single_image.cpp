@@ -1,20 +1,14 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/org.openvinotoolkit/experimental_detectron/generate_proposals_single_image.hpp"
-
-#include "core/node.hpp"
+#include "core/operator_set.hpp"
 #include "openvino/frontend/exception.hpp"
 #include "openvino/op/experimental_detectron_generate_proposals.hpp"
 
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::org_openvinotoolkit::opset_1 {
 ov::OutputVector experimental_detectron_generate_proposals(const ov::frontend::onnx::Node& node) {
     using GenerateProposalsSingleImage = v6::ExperimentalDetectronGenerateProposalsSingleImage;
 
@@ -39,8 +33,8 @@ ov::OutputVector experimental_detectron_generate_proposals(const ov::frontend::o
     return {generate_proposals_single_image->output(0), generate_proposals_single_image->output(1)};
 }
 
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("ExperimentalDetectronGenerateProposalsSingleImage",
+        OPSET_SINCE(1),
+        org_openvinotoolkit::opset_1::experimental_detectron_generate_proposals,
+        OPENVINO_ONNX_DOMAIN);
+}  // namespace ov::frontend::onnx::org_openvinotoolkit::opset_1

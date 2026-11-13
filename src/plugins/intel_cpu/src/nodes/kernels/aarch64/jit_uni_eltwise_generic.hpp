@@ -1,14 +1,20 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <cpu/aarch64/cpu_isa_traits.hpp>
+#include <cstdint>
+#include <memory>
+#include <oneapi/dnnl/dnnl.hpp>
+#include <string>
 #include <vector>
 
-#include <onednn/dnnl.h>
-#include <cpu/aarch64/cpu_isa_traits.hpp>
-#include "nodes/executors/eltwise.hpp"
+#include "cpu_types.h"
+#include "openvino/core/except.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "utils/cpu_utils.hpp"
 
 // TODO: handle x64 headers more accurate and remove undef later
 // symbols are defined as global macros as result we should disable them
@@ -24,74 +30,28 @@
 
 #include <cpu/aarch64/jit_generator.hpp>
 
-#include "utils/general_utils.h"
-#include "utils/cpu_utils.hpp"
-
 #include "emitters/plugin/aarch64/jit_emitter.hpp"
-#include "emitters/plugin/aarch64/jit_eltwise_emitters.hpp"
-#include "nodes/kernels/jit_eltwise_call_args_ptrs.hpp"
+#include "nodes/kernels/jit_eltwise_common.hpp"
 
-namespace ov {
-namespace intel_cpu {
-namespace aarch64 {
+namespace ov::intel_cpu::aarch64 {
 
 using namespace Xbyak_aarch64;
 using namespace dnnl::impl::cpu;
 using namespace dnnl::impl::cpu::aarch64;
 
-struct jit_eltwise_params {
-    size_t inputs_number;
-    size_t input_size;
-
-    ov::element::Type src_prc[MAX_ELTWISE_INPUTS];
-    ov::element::Type dst_prc;
-
-    VectorDims dims;
-    VectorDims src_offsets[MAX_ELTWISE_INPUTS];
-    VectorDims dst_offsets;
-    VectorDims oc_offsets;
-
-    size_t src_size[MAX_ELTWISE_INPUTS];
-    size_t dst_size;
-    size_t oc_size;
-
-    size_t work_amount;
-    bool use_runtime_ptrs;
-};
-
-struct jit_eltwise_call_args_indexes {
-    size_t indexes[MAX_ELTWISE_DIM_RANK];
-};
-
-struct jit_uni_eltwise_kernel {
-    void (*ker_)(const node::jit_eltwise_call_args_ptrs*, const jit_eltwise_call_args_indexes*);
-
-    void operator()(const node::jit_eltwise_call_args_ptrs* const_args, const jit_eltwise_call_args_indexes* indexes);
-
-    jit_uni_eltwise_kernel() {}
-    jit_uni_eltwise_kernel(const jit_eltwise_params& jep) : ker_(nullptr), jep_(jep) {}
-    virtual ~jit_uni_eltwise_kernel() {}
-
-    virtual void create_ker() = 0;
-
-    jit_eltwise_params jep_;
-};
-
 template <dnnl::impl::cpu::aarch64::cpu_isa_t isa>
-struct jit_uni_eltwise_generic : public jit_uni_eltwise_kernel, jit_generator {
+struct jit_uni_eltwise_generic : public jit_uni_eltwise_kernel, jit_generator_t {
 public:
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_uni_eltwise_generic)
 
-    jit_uni_eltwise_generic(const jit_eltwise_params& jep,
-                            const std::vector<EltwiseData>& eltwise_data,
-                            const std::vector<ov::intel_cpu::Type>& ops_list,
-                            const dnnl::post_ops& post_ops);
-
-    jit_uni_eltwise_generic() {}
+    jit_uni_eltwise_generic(jit_eltwise_params jep,
+                            std::vector<EltwiseData> eltwise_data,
+                            std::vector<ov::intel_cpu::Type> ops_list,
+                            dnnl::post_ops post_ops);
 
     void create_ker() override {
-        jit_generator::create_kernel();
-        ker_ = (decltype(ker_))jit_ker();
+        jit_generator_t::create_kernel();
+        ker_ = jit_kernel_cast<decltype(ker_)>(jit_ker());
     }
 
     void generate() override;
@@ -118,7 +78,7 @@ private:
     // X5     | [not used]   | RSI | d_bias
     // X6     | [not used]   | RBP | d_weights
     // X7     | [not used]   | RSP | <stack pointer>
-    // X8     | [not used]   | R8  | src ptr
+    // X8     | temporary    | R8  | src ptr
     // X9     | work amount  | R9  | src ptr
     // X10    | ker temporary| R10 | src ptr
     // X11    | ker temporary| R11 | src ptr
@@ -149,21 +109,20 @@ private:
     const XReg reg_work_amount = x9;
     const XReg reg_dst = x16;
 
-    inline XReg get_src_reg(uint32_t idx) {
-        if (idx > MAX_ELTWISE_INPUTS) {
-            OPENVINO_THROW("source vector ptr register " + std::to_string(idx) + " is not supported");
-        }
-
-        static const std::vector<uint32_t> src_gprs = { 19, 20, 21, 22, 25, 26, 27 };
+    XReg get_src_reg(uint32_t idx) {
+        OPENVINO_ASSERT(idx <= MAX_ELTWISE_INPUTS,
+                        "source vector ptr register " + std::to_string(idx) + " is not supported");
+        static const std::vector<uint32_t> src_gprs = {19, 20, 21, 22, 25, 26, 27};
         return XReg(src_gprs[idx]);
     }
 
-    inline XReg get_aux_gpr(const uint32_t idx) {
-        if (idx > 3) {
-            OPENVINO_THROW("aux gpr register " + std::to_string(idx) + " is not supported");
+    XReg get_aux_gpr(const uint32_t idx) {
+        OPENVINO_ASSERT(idx <= 3, "aux gpr register " + std::to_string(idx) + " is not supported");
+        if (idx == 0) {
+            return XReg(8);
         }
 
-        return XReg(13 + idx);
+        return XReg(13 + idx - 1);
     }
 
     // Vector registers mapping
@@ -179,35 +138,31 @@ private:
     // 15      | aux
     // 16      | aux
     // 17      | aux
-    // 18      | src
+    // 18      | aux
     // 19      | src
     // 20      | src
     // 21      | src
     // 22      | src
     // 23      | src
-    // 24-31   | [not used]
+    // 24      | src
+    // 25-31   | [not used]
 
+    TReg vmm_dst{9};
 
-    TReg vmm_dst {9};
-
-    inline TReg get_vmm_reg(const uint32_t idx) {
-        if (idx > MAX_ELTWISE_INPUTS) {
-            OPENVINO_THROW("source vector register " + std::to_string(idx) + " is not supported");
-        }
-        return TReg(18 + idx);
+    TReg get_vmm_reg(const uint32_t idx) {
+        OPENVINO_ASSERT(idx <= MAX_ELTWISE_INPUTS,
+                        "source vector register " + std::to_string(idx) + " is not supported");
+        return TReg(19 + idx);
     }
 
-    inline SReg get_scl_reg(const uint32_t idx) {
-        if (idx > MAX_ELTWISE_INPUTS) {
-            OPENVINO_THROW("source scalar register " + std::to_string(idx) + " is not supported");
-        }
-        return SReg(18 + idx);
+    SReg get_scl_reg(const uint32_t idx) {
+        OPENVINO_ASSERT(idx <= MAX_ELTWISE_INPUTS,
+                        "source scalar register " + std::to_string(idx) + " is not supported");
+        return SReg(19 + idx);
     }
 
-    inline TReg get_aux_vmm(const uint32_t idx) {
-        if (idx > 7) {
-            OPENVINO_THROW("aux vector register " + std::to_string(idx) + " is not supported");
-        }
+    TReg get_aux_vmm(const uint32_t idx) {
+        OPENVINO_ASSERT(idx <= 8, "aux vector register " + std::to_string(idx) + " is not supported");
         return TReg(10 + idx);
     }
 
@@ -215,26 +170,26 @@ private:
                      const XReg& ptr,
                      const ov::element::Type& src_prc,
                      const ov::element::Type& dst_prc,
-                     const bool broadcast,
-                     const int32_t ptr_offset = 0);
+                     bool broadcast,
+                     int32_t ptr_offset = 0);
 
     void load_scalar(const SReg& data,
                      const XReg& ptr,
                      const ov::element::Type& src_prc,
                      const ov::element::Type& dst_prc,
-                     const int32_t ptr_offset = 0);
+                     int32_t ptr_offset = 0);
 
     void store_vector(const XReg& ptr,
-                 const TReg& data,
-                 const ov::element::Type& src_prc,
-                 const ov::element::Type& dst_prc,
-                 const int32_t ptr_offset = 0);
+                      const TReg& data,
+                      const ov::element::Type& src_prc,
+                      const ov::element::Type& dst_prc,
+                      int32_t ptr_offset = 0);
 
     void store_scalar(const XReg& ptr,
                       const SReg& data,
                       const ov::element::Type& src_prc,
                       const ov::element::Type& dst_prc,
-                      const int32_t ptr_offset = 0);
+                      int32_t ptr_offset = 0);
 
     std::shared_ptr<jit_emitter> create_eltwise_emitter(const EltwiseData& data, const ov::element::Type& exec_prec);
 
@@ -249,16 +204,4 @@ private:
     std::vector<std::shared_ptr<jit_emitter>> post_op_emitters;
 };
 
-class eltwise_precision_helper {
-public:
-    static ov::element::Type get_precision(const size_t inputs_number,
-                                           const ov::element::Type (&src_prc)[MAX_ELTWISE_INPUTS],
-                                           const std::vector<EltwiseData>& eltwise_data);
-
-private:
-    static std::set<std::vector<element::Type>> get_supported_precisions(const Algorithm& algo);
-};
-
-}   // namespace aarch64
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::aarch64

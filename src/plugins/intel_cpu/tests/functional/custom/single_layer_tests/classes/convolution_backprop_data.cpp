@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,26 +7,10 @@
 using namespace CPUTestUtils;
 using namespace ov::test;
 
-std::string DeconvolutionLayerCPUTest::getTestCaseName(testing::TestParamInfo<DeconvLayerCPUTestParamsSet> obj) {
-    DeconvSpecParams basicParamsSet;
-    DeconvInputData inputData;
-    ElementType prec;
-    fusingSpecificParams fusingParams;
-    CPUSpecificParams cpuParams;
-    ov::AnyMap additionalConfig;
-    std::tie(basicParamsSet, inputData, prec, fusingParams, cpuParams, additionalConfig) = obj.param;
-
-    ov::op::PadType padType;
-    std::vector<size_t> kernel, stride, dilation;
-    std::vector<ptrdiff_t> padBegin, padEnd, outPadding;
-    size_t convOutChannels;
-    std::tie(kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType, outPadding) = basicParamsSet;
-
-    InputShape inputShape;
-    ov::test::utils::InputLayerType outShapeType;
-    std::vector<std::vector<int32_t>> outShapeData;
-    std::tie(inputShape, outShapeType, outShapeData) = inputData;
-
+std::string DeconvolutionLayerCPUTest::getTestCaseName(const testing::TestParamInfo<DeconvLayerCPUTestParamsSet>& obj) {
+    const auto& [basicParamsSet, inputData, prec, fusingParams, cpuParams, additionalConfig] = obj.param;
+    const auto& [kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType, outPadding] = basicParamsSet;
+    const auto& [inputShape, outShapeType, outShapeData] = inputData;
     std::ostringstream result;
     result << "IS=";
     result << ov::test::utils::partialShape2str({inputShape.first}) << "_";
@@ -107,7 +91,7 @@ void DeconvolutionLayerCPUTest::configure_model() {
             if (i > 0) {
                 continue;
             }
-            if (inType != ov::element::Type_t::undefined) {
+            if (inType != ov::element::Type_t::dynamic) {
                 p.input(i).tensor().set_element_type(inType);
             }
         }
@@ -115,7 +99,7 @@ void DeconvolutionLayerCPUTest::configure_model() {
     {
         auto results = function->get_results();
         for (size_t i = 0; i < results.size(); i++) {
-            if (outType != ov::element::Type_t::undefined) {
+            if (outType != ov::element::Type_t::dynamic) {
                 p.output(i).tensor().set_element_type(outType);
             }
         }
@@ -171,34 +155,32 @@ std::shared_ptr<ov::Model> DeconvolutionLayerCPUTest::createGraph(const std::vec
                                                                  outPadding);
     }
 
-    return makeNgraphFunction(prec, params, deconv, "DeconvCPU");
+    return create_ov_model(prec, params, deconv, "DeconvCPU");
 }
 
 void DeconvolutionLayerCPUTest::SetUp() {
     rel_threshold = 1e-4f;
 
     targetDevice = ov::test::utils::DEVICE_CPU;
-
-    DeconvSpecParams basicParamsSet;
-    DeconvInputData inputData;
-    fusingSpecificParams fusingParams;
-    CPUSpecificParams cpuParams;
-    ov::AnyMap additionalConfig;
-    std::tie(basicParamsSet, inputData, prec, fusingParams, cpuParams, additionalConfig) = this->GetParam();
-
-    InputShape inputShape;
-    ov::test::utils::InputLayerType outShapeType;
-    std::tie(inputShape, outShapeType, outShapeData) = inputData;
-
+    const auto& [basicParamsSet, inputData, _prec, fusingParams, cpuParams, additionalConfig] = this->GetParam();
+    prec = _prec;
+    const auto& [inputShape, outShapeType, _outShapeData] = inputData;
+    outShapeData = _outShapeData;
     configuration.insert(additionalConfig.begin(), additionalConfig.end());
     std::tie(inFmts, outFmts, priority, selectedType) = cpuParams;
     std::tie(postOpMgrPtr, fusedOps) = fusingParams;
 
     std::tie(kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType, outPadding) = basicParamsSet;
 
-    if (additionalConfig[ov::hint::inference_precision.name()] == ov::element::bf16) {
+    auto it = configuration.find(ov::hint::inference_precision.name());
+    ov::element::Type inference_precision =
+        (it != configuration.end()) ? it->second.as<ov::element::Type>() : ov::element::dynamic;
+    if (inference_precision == ov::element::bf16) {
         inType = outType = prec = ElementType::bf16;
         rel_threshold = 1e-2f;
+    } else if (inference_precision == ov::element::f16) {
+        inType = outType = prec = ElementType::f16;
+        rel_threshold = 0.00125f;
     } else {
         inType = outType = prec;
     }

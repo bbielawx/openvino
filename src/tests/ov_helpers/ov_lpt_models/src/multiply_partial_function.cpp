@@ -1,12 +1,12 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "ov_lpt_models/multiply_partial_function.hpp"
 
 #include <memory>
-
-#include "openvino/opsets/opset1.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
+#include "openvino/op/constant.hpp"
 #include <ov_ops/type_relaxed.hpp>
 #include "low_precision/network_helper.hpp"
 
@@ -68,10 +68,10 @@ std::shared_ptr<ov::Model> MultiplyPartialFunction::get(const ov::element::Type 
 
     ov::ParameterVector inputs;
     if (ov::is_type<ov::opset1::Parameter>(branchNodes1.input)) {
-        inputs.push_back(std::dynamic_pointer_cast<ov::opset1::Parameter>(branchNodes1.input));
+        inputs.push_back(ov::as_type_ptr<ov::opset1::Parameter>(branchNodes1.input));
     }
     if (ov::is_type<ov::opset1::Parameter>(branchNodes2.input)) {
-        inputs.push_back(std::dynamic_pointer_cast<ov::opset1::Parameter>(branchNodes2.input));
+        inputs.push_back(ov::as_type_ptr<ov::opset1::Parameter>(branchNodes2.input));
     }
 
     return std::make_shared<ov::Model>(results, inputs, "MultiplyTransformation");
@@ -115,8 +115,8 @@ std::shared_ptr<ov::Model> MultiplyPartialFunction::get(
 
     const std::shared_ptr<ov::Node> input2 =
         secondInputIsConstant
-            ? ov::test::utils::deprecated::make_constant(ov::element::f32, Shape{}, std::vector<float>{0.5f}, false)
-            : std::make_shared<ov::opset1::Parameter>(precision, inputShape2);
+            ? static_cast<std::shared_ptr<ov::Node>>(ov::op::v0::Constant::create(ov::element::f32, ov::Shape{}, std::vector<float>{0.5f}))
+            : static_cast<std::shared_ptr<ov::Node>>(std::make_shared<ov::opset1::Parameter>(precision, inputShape2));
     const auto fakeQuantize2 = fq2.empty() ?
         nullptr :
         ov::test::utils::make_fake_quantize(

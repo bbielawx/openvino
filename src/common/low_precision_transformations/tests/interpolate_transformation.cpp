@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,8 +9,7 @@
 #include <memory>
 
 #include <gtest/gtest.h>
-
-#include "openvino/opsets/opset4.hpp"
+#include "openvino/opsets/opset4_decl.hpp"
 #include "transformations/utils/utils.hpp"
 #include "transformations/init_node_info.hpp"
 #include "low_precision/interpolate.hpp"
@@ -121,7 +120,6 @@ public:
                 interpAttrs,
                 testValues.expected.precisionBeforeDequantization,
                 testValues.expected.dequantizationBefore,
-                testValues.expected.precisionAfterOperation,
                 testValues.expected.dequantizationAfter);
         } else if (testValues.opset_version == 4) {
             ov::op::v4::Interpolate::InterpolateAttrs interp4Attrs;
@@ -149,7 +147,6 @@ public:
                 interp4Attrs,
                 testValues.expected.precisionBeforeDequantization,
                 testValues.expected.dequantizationBefore,
-                testValues.expected.precisionAfterOperation,
                 testValues.expected.dequantizationAfter);
         }
     }

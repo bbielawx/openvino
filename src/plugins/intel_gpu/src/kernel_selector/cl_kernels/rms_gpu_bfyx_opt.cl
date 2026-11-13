@@ -1,72 +1,396 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "include/batch_headers/fetch_data.cl"
+#include "include/fetch_utils.cl"
+#include "include/batch_headers/sub_group_block_read.cl"
+#include "include/batch_headers/sub_group_block_write.cl"
+#include "include/batch_headers/bf16_utils.cl"
 
+// Check alignment restrictions for using block writes on output.
+#define USE_BLOCK_WRITE (((OUTPUT_TYPE_SIZE * OUTPUT_FEATURE_PITCH) & 0xF) == 0)
+
+#if HAS_DYNAMIC_QUANTIZE
+#include "include/batch_headers/common.cl"
+#include "include/f8_utils.cl"
+#include "include/dynamic_quantize_utils.cl"
+#define NORMALIZED_TYPE float
+#define TO_NORMALIZED_TYPE(x) convert_float(x)
+#else
+#define NORMALIZED_TYPE OUTPUT_TYPE
+#define TO_NORMALIZED_TYPE(x) TO_OUTPUT_TYPE(x)
+#endif
+
+#if SUBGROUP_BLOCK_SIZE == 1
+#define BLOCK_READ(ptr, offset) DT_INPUT_BLOCK_READ(ptr, offset)
+#define BLOCK_WRITE(ptr, offset, val) DT_OUTPUT_BLOCK_WRITE(ptr, offset, val)
+#define ACC_TYPE ACCUMULATOR_TYPE
+#define TO_ACC_TYPE(x) TO_ACCUMULATOR_TYPE(x)
+#define NORMALIZED_VEC_TYPE NORMALIZED_TYPE
+#else
+#define BLOCK_READ(ptr, offset) CAT(DT_INPUT_BLOCK_READ, SUBGROUP_BLOCK_SIZE)(ptr, offset)
+#define BLOCK_WRITE(ptr, offset, val) CAT(DT_OUTPUT_BLOCK_WRITE, SUBGROUP_BLOCK_SIZE)(ptr, offset, val)
+#define ACC_TYPE MAKE_VECTOR_TYPE(ACCUMULATOR_TYPE, SUBGROUP_BLOCK_SIZE)
+#define TO_ACC_TYPE(x) TO_ACCUMULATOR_VECTOR_TYPE(x, SUBGROUP_BLOCK_SIZE)
+#define NORMALIZED_VEC_TYPE MAKE_VECTOR_TYPE(NORMALIZED_TYPE, SUBGROUP_BLOCK_SIZE)
+#endif
+
+REQD_SUB_GROUP_SIZE(SUB_GROUP_SIZE)
 KERNEL(rms_gpu_bfyx_opt)(
     OPTIONAL_SHAPE_INFO_ARG
     const __global INPUT0_TYPE* input,
+#if ELEMENTWISE_AFFINE
     const __global INPUT1_TYPE* gamma,
-    __global OUTPUT_TYPE* output)
+#endif
+    __global OUTPUT_TYPE* output
+    #if HAS_DYNAMIC_QUANTIZE
+        , __global OUTPUT1_TYPE* scale
+    #endif
+    #if HAS_FUSED_OPS_DECLS
+        , FUSED_OPS_DECLS
+    #endif
+)
 {
-    const uint in_data_idx = get_global_id(0);
     const uint data_idx = get_global_id(1);
-    const uint lws_size = LWS;
-    const uint items_num = VEC_SIZE;
+    const uint in_data_idx = get_global_id(0);
+    const uint workers_per_data = LWS;
     const uint data_size = DATA_SIZE;
-    const uint total_items_num = lws_size * items_num;
-#if !IS_DYNAMIC
-    const uint leftovers = LEFTOVERS;
-#else
-    const uint leftovers = data_size % items_num;
+    const uint items_num = data_size / workers_per_data;
+    const uint leftovers = data_size % workers_per_data;
+
+    #if RMS_FEATURE_AXIS
+        uint spatial_idx = data_idx;
+        const uint x_idx = spatial_idx % INPUT0_SIZE_X;
+        spatial_idx /= INPUT0_SIZE_X;
+        const uint y_idx = spatial_idx % INPUT0_SIZE_Y;
+        spatial_idx /= INPUT0_SIZE_Y;
+        const uint z_idx = spatial_idx % INPUT0_SIZE_Z;
+        const uint b_idx = spatial_idx / INPUT0_SIZE_Z;
+    #elif HAS_PADDING
+        uint b_idx = 0;
+        uint f_idx = 0;
+        uint z_idx = 0;
+        uint y_idx = 0;
+        uint x_idx = 0;
+        #if INPUT_RANK == 2
+            b_idx = (data_idx);
+        #elif INPUT_RANK == 3
+            f_idx = (data_idx % (INPUT0_FEATURE_NUM));
+            b_idx = (data_idx / (INPUT0_FEATURE_NUM));
+        #else
+            y_idx = (data_idx % (INPUT0_SIZE_Y));
+            z_idx = (data_idx / (INPUT0_SIZE_Y)) % INPUT0_SIZE_Z;
+            f_idx = (data_idx / (INPUT0_SIZE_Y * INPUT0_SIZE_Z)) % INPUT0_FEATURE_NUM;
+            b_idx = (data_idx / (INPUT0_SIZE_Y * INPUT0_SIZE_Z * INPUT0_FEATURE_NUM)) % INPUT0_BATCH_NUM;
+        #endif
+
+        const uint input_data_offset = FUNC_CALL(get_input_index)(OPTIONAL_SHAPE_INFO_TENSOR b_idx, f_idx, 0, z_idx, y_idx, x_idx);
+    #elif !RMS_FEATURE_AXIS
+        const uint input_data_offset = data_idx * data_size;
+    #endif
+
+#if !RMS_FEATURE_AXIS
+    const uint output_data_offset = data_idx * data_size;
 #endif
 
-    const uint data_offset = data_idx * data_size;
-    const uint in_data_offset = data_offset + in_data_idx * items_num;
-    const uint gamma_offset = in_data_idx * items_num;
+    const uint subgroup_offset = get_sub_group_id() * get_sub_group_size() * items_num;
 
+    ACCUMULATOR_TYPE data[STACK_SIZE];
     ACCUMULATOR_TYPE rms = ACCUMULATOR_VAL_ZERO;
 
     __local ACCUMULATOR_TYPE slm_buf[SLM_SIZE];
 
-    INPUT_VEC_TYPE inputs = AS_INPUT_VEC_TYPE(VLOAD(0, input + in_data_offset));
-    ACCUMULATOR_VEC_TYPE square = native_powr(TO_ACCUMULATOR_VEC_TYPE(inputs), (ACCUMULATOR_VEC_TYPE)(2));
-    unroll_for (uint i = 0; i < VEC_SIZE; ++i) {
-        rms += square[i];
+    uint i = 0;
+#if !RMS_FEATURE_AXIS
+    if (workers_per_data > SUB_GROUP_SIZE)
+    {
+        for (; i < items_num - (items_num % SUBGROUP_BLOCK_SIZE); i += SUBGROUP_BLOCK_SIZE)
+        {
+            ACC_TYPE vec_tmp = TO_ACC_TYPE(BLOCK_READ(input, input_data_offset + subgroup_offset + i * get_sub_group_size()));
+#if SUBGROUP_BLOCK_SIZE == 1
+            rms += native_powr(vec_tmp, 2);
+            data[i] = vec_tmp;
+#else
+            unroll_for (int j = 0; j < SUBGROUP_BLOCK_SIZE; j++)
+            {
+                ACCUMULATOR_TYPE tmp = vec_tmp[j];
+                rms += native_powr(tmp, 2);
+                data[i + j] = tmp;
+            }
+#endif
+        }
+    }
+    #endif
+
+    for (; i < items_num; i++)
+    {
+    #if RMS_FEATURE_AXIS
+        const uint f_idx = subgroup_offset + get_sub_group_local_id() + i * get_sub_group_size();
+        const uint input_idx = FUNC_CALL(get_input_index)(OPTIONAL_SHAPE_INFO_TENSOR b_idx, f_idx, 0, z_idx, y_idx, x_idx);
+        ACCUMULATOR_TYPE tmp = TO_ACCUMULATOR_TYPE(input[input_idx]);
+    #else
+        ACCUMULATOR_TYPE tmp = TO_ACCUMULATOR_TYPE(input[input_data_offset + subgroup_offset + get_sub_group_local_id() + i * get_sub_group_size()]);
+    #endif
+        rms += native_powr(tmp, 2);
+        data[i] = tmp;
     }
 
-    if (in_data_idx < leftovers) {
-        const uint input_idx = data_offset + total_items_num + in_data_idx;
-        rms += native_powr(TO_ACCUMULATOR_TYPE(input[input_idx]), 2);
+    if (in_data_idx < leftovers)
+    {
+#if RMS_FEATURE_AXIS
+        const uint f_idx = workers_per_data * items_num + in_data_idx;
+        const uint input_idx = FUNC_CALL(get_input_index)(OPTIONAL_SHAPE_INFO_TENSOR b_idx, f_idx, 0, z_idx, y_idx, x_idx);
+        ACCUMULATOR_TYPE tmp = TO_ACCUMULATOR_TYPE(input[input_idx]);
+#else
+        ACCUMULATOR_TYPE tmp = TO_ACCUMULATOR_TYPE(input[input_data_offset + workers_per_data * items_num + in_data_idx]);
+#endif
+        rms += native_powr(tmp, 2);
+        data[items_num] = tmp;
     }
 
-    slm_buf[in_data_idx] = rms;
+    rms = sub_group_reduce_add(rms);
+
+    if (get_sub_group_local_id() == 0)
+        slm_buf[get_sub_group_id()] = rms;
 
     barrier(CLK_LOCAL_MEM_FENCE);
-    if (in_data_idx == 0) {
-#if !IS_DYNAMIC
-        unroll_for (uint i = 1; i < LWS; ++i)
-#else
-        for (uint i = 1; i < lws_size; ++i)
-#endif
-            rms += slm_buf[i];
+    for (uint offset = get_num_sub_groups() / 2; offset > 0; offset /= 2) {
+        if (in_data_idx < offset) {
+            slm_buf[in_data_idx] += slm_buf[in_data_idx + offset];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
 
-        rms = rms / data_size;
-        slm_buf[0] = native_powr(sqrt(rms + TO_ACCUMULATOR_TYPE(EPSILON)), -1);
+    if (in_data_idx == 0) {
+        rms = slm_buf[0] / data_size;
+        slm_buf[0] = native_powr(sqrt(rms + EPSILON), -1);
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
     rms = slm_buf[0];
 
-    OUTPUT_VEC_TYPE results = TO_OUTPUT_VEC_TYPE((ACCUMULATOR_VEC_TYPE)(rms) * TO_ACCUMULATOR_VEC_TYPE(inputs) * AS_ACCUMULATOR_VEC_TYPE(VLOAD(0, gamma + gamma_offset)));
-    VSTORE(results, 0, output + in_data_offset);
+#if ELEMENTWISE_AFFINE && RMS_GAMMA_IS_SCALAR
+    const ACCUMULATOR_TYPE gamma_scalar = TO_ACCUMULATOR_TYPE(gamma[0]);
+#endif
 
-    if (in_data_idx < leftovers) {
-        const uint input_idx = data_offset + total_items_num + in_data_idx;
-        const uint output_idx = data_offset + total_items_num + in_data_idx;
-        const uint gamma_idx = total_items_num + in_data_idx;
-        OUTPUT_TYPE result = TO_OUTPUT_TYPE(rms * TO_ACCUMULATOR_TYPE(input[input_idx]) * TO_ACCUMULATOR_TYPE(gamma[gamma_idx]));
-        output[output_idx] = result;
+    #if HAS_FUSED_OPS && !RMS_FEATURE_AXIS
+        uint b, f, z, y, x;
+        #if INPUT_RANK == 1
+            f = z = y = x = 1;
+        #elif INPUT_RANK == 2
+            z = y = x = 1;
+            b = data_idx;
+        #elif INPUT_RANK == 3
+            x = 1;
+            f = data_idx % OUTPUT_FEATURE_NUM;
+            b = data_idx / OUTPUT_FEATURE_NUM;
+        #else
+            x = data_idx;
+            y = x % OUTPUT_SIZE_Y;      x = x / OUTPUT_SIZE_Y;
+            z = x % OUTPUT_SIZE_Z;      x = x / OUTPUT_SIZE_Z;
+            f = x % OUTPUT_FEATURE_NUM; x = x / OUTPUT_FEATURE_NUM;
+            b = x % OUTPUT_BATCH_NUM;   x = x / OUTPUT_BATCH_NUM;
+        #endif
+    #endif
+
+    i = 0;
+#if !RMS_FEATURE_AXIS
+    if ((workers_per_data > SUB_GROUP_SIZE) && USE_BLOCK_WRITE)
+    {
+        for (; i < items_num - (items_num % SUBGROUP_BLOCK_SIZE); i += SUBGROUP_BLOCK_SIZE)
+        {
+#if ELEMENTWISE_AFFINE
+#if !RMS_GAMMA_IS_SCALAR
+            ACC_TYPE vec_gamma = TO_ACC_TYPE(BLOCK_READ(gamma, subgroup_offset + i * get_sub_group_size()));
+#endif
+#endif
+            NORMALIZED_VEC_TYPE vec_tmp;
+            #if HAS_FUSED_OPS
+                LAST_DIM = subgroup_offset + i * get_sub_group_size() + get_sub_group_local_id();
+            #endif
+#if SUBGROUP_BLOCK_SIZE == 1
+#if ELEMENTWISE_AFFINE
+#if RMS_GAMMA_IS_SCALAR
+            NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[i] * gamma_scalar);
+#else
+            NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[i] * vec_gamma);
+#endif
+#else
+            NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[i]);
+#endif
+            #if HAS_FUSED_OPS
+                FUSED_OPS;
+                normalized = FUSED_OPS_RESULT;
+            #endif
+            vec_tmp = normalized;
+#else // SUBGROUP_BLOCK_SIZE == 1
+#if HAS_DYNAMIC_QUANTIZE
+#if SUBGROUP_BLOCK_SIZE == 2
+#define NUM_SCALES_PER_SUBGROUP 1
+#elif SUBGROUP_BLOCK_SIZE == 4
+#define NUM_SCALES_PER_SUBGROUP 2
+#elif SUBGROUP_BLOCK_SIZE == 8
+#define NUM_SCALES_PER_SUBGROUP 4
+#endif
+                // 32 consecutive elements in tmp[0] && tmp[1] etc, assuming SIMD16
+                MAKE_VECTOR_TYPE(NORMALIZED_TYPE, NUM_SCALES_PER_SUBGROUP) max_values = DQ_MAX_SEARCH_INIT_VAL;
+                MAKE_VECTOR_TYPE(float, NUM_SCALES_PER_SUBGROUP) tmp_scales;
+            #endif // HAS_DYNAMIC_QUANTIZE
+            unroll_for (int j = 0; j < SUBGROUP_BLOCK_SIZE; j++) {
+#if ELEMENTWISE_AFFINE
+#if RMS_GAMMA_IS_SCALAR
+                NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[i + j] * gamma_scalar);
+#else
+                NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[i + j] * vec_gamma[j]);
+#endif
+#else
+                NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[i + j]);
+#endif
+                #if HAS_FUSED_OPS
+                    LAST_DIM = subgroup_offset + get_sub_group_local_id() + (i + j) * get_sub_group_size();
+                    FUSED_OPS;
+                    normalized = FUSED_OPS_RESULT;
+                #endif
+                #if HAS_DYNAMIC_QUANTIZE
+                    max_values[j / 2] = fmax(max_values[j / 2], fabs(normalized));
+                #endif
+                vec_tmp[j] = normalized;
+            }
+#if HAS_DYNAMIC_QUANTIZE
+            unroll_for (int j = 0; j < NUM_SCALES_PER_SUBGROUP; ++j) {
+                max_values[j] = sub_group_reduce_max(max_values[j]);
+                tmp_scales[j] = DQ_COMPUTE_MXFP_SCALE(max_values[j]);
+            }
+            if (get_sub_group_local_id() < NUM_SCALES_PER_SUBGROUP) {
+                int scale_output_idx = (output_data_offset + subgroup_offset + i * get_sub_group_size()) / 32 + get_sub_group_local_id();
+                scale[scale_output_idx] = DQ_COMPUTE_OUTPUT_SCALE(tmp_scales[get_sub_group_local_id()]);
+            }
+            unroll_for (int j = 0; j < SUBGROUP_BLOCK_SIZE; j++) {
+                vec_tmp[j] *= tmp_scales[j / 2];
+            }
+            BLOCK_WRITE(output, output_data_offset + subgroup_offset + i * get_sub_group_size(), DQ_CAST_TO_OUTPUT_TYPE_N(SUBGROUP_BLOCK_SIZE, vec_tmp));
+#endif // HAS_DYNAMIC_QUANTIZE
+#endif // SUBGROUP_BLOCK_SIZE == 1
+            #if !(HAS_DYNAMIC_QUANTIZE)
+                BLOCK_WRITE(output, output_data_offset + subgroup_offset + i * get_sub_group_size(), vec_tmp);
+            #endif // !(HAS_DYNAMIC_QUANTIZE)
+        }
+    }
+#endif
+
+#if HAS_DYNAMIC_QUANTIZE
+    int iters_per_scale = 2;
+    if (LWS == 8) { // LWS at least 8 with current assumptions
+        iters_per_scale = 4;
+    }
+    NORMALIZED_TYPE cache[4];
+    NORMALIZED_TYPE max_value = DQ_MAX_SEARCH_INIT_VAL;
+#endif
+    for (; i < items_num; i++)
+    {
+#if RMS_FEATURE_AXIS
+        const uint f_idx = subgroup_offset + get_sub_group_local_id() + i * get_sub_group_size();
+        const uint input_idx = FUNC_CALL(get_input_index)(OPTIONAL_SHAPE_INFO_TENSOR b_idx, f_idx, 0, z_idx, y_idx, x_idx);
+        const uint output_idx = FUNC_CALL(get_output_index)(OPTIONAL_SHAPE_INFO_TENSOR b_idx, f_idx, 0, z_idx, y_idx, x_idx);
+#endif
+#if ELEMENTWISE_AFFINE
+    #if RMS_GAMMA_IS_SCALAR
+        NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[i] * gamma_scalar);
+    #else
+#if RMS_FEATURE_AXIS
+        ACCUMULATOR_TYPE temp = TO_ACCUMULATOR_TYPE(gamma[INPUT1_OFFSET + f_idx]);
+#else
+        ACCUMULATOR_TYPE temp = TO_ACCUMULATOR_TYPE(gamma[subgroup_offset + get_sub_group_local_id() + i * get_sub_group_size()]);
+#endif
+        NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[i] * temp);
+    #endif
+#else
+        NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[i]);
+#endif
+        #if HAS_FUSED_OPS
+        #if !RMS_FEATURE_AXIS
+            LAST_DIM = subgroup_offset + get_sub_group_local_id() + i * get_sub_group_size();
+        #endif
+            FUSED_OPS;
+            normalized = FUSED_OPS_RESULT;
+        #endif
+        #if HAS_DYNAMIC_QUANTIZE
+            int cache_idx = i % iters_per_scale;
+            cache[cache_idx] = normalized;
+            max_value = fmax(max_value, fabs(normalized));
+            if (cache_idx == iters_per_scale - 1) {
+                max_value = sub_group_reduce_max(max_value);
+                float scale_value = DQ_COMPUTE_MXFP_SCALE(max_value);
+                int i_ = i - iters_per_scale + 1;
+                for (int j = 0; j < iters_per_scale; ++j) {
+                    OUTPUT_TYPE output_value = DQ_COMPUTE_OUTPUT_VALUE(cache[j], scale_value);
+                    #if RMS_FEATURE_AXIS
+                        f_idx = subgroup_offset + get_sub_group_local_id() + (i_ + j) * get_sub_group_size();
+                        output_idx = FUNC_CALL(get_output_index)(OPTIONAL_SHAPE_INFO_TENSOR b_idx, f_idx, 0, z_idx, y_idx, x_idx);
+                        output[output_idx] = output_value;
+                    #else
+                        output[output_data_offset + subgroup_offset + get_sub_group_local_id() + (i_ + j) * get_sub_group_size()] = output_value;
+                    #endif
+                }
+                if (get_sub_group_local_id() == 0) {
+                    #if RMS_FEATURE_AXIS
+                        int scale_output_idx = output_idx / 32;
+                    #else
+                        int scale_output_idx = (output_data_offset + subgroup_offset + i_ * get_sub_group_size()) / 32;
+                    #endif
+                    scale[scale_output_idx] = DQ_COMPUTE_OUTPUT_SCALE(scale_value);
+                }
+                max_value = DQ_MAX_SEARCH_INIT_VAL;
+            }
+        #else
+            #if RMS_FEATURE_AXIS
+                output[output_idx] = normalized;
+            #else
+                output[output_data_offset + subgroup_offset + get_sub_group_local_id() + i * get_sub_group_size()] = normalized;
+            #endif
+        #endif
+    }
+
+    if (in_data_idx < leftovers)
+    {
+    #if RMS_FEATURE_AXIS
+        const uint f_idx = workers_per_data * items_num + in_data_idx;
+        const uint input_idx = FUNC_CALL(get_input_index)(OPTIONAL_SHAPE_INFO_TENSOR b_idx, f_idx, 0, z_idx, y_idx, x_idx);
+        const uint output_idx = FUNC_CALL(get_output_index)(OPTIONAL_SHAPE_INFO_TENSOR b_idx, f_idx, 0, z_idx, y_idx, x_idx);
+    #endif
+#if ELEMENTWISE_AFFINE
+    #if RMS_GAMMA_IS_SCALAR
+        NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[items_num] * gamma_scalar);
+    #else
+#if RMS_FEATURE_AXIS
+        ACCUMULATOR_TYPE temp = TO_ACCUMULATOR_TYPE(gamma[INPUT1_OFFSET + f_idx]);
+#else
+        ACCUMULATOR_TYPE temp = TO_ACCUMULATOR_TYPE(gamma[workers_per_data * items_num + in_data_idx]);
+#endif
+        NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[items_num] * temp);
+    #endif
+#else
+        NORMALIZED_TYPE normalized = TO_NORMALIZED_TYPE(rms * data[items_num]);
+#endif
+        #if HAS_FUSED_OPS
+        #if !RMS_FEATURE_AXIS
+            LAST_DIM = workers_per_data * items_num + in_data_idx;
+        #endif
+            FUSED_OPS;
+            normalized = FUSED_OPS_RESULT;
+        #endif
+#if !(HAS_DYNAMIC_QUANTIZE) // DQ never enters this path and causes compilation error because of unsupported cast.
+    #if RMS_FEATURE_AXIS
+        output[output_idx] = normalized;
+    #else
+        output[output_data_offset + workers_per_data * items_num + in_data_idx] = normalized;
+    #endif
+#endif
     }
 }
+#undef USE_BLOCK_WRITE
+#undef BLOCK_READ
+#undef BLOCK_WRITE
+#undef ACC_TYPE
+#undef TO_ACC_TYPE
+#undef NORMALIZED_VEC_TYPE

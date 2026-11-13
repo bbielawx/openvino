@@ -1,10 +1,15 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "utils/node.hpp"
-#include "openvino/op/ops.hpp"
 #include "base_test.hpp"
+#include "openvino/op/add.hpp"
+#include "openvino/op/convert.hpp"
+#include "openvino/op/erf.hpp"
+#include "openvino/op/shape_of.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
+#include "openvino/opsets/opset3_decl.hpp"
 
 namespace {
 
@@ -94,7 +99,7 @@ TEST_F(NodeUtilsTest, generate_model_by_node) {
 TEST_F(NodeUtilsTest, get_max_ops_versions) {
     std::unordered_map<std::string, std::pair<std::string, std::string>> max_ops_versions;
     std::string max_opset;
-    ASSERT_NO_THROW(std::tie(max_opset, max_ops_versions) = ov::util::get_last_opset_version_map());
+    OV_ASSERT_NO_THROW(std::tie(max_opset, max_ops_versions) = ov::util::get_last_opset_version_map());
 
     std::vector<float> values = {-1, -2.05, -3.65, 0, 5, 7};
     auto const_node = std::make_shared<ov::op::v0::Constant>(ov::element::Type_t::f32, ov::Shape({2, 3}), values);

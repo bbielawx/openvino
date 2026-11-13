@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 // @file dnnl_utils.hpp
@@ -7,18 +7,32 @@
 
 #pragma once
 
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
+#include <unordered_map>
+
+#include "cache/multi_cache.h"
 #include "cpu_memory.h"
 #include "memory_desc/dnnl_memory_desc.h"
 #include "nodes/executors/executor.hpp"
+#include "weights_cache.hpp"
 
-namespace ov {
-namespace intel_cpu {
-namespace utils {
-DnnlMemoryDescPtr makeTransposedWeightDescriptor(const DnnlMemoryDescPtr srcDesc, const DnnlMemoryDescPtr dstDesc);
-MemoryPtr prepareWeightsMemory(const DnnlMemoryDescPtr srcWeightDesc,
-                               const DnnlMemoryDescPtr dstWeightDesc,
-                               const MemoryCPtr weightsMem,
-                               const ExecutorContext::CPtr context);
-}  // namespace utils
-}  // namespace intel_cpu
-}  // namespace ov
+namespace ov::intel_cpu::utils {
+MemoryPtr prepareWeightsMemory(const DnnlMemoryDescPtr& srcWeightDesc,
+                               const DnnlMemoryDescPtr& dstWeightDesc,
+                               const MemoryCPtr& weightsMem,
+                               const ExecutorContext::CPtr& context,
+                               bool needShiftSignedToUnsigned = false);
+
+MemoryPtr prepareWeightsMemory(const DnnlMemoryDescPtr& srcWeightDesc,
+                               const DnnlMemoryDescPtr& dstWeightDesc,
+                               const MemoryCPtr& weightsMem,
+                               const dnnl::engine& eng,
+                               const MultiCachePtr& rtCache,
+                               const WeightsSharing::Ptr& globalWeightCache,
+                               const std::shared_ptr<std::unordered_map<std::string, MemoryPtr>>& privateWeightCache,
+                               const std::shared_ptr<ThreadPool>& threadPool,
+                               bool needShiftSignedToUnsigned = false);
+
+bool isNonNegativeI8(const IMemory& mem);
+}  // namespace ov::intel_cpu::utils

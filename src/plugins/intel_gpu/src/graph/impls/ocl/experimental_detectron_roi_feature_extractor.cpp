@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -19,19 +19,7 @@ struct experimental_detectron_roi_feature_extractor_impl : public typed_primitiv
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::experimental_detectron_roi_feature_extractor_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<experimental_detectron_roi_feature_extractor_impl>(*this);
-    }
-
-protected:
-    kernel_arguments_data get_arguments(const experimental_detectron_roi_feature_extractor_inst& instance) const override {
-        kernel_arguments_data args;
-
-        for (std::size_t i = 0; i < instance.inputs_memory_count(); i++) {
-            args.inputs.push_back(instance.input_memory_ptr(i));
-        }
-        args.outputs = { instance.output_memory_ptr() };
-
-        return args;
+        return make_deep_copy<experimental_detectron_roi_feature_extractor_impl, kernel_params_t>(*this);
     }
 
     event::ptr execute_impl(const std::vector<event::ptr>& events,

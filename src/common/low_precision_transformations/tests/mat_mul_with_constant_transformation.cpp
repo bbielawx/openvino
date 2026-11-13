@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -111,10 +111,7 @@ public:
     }
 
     static std::string getTestCaseName(testing::TestParamInfo<MatMulTransformationParams> obj) {
-        ov::element::Type precision;
-        ov::PartialShape inputShape;
-        MatMullTransformationTestValues testValues;
-        std::tie(precision, inputShape, testValues) = obj.param;
+        const auto& [precision, inputShape, testValues] = obj.param;
 
         std::stringstream ss;
         ss << precision << "_" << inputShape << "_" << testValues;
@@ -152,6 +149,22 @@ std::vector<MatMullTransformationTestValues> testValues = {
      {ov::element::u8,
       {},
       {std::vector<float>(1024 * 1024, -126.f), ov::element::i8, ov::Shape{1024, 1024}},
+      ov::element::u8,
+      {{}, {}, {0.02f * 0.1f}},
+      {},
+      {}}},
+
+    // test: multiply with f16 constant
+    {LayerTransformation::createParamsU8I8(),
+     {ov::element::u8,
+      {ov::element::f32, {}, ov::builder::subgraph::DequantizationOperations::Multiply{0.02f}.setConstantPrecision(ov::element::f16)},
+      {std::vector<float>(1024 * 1024, 1.f), ov::element::i8, ov::Shape{1024, 1024}},
+      {},
+      {ov::element::f32, {}, {0.1f}},
+     },
+     {ov::element::u8,
+      {},
+      {std::vector<float>(1024 * 1024, 1.f), ov::element::i8, ov::Shape{1024, 1024}},
       ov::element::u8,
       {{}, {}, {0.02f * 0.1f}},
       {},

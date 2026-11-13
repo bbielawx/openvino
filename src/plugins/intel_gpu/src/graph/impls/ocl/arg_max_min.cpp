@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -19,15 +19,17 @@ static inline kernel_selector::argm_axis GetArgMaxMinAxis(int64_t axis, size_t r
         case 0: return kernel_selector::argm_axis::BATCH;
         case 1: return kernel_selector::argm_axis::FEATURE;
         case 2:
-            if (rank > 4)
+            if (rank > 4) {
                 return kernel_selector::argm_axis::Z;
-            else
+            } else {
                 return kernel_selector::argm_axis::Y;
+            }
         case 3:
-            if (rank > 4)
+            if (rank > 4) {
                 return kernel_selector::argm_axis::Y;
-            else
+            } else {
                 return kernel_selector::argm_axis::X;
+            }
         case 4: return kernel_selector::argm_axis::X;
         default: OPENVINO_THROW("Invalid arg_max_min axis ", axis);
     }
@@ -42,12 +44,12 @@ struct arg_max_min_impl : typed_primitive_impl_ocl<arg_max_min> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::arg_max_min_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<arg_max_min_impl>(*this);
+        return make_deep_copy<arg_max_min_impl, kernel_params_t>(*this);
     }
 
     void load(BinaryInputBuffer& ib) override {
         parent::load(ib);
-        if (is_dynamic()) {
+        if (is_dynamic() && !_kernel_data.kernelName.empty()) {
             auto& kernel_selector = kernel_selector_t::Instance();
             auto kernel_impl = kernel_selector.GetImplementation(_kernel_data.kernelName);
             kernel_impl->GetUpdateDispatchDataFunc(_kernel_data);
@@ -58,10 +60,9 @@ protected:
     kernel_arguments_data get_arguments(const typed_primitive_inst<arg_max_min>& instance) const override {
         kernel_arguments_data args = parent::get_arguments(instance);
 
+        // Legacy multi-output
         if (instance.get_typed_desc<arg_max_min>()->has_second_output()) {
-            if (args.inputs.size() > 1) {
-                args.inputs.erase(args.inputs.begin() + 1);  // erase constant input in case of TOP_K
-            }
+            args.outputs.push_back(instance.dep_memory_ptr(instance.dependencies().size() - 1));
         }
 
         return args;
@@ -83,34 +84,35 @@ public:
         argm_params.outputs_num = outputs_num;
         argm_params.argMaxMinAxis = GetArgMaxMinAxis(axis, impl_param.get_output_layout().get_rank());
 
-        auto& constant_mem = impl_param.memory_deps;
-        if (constant_mem.count(1) && !argm_params.has_dynamic_outputs()) {
+        const auto& constant_mem = impl_param.memory_deps;
+        if ((constant_mem.count(1) != 0u) && !argm_params.has_dynamic_outputs()) {
             // The topK could be got by reading impl_param.memory_deps.at(1).
             // However, here we utilize output_layout and axis information to minimize mem_lock.
             auto output_layout = impl_param.get_output_layout(0);
             auto out_dims = output_layout.get_dims();
-            argm_params.topK = out_dims[axis];
+            argm_params.topK = static_cast<uint32_t>(out_dims[axis]);
         } else {
             argm_params.topK = top_k;
         }
 
-        if (mode == ov::op::TopKMode::MAX)
+        if (mode == ov::op::TopKMode::MAX) {
             argm_params.argMaxMinOut = kernel_selector::argm_output::MAX;
-        else
+        } else {
             argm_params.argMaxMinOut = kernel_selector::argm_output::MIN;
+        }
 
-        if (sort_type == ov::op::TopKSortType::SORT_VALUES)
+        if (sort_type == ov::op::TopKSortType::SORT_VALUES) {
             argm_params.argMaxMinSortType = kernel_selector::argm_sort::VALUE;
-        else
+        } else {
             argm_params.argMaxMinSortType = kernel_selector::argm_sort::INDEX;
+        }
 
         if (outputs_num == 2) {  // for backward compatibility
-            argm_params.has_second_output = true;
             if (primitive->input_size() != 3) {
-                argm_params.use_multiple_outputs = true;
                 argm_params.outputs.push_back(convert_data_tensor(impl_param.get_output_layout(1)));
             } else {
-                argm_params.inputs.push_back(convert_data_tensor(impl_param.get_input_layout(2)));
+                // Legacy multi-output
+                argm_params.outputs.push_back(convert_data_tensor(impl_param.get_input_layout(2)));
             }
         }
 
@@ -121,17 +123,23 @@ public:
     }
 
     void update_dispatch_data(const kernel_impl_params& impl_param) override {
-        auto kernel_params = get_kernel_params(impl_param, true);
-        (_kernel_data.update_dispatch_data_func)(kernel_params, _kernel_data);
+        // If model loaded from cache, params are not initialized, so we create a new object and reuse it in the future
+        if (_kernel_data.params == nullptr) {
+            _kernel_data.params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true));
+        }
+
+        update_shapes(*_kernel_data.params, impl_param);
+        (_kernel_data.update_dispatch_data_func)(*_kernel_data.params, _kernel_data);
     }
 };
 
 namespace detail {
 attach_arg_max_min_impl::attach_arg_max_min_impl() {
-    auto types = {data_types::f16, data_types::f32, data_types::i8, data_types::i32};
+    auto types = {data_types::f16, data_types::f32, data_types::i8, data_types::i32, data_types::u8};
 
     auto formats = {
         format::bfyx,
+        format::byxf,
         format::yxfb,
         format::b_fs_yx_fsv16,
         format::b_fs_yx_fsv32,
@@ -149,6 +157,7 @@ attach_arg_max_min_impl::attach_arg_max_min_impl() {
 
     auto dyn_formats = {
         format::bfyx,
+        format::byxf,
         format::bfzyx
     };
 

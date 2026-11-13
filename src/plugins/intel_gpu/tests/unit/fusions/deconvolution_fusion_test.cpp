@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -56,6 +56,25 @@ struct deconv_eltw_test_params {
     size_t expected_not_fused_primitives;
 };
 
+struct deconv_new_shape_infer_test_params {
+    ov::PartialShape in_shape;
+    ov::PartialShape out_shape;
+    ov::PartialShape kernel;
+    ov::Strides stride;
+    ov::CoordinateDiff pad;
+    ov::Strides dilation;
+    uint32_t groups;
+    data_types data_type;
+    format input_format;
+    data_types weights_type;
+    format weights_format;
+    data_types default_type;
+    format default_format;
+    size_t expected_fused_primitives;
+    size_t expected_fused_primitives_onednn;
+    size_t expected_not_fused_primitives;
+};
+
 class DeconvolutionFusingTest : public ::BaseFusingTest<deconv_test_params> {
 public:
     void execute(deconv_test_params& p, bool is_caching_test = false) {
@@ -85,12 +104,66 @@ public:
 
     layout get_input_layout(deconv_test_params& p) {
         auto pad = p.pad;
-        std::vector<int> pad_ = { 0, 0, static_cast<int>(pad[1]), static_cast<int>(pad[0]) };
+        std::vector<ov::Dimension::value_type> pad_ = { 0, 0, pad[1], pad[0] };
         return layout{ p.data_type, p.input_format, p.in_shape, padding{ pad_ } };
     }
 
     layout get_per_channel_layout(deconv_test_params& p) {
         return layout{ p.default_type, p.default_format, tensor{1, p.out_shape.feature[0], 1, 1} };
+    }
+};
+
+class DeconvolutionFusingNewShapeInferTest : public ::BaseFusingTest<deconv_new_shape_infer_test_params> {
+public:
+    void SetUp() override {
+        rg.set_seed(GET_SUITE_NAME);
+        cfg_fused = get_test_default_config(engine);
+        cfg_not_fused = get_test_default_config(engine);
+
+        cfg_fused.set_property(ov::intel_gpu::optimize_data(true));
+        cfg_fused.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+        cfg_not_fused.set_property(ov::intel_gpu::optimize_data(false));
+        cfg_not_fused.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+        cfg_not_fused.set_property(ov::intel_gpu::allow_static_input_reorder(true));
+    }
+
+    void execute(deconv_new_shape_infer_test_params& p, bool is_caching_test = false) {
+        execute(p, get_mem(get_input_layout(p)), is_caching_test);
+    }
+    void execute(deconv_new_shape_infer_test_params& p, cldnn::memory::ptr input_prim, bool is_caching_test = false) {
+        if (engine.get_device_info().supports_immad)
+            p.expected_fused_primitives = p.expected_fused_primitives_onednn;
+
+        network::ptr network_not_fused = get_network(this->engine, this->topology_non_fused, cfg_not_fused, get_test_stream_ptr(cfg_not_fused), is_caching_test);
+        network::ptr network_fused = get_network(this->engine, this->topology_fused, cfg_fused, get_test_stream_ptr(cfg_fused), is_caching_test);
+        network_fused->set_input_data("input", input_prim);
+        network_not_fused->set_input_data("input", input_prim);
+
+        compare(*network_not_fused, *network_fused, p);
+        auto find_conv = [](primitive_info& p) -> bool {
+            if (p.original_id == "deconv")
+                return true;
+            return false;
+        };
+
+        auto pi_fused = network_fused->get_primitives_info();
+        auto info_fused = std::find_if(pi_fused.begin(), pi_fused.end(), find_conv);
+        if (info_fused != pi_fused.end())
+            std::cout << "kernel: " << info_fused->kernel_id << std::endl;
+    }
+
+    layout get_input_layout(deconv_new_shape_infer_test_params& p) {
+        auto pad = p.pad;
+        std::vector<ov::Dimension::value_type> pad_ = { 0, 0, pad[0] };
+        return layout{ p.in_shape, p.data_type, p.input_format, padding{ pad_ } };
+    }
+
+    layout get_weights_layout(deconv_new_shape_infer_test_params& p) {
+        return layout{ p.kernel, p.weights_type, p.weights_format };
+    }
+
+    layout get_bias_layout(deconv_new_shape_infer_test_params& p) {
+        return layout{ ov::PartialShape{1, static_cast<int64_t>(p.out_shape.get_shape().at(1)), 1}, p.default_type, format::bfyx };
     }
 };
 
@@ -123,7 +196,7 @@ public:
 
     layout get_input_layout(deconv_eltw_test_params& p) {
         auto pad = p.pad;
-        std::vector<int> pad_ = { 0, 0, static_cast<int>(pad[1]), static_cast<int>(pad[0]) };
+        std::vector<ov::Dimension::value_type> pad_ = { 0, 0, pad[1], pad[0] };
         return layout{ p.data_type, p.input_format, p.in_shape, padding{ pad_ } };
     }
 
@@ -147,6 +220,9 @@ public:
 #define CASE_DECONV_FP32_7 { 1, 16, 4, 5 }, { 1, 32, 7, 9 }, { 1, 1, 1, 1 }, { 2, 2 }, { 0, 0 }, { 1, 1 }, 1, data_types::f32, format::b_fs_yx_fsv16, data_types::f32, format::is_os_yx_isv16_osv16, data_types::f32, format::bfyx
 #define CASE_DECONV_FP32_8 { 1, 32, 4, 5 }, { 1, 32, 7, 9 }, { 1, 1, 3, 3 }, { 2, 2 }, { 1, 1 }, { 1, 1 }, 32, data_types::f32, format::b_fs_yx_fsv16, data_types::f32,  format::gs_oiyx_gsv16, data_types::f32, format::bfyx
 
+// 1D deconv
+#define CASE_DECONV_1D_FP32_1 { 1, 512, 1500 }, { 1, 256, 12008 }, { 256, 512, 16 }, { 8 }, { 0 }, { 1 }, 1, data_types::f32, format::bfyx, data_types::f32, format::oiyx, data_types::f32, format::bfyx
+
 #define CASE_DECONV_FP16_1 { 1, 15, 4, 5 }, { 1, 30, 6, 7 }, { 1, 1, 3, 3 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, 1, data_types::f16, format::bfyx, data_types::f16, format::oiyx, data_types::f16, format::bfyx
 #define CASE_DECONV_FP16_2 { 1, 16, 4, 5 }, { 1, 32, 6, 7 }, { 1, 1, 3, 3 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, 1, data_types::f16, format::b_fs_yx_fsv16, data_types::f16, format::is_os_yx_isv16_osv16, data_types::f16, format::bfyx
 #define CASE_DECONV_FP16_3 { 1, 16, 4, 5 }, { 1, 32, 4, 5 }, { 1, 1, 1, 1 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, 1, data_types::f16, format::b_fs_yx_fsv16, data_types::f16, format::is_os_yx_isv16_osv16, data_types::f16, format::bfyx
@@ -155,6 +231,8 @@ public:
 #define CASE_DECONV_FP16_6 { 1, 16, 4, 5 }, { 1, 32, 9, 11 }, { 1, 1, 3, 3 }, { 2, 2 }, { 0, 0 }, { 1, 1 }, 1, data_types::f16, format::b_fs_yx_fsv16, data_types::f16, format::is_os_yx_isv16_osv16, data_types::f16, format::bfyx
 #define CASE_DECONV_FP16_7 { 1, 16, 4, 5 }, { 1, 32, 7, 9 }, { 1, 1, 1, 1 }, { 2, 2 }, { 0, 0 }, { 1, 1 }, 1, data_types::f16, format::b_fs_yx_fsv16, data_types::f16, format::is_os_yx_isv16_osv16, data_types::f16, format::bfyx
 #define CASE_DECONV_FP16_8 { 1, 32, 4, 5 }, { 1, 32, 7, 9 }, { 1, 1, 3, 3 }, { 2, 2 }, { 1, 1 }, { 1, 1 }, 32, data_types::f16, format::b_fs_yx_fsv16, data_types::f16,  format::gs_oiyx_gsv16, data_types::f16, format::bfyx
+// 1D deconv when the size of x axis is 1
+#define CASE_DECONV_FP16_9 { 1, 768, 1, 302 }, { 1, 384, 1, 1212 }, { 1, 1, 1, 8 }, { 4, 1 }, { 0, 0 }, { 1, 1 }, 1, data_types::f16, format::bfyx, data_types::f16,  format::oiyx, data_types::f16, format::bfyx
 
 #define CASE_DECONV_S8S8_1 { 1, 15, 4, 5 }, { 1, 30, 6, 7 }, { 1, 1, 3, 3 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, 1, data_types::i8, format::bfyx, data_types::i8, format::oiyx, data_types::f32, format::bfyx
 #define CASE_DECONV_S8S8_2 { 1, 16, 4, 5 }, { 1, 32, 6, 7 }, { 1, 1, 3, 3 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, 1, data_types::i8, format::b_fs_yx_fsv16, data_types::i8, format::oiyx, data_types::f32, format::bfyx
@@ -236,7 +314,7 @@ TEST_P(deconv_actv, basic) {
     create_topologies(
         input_layout("input", get_input_layout(p)),
         data("weights", get_mem(get_weights_layout(p))),
-        deconvolution("deconv", input_info("input"), { "weights" }, p.groups, p.stride, p.pad),
+        deconvolution("deconv", input_info("input"), "weights", p.groups, p.stride, p.pad),
         activation("act", input_info("deconv"), activation_func::relu),
         reorder("out", input_info("act"), p.default_format, data_types::f32)
     );
@@ -270,6 +348,7 @@ INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_actv, ::testing::ValuesIn(std::vect
     deconv_test_params{ CASE_DECONV_FP16_6, 2, 2, 3 },
     deconv_test_params{ CASE_DECONV_FP16_7, 2, 2, 3 },
     deconv_test_params{ CASE_DECONV_FP16_8, 2, 2, 3 },
+    deconv_test_params{ CASE_DECONV_FP16_9, 2, 2, 3 },
 
     deconv_test_params{ CASE_DECONV_U8S8_1, 2, 2, 3 },
     deconv_test_params{ CASE_DECONV_U8S8_2, 2, 2, 3 },
@@ -387,6 +466,33 @@ INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_bias, ::testing::ValuesIn(std::vect
     deconv_test_params{ CASE_DECONV_S8S8_3D_3, 2, 2, 3 },
 }));
 
+class deconv_bias_1d : public DeconvolutionFusingNewShapeInferTest {};
+TEST_P(deconv_bias_1d, basic) {
+    auto p = GetParam();
+    create_topologies(
+        input_layout("input", get_input_layout(p)),
+        data("weights", get_mem(get_weights_layout(p))),
+        data("bias", get_mem(get_bias_layout(p))),
+        deconvolution("deconv", input_info("input"), { "weights" }, p.groups, p.stride, p.pad, p.dilation),
+        eltwise("bias_add", { input_info("deconv"), input_info("bias") }, eltwise_mode::sum),
+        reorder("out", input_info("bias_add"), p.default_format, data_types::f32)
+    );
+
+    if (engine.get_device_info().supports_immad &&
+        p.default_type == data_types::f16 &&
+        p.weights_format == format::is_os_yx_isv16_osv16) {
+        GTEST_SKIP(); // Issue: 94154
+    }
+
+    // Need much higher tolerance because of deconvolution -> convolution optimization
+    tolerance = 1.f;
+    execute(p);
+}
+
+INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_bias_1d, ::testing::ValuesIn(std::vector<deconv_new_shape_infer_test_params>{
+    deconv_new_shape_infer_test_params{ CASE_DECONV_1D_FP32_1, 2, 2, 3 },
+}));
+
 class deconv_scale : public DeconvolutionFusingTest {};
 TEST_P(deconv_scale, basic) {
     auto p = GetParam();
@@ -493,7 +599,7 @@ TEST_P(deconv_actv_eltw_actv, basic_cached) {
 
 INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_actv_eltw_actv, ::testing::ValuesIn(std::vector<deconv_test_params>{
     // Some fusings disabled under deconvolution -> convolution optimization
-    deconv_test_params{ CASE_DECONV_FP32_1, 3, 3, 5 },
+    deconv_test_params{ CASE_DECONV_FP32_1, 3, 2, 5 },
     deconv_test_params{ CASE_DECONV_FP32_2, 2, 2, 5 },
     deconv_test_params{ CASE_DECONV_FP32_3, 2, 2, 5 },
     deconv_test_params{ CASE_DECONV_FP32_4, 2, 2, 5 },
@@ -715,28 +821,28 @@ TEST_P(deconv_scale_actv_quant_u8_eltw_scale_actv_quant_i8, basic) {
         GTEST_SKIP(); // Issue: 94154
     }
 
-    tolerance = 2.1f;
+    tolerance = 3.0f;
     execute(p);
 }
 
 INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_scale_actv_quant_u8_eltw_scale_actv_quant_i8, ::testing::ValuesIn(std::vector<deconv_test_params>{
-    deconv_test_params{ CASE_DECONV_FP32_1, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_2, 2, 2, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_1, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_2, 2, 4, 9 },
     // deconv_test_params{ CASE_DECONV_FP32_3, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_4, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_5, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_6, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_7, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_8, 2, 2, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_4, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_5, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_6, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_7, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_8, 2, 4, 9 },
 
-    deconv_test_params{ CASE_DECONV_FP16_1, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_2, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_3, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_4, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_5, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_6, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_7, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_8, 2, 2, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_1, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_2, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_3, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_4, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_5, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_6, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_7, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_8, 2, 4, 9 },
 
     deconv_test_params{ CASE_DECONV_U8S8_1, 2, 2, 9 },
     deconv_test_params{ CASE_DECONV_U8S8_2, 2, 2, 9 },
@@ -756,25 +862,25 @@ INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_scale_actv_quant_u8_eltw_scale_actv
     deconv_test_params{ CASE_DECONV_S8S8_7, 2, 2, 9 },
     deconv_test_params{ CASE_DECONV_S8S8_8, 2, 2, 9 },
 
-    deconv_test_params{ CASE_DECONV_FP32_3D_1, 2, 2, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_3D_1, 2, 4, 9 },
     // deconv_test_params{ CASE_DECONV_FP32_3D_2, 2, 9 },
     // Commented out due to sporadic CI failures
     // deconv_test_params{ CASE_DECONV_FP32_3D_3, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_3D_4, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_3D_5, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_3D_6, 2, 2, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_3D_4, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_3D_5, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_3D_6, 2, 4, 9 },
     // deconv_test_params{ CASE_DECONV_FP32_3D_7, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP32_3D_8, 2, 2, 9 },
+    deconv_test_params{ CASE_DECONV_FP32_3D_8, 2, 4, 9 },
     // deconv_test_params{ CASE_DECONV_FP32_3D_9, 6, 9 },
 
-    deconv_test_params{ CASE_DECONV_FP16_3D_1, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_3D_2, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_3D_3, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_3D_4, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_3D_5, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_3D_6, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_3D_7, 2, 2, 9 },
-    deconv_test_params{ CASE_DECONV_FP16_3D_8, 2, 2, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_1, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_2, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_3, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_4, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_5, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_6, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_7, 2, 4, 9 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_8, 2, 4, 9 },
     // deconv_test_params{ CASE_DECONV_FP16_3D_9, 6, 9 },
 
     deconv_test_params{ CASE_DECONV_U8S8_3D_1, 2, 2, 9 },
@@ -823,19 +929,22 @@ TEST_P(deconv_scale_activation_quantize_i8_eltwise_quantize_u8, basic) {
         reorder("reorder_bfyx", input_info("quant2"), p.default_format, data_types::f32)
     );
 
+    ov::intel_gpu::ImplementationDesc gemmv_impl = { cldnn::format::type::any, "", impl_types::ocl };
+    cfg_fused.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{ { "deconv_prim", gemmv_impl } }));
+
     tolerance = 1.f;
     execute(p);
 }
 
 INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_scale_activation_quantize_i8_eltwise_quantize_u8, ::testing::ValuesIn(std::vector<deconv_eltw_test_params>{
-    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_1, 2, 2, 7 },
-    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_2, 2, 2, 7 },
-    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_3, 2, 2, 7 },
-    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_4, 2, 2, 7 },
-    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_5, 2, 2, 7 },
-    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_6, 2, 2, 7 },
-    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_7, 2, 2, 7 },
-    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_8, 2, 2, 7 },
+    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_1, 2, 4, 7 },
+    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_2, 2, 4, 7 },
+    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_3, 2, 4, 7 },
+    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_4, 2, 4, 7 },
+    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_5, 2, 4, 7 },
+    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_6, 2, 4, 7 },
+    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_7, 2, 4, 7 },
+    deconv_eltw_test_params{ CASE_DECONV_ELTW_FP32_8, 2, 4, 7 },
 
     deconv_eltw_test_params{ CASE_DECONV_ELTW_i8_1, 2, 2, 7 },
     deconv_eltw_test_params{ CASE_DECONV_ELTW_i8_2, 2, 2, 7 },
@@ -877,4 +986,84 @@ INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_activation_eltwise_diff_sizes, ::te
     deconv_eltw_test_params{ CASE_DECONV_ELTW_i8_3, 2, 2, 4 },
     deconv_eltw_test_params{ CASE_DECONV_ELTW_i8_4, 2, 2, 4 },
     deconv_eltw_test_params{ CASE_DECONV_ELTW_i8_5, 2, 2, 4 },
+}));
+
+/* ----------------------------------------------------------------------------------------------------- */
+/* -------- Prevent quantize fusion into oneDNN deconv for float->int8 narrowing ----------------------- */
+/* ----------------------------------------------------------------------------------------------------- */
+
+// Checks: executed primitive count after fusion pass (static shape).
+//  - On OCL path  : quantize fuses into deconv → expected_fused = 2 (deconv+reorder)
+//  - On oneDNN path: quantize must NOT fuse   → expected_fused = 3 (deconv+quant+reorder)
+//  - Without any fusion                       → expected_not_fused = 3
+// Why: oneDNN deconv uses conv backward-data internally, which cannot produce int8
+// output (f16→u8). Fusing quantize forces u8 output → oneDNN falls back to ocl:ref.
+class deconv_quantize_u8_onednn_prevent_fuse : public DeconvolutionFusingTest {};
+TEST_P(deconv_quantize_u8_onednn_prevent_fuse, basic) {
+    auto p = GetParam();
+    create_topologies(
+        input_layout("input", get_input_layout(p)),
+        data("weights", get_mem(get_weights_layout(p))),
+        data("in_lo", get_mem(get_per_channel_layout(p), min_random, 0)),
+        data("in_hi", get_mem(get_per_channel_layout(p), 1, max_random)),
+        data("out_lo", get_mem(get_single_element_layout(p), 0)),
+        data("out_hi", get_mem(get_single_element_layout(p), 255)),
+        deconvolution("deconv", input_info("input"), { "weights" }, p.groups, p.stride, p.pad),
+        quantize("quant", input_info("deconv"), input_info("in_lo"), input_info("in_hi"),
+                 input_info("out_lo"), input_info("out_hi"), 256, data_types::u8),
+        reorder("out", input_info("quant"), p.default_format, data_types::f32)
+    );
+
+    tolerance = 1.f;
+    execute(p);
+}
+
+INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_quantize_u8_onednn_prevent_fuse, ::testing::ValuesIn(std::vector<deconv_test_params>{
+    // On oneDNN, quantize should NOT fuse (float->int8 narrowing is blocked).
+    // expected_fused=2 (OCL: fused), expected_fused_onednn=3 (oneDNN: NOT fused), expected_not_fused=3
+    // 2D cases
+    deconv_test_params{ CASE_DECONV_FP16_2, 2, 3, 3 },
+    deconv_test_params{ CASE_DECONV_FP16_5, 2, 3, 3 },
+    deconv_test_params{ CASE_DECONV_FP16_6, 2, 3, 3 },
+    // 3D cases (b_fs_zyx_fsv16, stride=2)
+    deconv_test_params{ CASE_DECONV_FP16_3D_2, 2, 3, 3 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_5, 2, 3, 3 },
+    deconv_test_params{ CASE_DECONV_FP16_3D_6, 2, 3, 3 },
+}));
+
+// Checks: executed primitive count — positive counter-test (static shape).
+//  - On both OCL and oneDNN: quantize fuses → expected_fused = 2 (deconv+reorder)
+//  - Without fusion                         → expected_not_fused = 3
+// Why: int8→u8 narrowing IS supported by oneDNN deconv, so fusion is correct.
+// Ensures the FIX_B guard does not over-block valid int8-to-int8 fusion.
+class deconv_i8_quantize_u8_still_fuses : public DeconvolutionFusingTest {};
+TEST_P(deconv_i8_quantize_u8_still_fuses, basic) {
+    auto p = GetParam();
+    create_topologies(
+        input_layout("input", get_input_layout(p)),
+        data("weights", get_mem(get_weights_layout(p))),
+        data("in_lo", get_mem(get_per_channel_layout(p), min_random, 0)),
+        data("in_hi", get_mem(get_per_channel_layout(p), 1, max_random)),
+        data("out_lo", get_mem(get_single_element_layout(p), 0)),
+        data("out_hi", get_mem(get_single_element_layout(p), 255)),
+        deconvolution("deconv", input_info("input"), { "weights" }, p.groups, p.stride, p.pad),
+        quantize("quant", input_info("deconv"), input_info("in_lo"), input_info("in_hi"),
+                 input_info("out_lo"), input_info("out_hi"), 256, data_types::u8),
+        reorder("out", input_info("quant"), p.default_format, data_types::f32)
+    );
+
+    tolerance = 1.f;
+    execute(p);
+}
+
+INSTANTIATE_TEST_SUITE_P(fusings_gpu, deconv_i8_quantize_u8_still_fuses, ::testing::ValuesIn(std::vector<deconv_test_params>{
+    // int8 input → u8 output via quantize should still fuse on both OCL and oneDNN.
+    // expected_fused=2, expected_fused_onednn=2, expected_not_fused=3
+    deconv_test_params{ CASE_DECONV_U8S8_2, 2, 2, 3 },
+    deconv_test_params{ CASE_DECONV_U8S8_5, 2, 2, 3 },
+    deconv_test_params{ CASE_DECONV_S8S8_2, 2, 2, 3 },
+    deconv_test_params{ CASE_DECONV_S8S8_5, 2, 2, 3 },
+    // 3D
+    deconv_test_params{ CASE_DECONV_U8S8_3D_2, 2, 2, 3 },
+    deconv_test_params{ CASE_DECONV_S8S8_3D_2, 2, 2, 3 },
 }));

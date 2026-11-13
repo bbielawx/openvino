@@ -1,10 +1,11 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "softmax.hpp"
 #include "gtest/gtest.h"
 #include "utils/cpu_test_utils.hpp"
+#include "openvino/op/softmax.hpp"
 
 using namespace CPUTestUtils;
 
@@ -12,12 +13,7 @@ namespace ov {
 namespace test {
 
 std::string SoftMaxLayerCPUTest::getTestCaseName(const testing::TestParamInfo<softmaxCPUTestParams>& obj) {
-    CPUSpecificParams cpuParams;
-    ElementType inType;
-    SoftMaxConfig config;
-    std::string targetDevice;
-    std::tie(inType, config, targetDevice, cpuParams) = obj.param;
-
+    const auto& [inType, config, targetDevice, cpuParams, additionalConfig] = obj.param;
     std::ostringstream result;
     result << "netPRC=" << inType << "_";
     result << "IS=" << ov::test::utils::partialShape2str({config.inputShape.first}) << "_";
@@ -30,15 +26,20 @@ std::string SoftMaxLayerCPUTest::getTestCaseName(const testing::TestParamInfo<so
     result << "axis=" << config.axis << "_";
     result << "trgDev=" << targetDevice;
     result << CPUTestsBase::getTestCaseName(cpuParams);
+    if (!additionalConfig.empty()) {
+        result << "_PluginConf";
+        for (auto& item : additionalConfig) {
+            result << "_" << item.first << "=" << item.second.as<std::string>();
+        }
+    }
 
     return result.str();
 }
 
 void SoftMaxLayerCPUTest::SetUp() {
-    ElementType inType;
-    SoftMaxConfig config;
-    CPUSpecificParams cpuParams;
-    std::tie(inType, config, targetDevice, cpuParams) = this->GetParam();
+    const auto& [inType, config, _targetDevice, cpuParams, additionalConfig] = this->GetParam();
+    targetDevice = _targetDevice;
+    configuration.insert(additionalConfig.begin(), additionalConfig.end());
 
     std::tie(inFmts, outFmts, priority, selectedType) = cpuParams;
     if (selectedType.empty()) {
@@ -47,8 +48,10 @@ void SoftMaxLayerCPUTest::SetUp() {
 
     if (inType == ElementType::bf16) {
         rel_threshold = 2e-2f;
+    } else if (inType == ElementType::f16) {
+        rel_threshold = 0.0025f;
     }
-    selectedType = makeSelectedTypeStr(selectedType, inType);
+    selectedType = makeSelectedTypeStr(selectedType, deduce_expected_precision(inType, configuration));
     init_input_shapes({config.inputShape});
     ov::ParameterVector params;
     for (auto&& shape : inputDynamicShapes)
@@ -56,7 +59,7 @@ void SoftMaxLayerCPUTest::SetUp() {
 
     const auto softMax = std::make_shared<ov::op::v1::Softmax>(params.at(0), config.axis);
 
-    function = makeNgraphFunction(inType, params, softMax, "SoftMax");
+    function = create_ov_model(inType, params, softMax, "SoftMax");
 }
 
 TEST_P(SoftMaxLayerCPUTest, CompareWithRefs) {

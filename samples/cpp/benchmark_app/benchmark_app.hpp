@@ -1,12 +1,8 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
-
-#if defined(HAVE_GPU_DEVICE_MEM_SUPPORT)
-#    define HAVE_DEVICE_MEM_SUPPORT
-#endif
 
 #include <iostream>
 #include <string>
@@ -23,7 +19,7 @@ static const char input_message[] =
     "                              In case of dynamic shapes models with several inputs provide the same number"
     " of files for each input (except cases with single file for any input):"
     "\"input1:1.jpg input2:1.bin\", \"input1:1.bin,2.bin input2:3.bin input3:4.bin,5.bin \"."
-    " Also you can pass specific keys for inputs: \"random\" - for fillling input with random data,"
+    " Also you can pass specific keys for inputs: \"random\" - for filling input with random data,"
     " \"image_info\" - for filling input with image size.\n"
     "                              You should specify either one files set to be used for all inputs (without "
     "providing "
@@ -59,7 +55,9 @@ static const char target_device_message[] =
 /// @brief message for iterations count
 static const char iterations_count_message[] =
     "Optional. Number of iterations. "
-    "If not specified, the number of iterations is calculated depending on a device.";
+    "If not specified, the number of iterations is calculated depending on a device. "
+    "Set -niter 0 to compile the model and exit without running inference "
+    "(useful for models with dynamic shapes that would otherwise require -shape, -data_shape, or -i).";
 
 // @brief message for enabling caching
 static const char cache_dir_message[] = "Optional. Enables caching of loaded models to specified directory. "
@@ -68,6 +66,12 @@ static const char cache_dir_message[] = "Optional. Enables caching of loaded mod
 // @brief message for single load network
 static const char load_from_file_message[] = "Optional. Loads model from file directly without read_model."
                                              " All CNNNetwork options (like re-shape) will be ignored";
+
+/// @brief message for maximum inference rate
+static const char maximum_inference_rate_message[] =
+    "Optional. Maximum inference rate by frame per second"
+    "If not specified, default value is 0, the inference will run at maximum rate depending on a device capabilities. "
+    "Tweaking this value allow better accuracy in power usage measurement by limiting the execution.";
 
 /// @brief message for execution time
 static const char execution_time_message[] = "Optional. Time in seconds to execute topology.";
@@ -96,14 +100,16 @@ static const char layout_message[] =
     "For example, \"input1[NCHW],input2[NC]\" or \"[NCHW]\" in case of one input size.";
 
 /// @brief message for execution mode
-static const char api_message[] = "Optional. Enable Sync/Async API. Default value is \"async\".";
+static const char api_message[] =
+    "Optional. Enable Sync/Async API. When hint is throughput, default value is \"async\". "
+    "When hint is latency, default value is \"sync\".";
 
 /// @brief message for #streams for CPU inference
 static const char infer_num_streams_message[] =
     "Optional. Number of streams to use for inference on the CPU or GPU devices "
     "(for HETERO and MULTI device cases use format <dev1>:<nstreams1>,<dev2>:<nstreams2> or just "
     "<nstreams>). "
-    "Default value is determined automatically for a device.Please note that although the "
+    "Default value is determined automatically for a device. Please note that although the "
     "automatic selection "
     "usually provides a reasonable performance, it still may be non - optimal for some cases, "
     "especially for "
@@ -177,19 +183,12 @@ static const char infer_num_threads_message[] = "Optional. Number of threads to 
                                                 "(including HETERO and MULTI cases).";
 
 // @brief message for CPU threads pinning option
-static const char infer_threads_pinning_message[] =
-    "Optional. Explicit inference threads binding options (leave empty to let the OpenVINO make a choice):\n"
-    "\t\t\t\tenabling threads->cores pinning(\"YES\", which is already default for any conventional CPU), \n"
-    "\t\t\t\tletting the runtime to decide on the threads->different core types(\"HYBRID_AWARE\", which is default on "
-    "the hybrid CPUs) \n"
-    "\t\t\t\tthreads->(NUMA)nodes(\"NUMA\") or \n"
-    "\t\t\t\tcompletely disable(\"NO\") CPU inference threads pinning";
+static const char infer_threads_pinning_message[] = "Optional. Explicit threads->cores pinning for CPU inference tasks "
+                                                    "(leave empty to let the OpenVINO make a choice).";
 
-#ifdef HAVE_DEVICE_MEM_SUPPORT
 // @brief message for switching memory allocation type option
 static const char use_device_mem_message[] =
     "Optional. Switch between host and device memory allocation for input and output buffers.";
-#endif
 
 /// @brief message for latency percentile settings
 static const char infer_latency_percentile_message[] =
@@ -252,6 +251,10 @@ static const char load_config_message[] =
     "                                               }\n"
     "                                       }";
 
+static const char no_warmup_message[] =
+    "Optional. Skip warmup inference. Useful for benchmarking purposes in simulated environments.\n"
+    "Otherwise, not recommended.";
+
 /// @brief Define flag for showing help message <br>
 DEFINE_bool(h, false, help_message);
 
@@ -308,10 +311,13 @@ DEFINE_string(cache_dir, "", cache_dir_message);
 DEFINE_bool(load_from_file, false, load_from_file_message);
 
 /// @brief Define execution mode
-DEFINE_string(api, "async", api_message);
+DEFINE_string(api, "", api_message);
 
 /// @brief Number of infer requests in parallel
 DEFINE_uint64(nireq, 0, infer_requests_count_message);
+
+/// @brief Execute infer requests at a fixed frequency
+DEFINE_double(max_irate, 0, maximum_inference_rate_message);
 
 /// @brief Number of streams to use for inference on the CPU (also affects Hetero cases)
 DEFINE_string(nstreams, "", infer_num_streams_message);
@@ -325,7 +331,7 @@ DEFINE_string(infer_precision, "", inference_precision_message);
 /// @brief Specify precision for all input layers of the network
 DEFINE_string(ip, "", inputs_precision_message);
 
-/// @brief Specify precision for all ouput layers of the network
+/// @brief Specify precision for all output layers of the network
 DEFINE_string(op, "", outputs_precision_message);
 
 /// @brief Specify precision for input and output layers by name.\n"
@@ -347,10 +353,8 @@ DEFINE_uint64(nthreads, 0, infer_num_threads_message);
 // @brief Enable plugin messages
 DEFINE_string(pin, "", infer_threads_pinning_message);
 
-#ifdef HAVE_DEVICE_MEM_SUPPORT
-/// @brief Define flag for switching beetwen host and device memory allocation for input and output buffers
+/// @brief Define flag for switching between host and device memory allocation for input and output buffers
 DEFINE_bool(use_device_mem, false, use_device_mem_message);
-#endif
 
 /// @brief The percentile which will be reported in latency metric
 DEFINE_uint64(latency_percentile, 50, infer_latency_percentile_message);
@@ -382,6 +386,9 @@ DEFINE_string(load_config, "", load_config_message);
 /// @brief Define flag for dumping configuration file <br>
 DEFINE_string(dump_config, "", dump_config_message);
 
+/// @brief Skips warmup inference and measures only the first inference
+DEFINE_bool(no_warmup, false, no_warmup_message);
+
 /**
  * @brief This function show a help message
  */
@@ -396,6 +403,7 @@ static void show_usage() {
     std::cout << "    -hint  <performance hint> (latency or throughput or cumulative_throughput or none)   "
               << hint_message << std::endl;
     std::cout << "    -niter  <integer>             " << iterations_count_message << std::endl;
+    std::cout << "    -max_irate \"<float>\"        " << maximum_inference_rate_message << std::endl;
     std::cout << "    -t                            " << execution_time_message << std::endl;
     std::cout << std::endl;
     std::cout << "Input shapes" << std::endl;
@@ -414,6 +422,7 @@ static void show_usage() {
     std::cout << "    -nstreams  <integer>          " << infer_num_streams_message << std::endl;
     std::cout << "    -inference_only         " << inference_only_message << std::endl;
     std::cout << "    -infer_precision        " << inference_precision_message << std::endl;
+    std::cout << "    -no_warmup                    " << no_warmup_message << std::endl;
     std::cout << std::endl;
     std::cout << "Preprocessing options:" << std::endl;
     std::cout << "    -ip   <value>           " << inputs_precision_message << std::endl;
@@ -424,11 +433,8 @@ static void show_usage() {
     std::cout << std::endl;
     std::cout << "Device-specific performance options:" << std::endl;
     std::cout << "    -nthreads  <integer>          " << infer_num_threads_message << std::endl;
-    std::cout << "    -pin  <string>  (\"YES\"|\"CORE\") / \"HYBRID_AWARE\" / (\"NO\"|\"NONE\") / \"NUMA\"  "
-              << infer_threads_pinning_message << std::endl;
-#ifdef HAVE_DEVICE_MEM_SUPPORT
+    std::cout << "    -pin  <string>  \"YES\" / \"NO\" " << infer_threads_pinning_message << std::endl;
     std::cout << "    -use_device_mem           " << use_device_mem_message << std::endl;
-#endif
     std::cout << std::endl;
     std::cout << "Statistics dumping options:" << std::endl;
     std::cout << "    -latency_percentile     " << infer_latency_percentile_message << std::endl;

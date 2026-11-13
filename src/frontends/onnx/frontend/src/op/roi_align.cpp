@@ -1,19 +1,15 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/roi_align.hpp"
-
-#include "openvino/frontend/exception.hpp"
 #include "openvino/op/roi_align.hpp"
 
+#include "core/operator_set.hpp"
+#include "openvino/frontend/exception.hpp"
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx {
+namespace opset_1 {
 ov::OutputVector roi_align(const ov::frontend::onnx::Node& node) {
     const auto inputs = node.get_ov_inputs();
 
@@ -41,8 +37,9 @@ ov::OutputVector roi_align(const ov::frontend::onnx::Node& node) {
                                            pooling_mode,
                                            aligned_mode)};
 }
-}  // namespace set_1
-namespace set_16 {
+ONNX_OP("RoiAlign", OPSET_RANGE(1, 15), ai_onnx::opset_1::roi_align);
+}  // namespace opset_1
+namespace opset_16 {
 ov::OutputVector roi_align(const ov::frontend::onnx::Node& node) {
     const auto inputs = node.get_ov_inputs();
 
@@ -77,8 +74,6 @@ ov::OutputVector roi_align(const ov::frontend::onnx::Node& node) {
                                            pooling_mode,
                                            aligned_mode)};
 }
-}  // namespace set_16
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("RoiAlign", OPSET_SINCE(16), ai_onnx::opset_16::roi_align);
+}  // namespace opset_16
+}  // namespace ov::frontend::onnx::ai_onnx

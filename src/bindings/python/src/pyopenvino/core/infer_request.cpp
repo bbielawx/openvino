@@ -1,5 +1,6 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
+//
 
 #include "pyopenvino/core/infer_request.hpp"
 
@@ -10,9 +11,12 @@
 #include <string>
 
 #include "pyopenvino/core/common.hpp"
+#include "pyopenvino/core/remote_tensor.hpp"
 #include "pyopenvino/utils/utils.hpp"
 
 namespace py = pybind11;
+
+PYBIND11_MAKE_OPAQUE(ov::TensorVector);
 
 inline py::object run_sync_infer(InferRequestWrapper& self, bool share_outputs, bool decode_strings) {
     {
@@ -25,8 +29,11 @@ inline py::object run_sync_infer(InferRequestWrapper& self, bool share_outputs, 
 }
 
 void regclass_InferRequest(py::module m) {
-    py::class_<InferRequestWrapper, std::shared_ptr<InferRequestWrapper>> cls(m, "InferRequest");
-    cls.doc() = "openvino.runtime.InferRequest represents infer request which can be run in asynchronous or "
+    py::class_<InferRequestWrapper, std::shared_ptr<InferRequestWrapper>> cls(
+        m,
+        "InferRequest",
+        py::release_gil_before_calling_cpp_dtor());
+    cls.doc() = "openvino.InferRequest represents infer request which can be run in asynchronous or "
                 "synchronous manners.";
 
     cls.def(py::init([](InferRequestWrapper& other) {
@@ -45,12 +52,12 @@ void regclass_InferRequest(py::module m) {
             Set tensors using given keys.
 
             :param inputs: Data to set on tensors.
-            :type inputs: Dict[Union[int, str, openvino.runtime.ConstOutput], openvino.runtime.Tensor]
+            :type inputs: dict[Union[int, str, openvino.ConstOutput], openvino.Tensor]
         )");
 
     cls.def(
         "set_tensors",
-        [](InferRequestWrapper& self, const std::string& tensor_name, const std::vector<ov::Tensor>& tensors) {
+        [](InferRequestWrapper& self, const std::string& tensor_name, const ov::TensorVector& tensors) {
             self.m_request.set_tensors(tensor_name, tensors);
         },
         py::arg("tensor_name"),
@@ -67,18 +74,40 @@ void regclass_InferRequest(py::module m) {
             :param tensors: Input tensors for batched infer request. The type of each tensor
                             must match the model input element type and shape (except batch dimension).
                             Total size of tensors needs to match with input's size.
-            :type tensors: List[openvino.runtime.Tensor]
+            :type tensors: openvino.TensorVector
+        )");
+    cls.def(
+        "set_tensors",
+        [](InferRequestWrapper& self, const std::string& tensor_name, const py::list& tensors) {
+            py::object pyTensorVector = py::module_::import("openvino").attr("TensorVector");
+            self.m_request.set_tensors(tensor_name, pyTensorVector(tensors).cast<ov::TensorVector>());
+        },
+        py::arg("tensor_name"),
+        py::arg("tensors"),
+        R"(
+            Sets batch of tensors for input data to infer by tensor name.
+            Model input needs to have batch dimension and the number of tensors needs to be
+            matched with batch size. Current version supports set tensors to model inputs only.
+            In case if `tensor_name` is associated with output (or any other non-input node),
+            an exception will be thrown.
+
+            :param tensor_name: Name of input tensor.
+            :type tensor_name: str
+            :param tensors: Input tensors for batched infer request. The type of each tensor
+                            must match the model input element type and shape (except batch dimension).
+                            Total size of tensors needs to match with input's size.
+            :type tensors: list[openvino.Tensor]
         )");
 
     cls.def(
         "set_tensors",
-        [](InferRequestWrapper& self, const ov::Output<const ov::Node>& port, const std::vector<ov::Tensor>& tensors) {
+        [](InferRequestWrapper& self, const ov::Output<const ov::Node>& port, const ov::TensorVector& tensors) {
             self.m_request.set_tensors(port, tensors);
         },
         py::arg("port"),
         py::arg("tensors"),
         R"(
-            Sets batch of tensors for input data to infer by tensor name.
+            Sets a batch of tensors for input data to infer by input port.
             Model input needs to have batch dimension and the number of tensors needs to be
             matched with batch size. Current version supports set tensors to model inputs only.
             In case if `port` is associated with output (or any other non-input node),
@@ -86,11 +115,36 @@ void regclass_InferRequest(py::module m) {
 
 
             :param port: Port of input tensor.
-            :type port: openvino.runtime.ConstOutput
+            :type port: openvino.ConstOutput
             :param tensors: Input tensors for batched infer request. The type of each tensor
                             must match the model input element type and shape (except batch dimension).
                             Total size of tensors needs to match with input's size.
-            :type tensors: List[openvino.runtime.Tensor]
+            :type tensors: openvino.TensorVector
+            :rtype: None
+        )");
+
+    cls.def(
+        "set_tensors",
+        [](InferRequestWrapper& self, const ov::Output<const ov::Node>& port, const py::list& tensors) {
+            py::object pyTensorVector = py::module_::import("openvino").attr("TensorVector");
+            self.m_request.set_tensors(port, pyTensorVector(tensors).cast<ov::TensorVector>());
+        },
+        py::arg("port"),
+        py::arg("tensors"),
+        R"(
+            Sets a batch of tensors for input data to infer by input port.
+            Model input needs to have batch dimension and the number of tensors needs to be
+            matched with batch size. Current version supports set tensors to model inputs only.
+            In case if `port` is associated with output (or any other non-input node),
+            an exception will be thrown.
+
+
+            :param port: Port of input tensor.
+            :type port: openvino.ConstOutput
+            :param tensors: Input tensors for batched infer request. The type of each tensor
+                            must match the model input element type and shape (except batch dimension).
+                            Total size of tensors needs to match with input's size.
+            :type tensors: list[openvino.Tensor]
             :rtype: None
         )");
 
@@ -107,8 +161,8 @@ void regclass_InferRequest(py::module m) {
         R"(
             Set output tensors using given indexes.
 
-            :param inputs: Data to set on output tensors.
-            :type inputs: Dict[int, openvino.runtime.Tensor]
+            :param outputs: Data to set on output tensors.
+            :type outputs: dict[int, openvino.Tensor]
         )");
 
     // Python API exclusive function
@@ -125,12 +179,12 @@ void regclass_InferRequest(py::module m) {
             Set input tensors using given indexes.
 
             :param inputs: Data to set on output tensors.
-            :type inputs: Dict[int, openvino.runtime.Tensor]
+            :type inputs: dict[int, openvino.Tensor]
         )");
 
     cls.def(
         "set_input_tensors",
-        [](InferRequestWrapper& self, const std::vector<ov::Tensor>& tensors) {
+        [](InferRequestWrapper& self, const ov::TensorVector& tensors) {
             self.m_request.set_input_tensors(tensors);
         },
         py::arg("tensors"),
@@ -142,12 +196,30 @@ void regclass_InferRequest(py::module m) {
             :param tensors:  Input tensors for batched infer request. The type of each tensor
                              must match the model input element type and shape (except batch dimension).
                              Total size of tensors needs to match with input's size.
-            :type tensors: List[openvino.runtime.Tensor]
+            :type tensors: openvino.TensorVector
         )");
 
     cls.def(
         "set_input_tensors",
-        [](InferRequestWrapper& self, size_t idx, const std::vector<ov::Tensor>& tensors) {
+        [](InferRequestWrapper& self, const py::list& tensors) {
+            py::object pyTensorVector = py::module_::import("openvino").attr("TensorVector");
+            self.m_request.set_input_tensors(pyTensorVector(tensors).cast<ov::TensorVector>());
+        },
+        py::arg("tensors"),
+        R"(
+            Sets batch of tensors for single input data.
+            Model input needs to have batch dimension and the number of `tensors`
+            needs to match with batch size.
+
+            :param tensors:  Input tensors for batched infer request. The type of each tensor
+                             must match the model input element type and shape (except batch dimension).
+                             Total size of tensors needs to match with input's size.
+            :type tensors: list[openvino.Tensor]
+        )");
+
+    cls.def(
+        "set_input_tensors",
+        [](InferRequestWrapper& self, size_t idx, const ov::TensorVector& tensors) {
             self.m_request.set_input_tensors(idx, tensors);
         },
         py::arg("idx"),
@@ -162,6 +234,28 @@ void regclass_InferRequest(py::module m) {
             :param tensors: Input tensors for batched infer request. The type of each tensor
                             must match the model input element type and shape (except batch dimension).
                             Total size of tensors needs to match with input's size.
+            :type tensors: openvino.TensorVector
+        )");
+
+    cls.def(
+        "set_input_tensors",
+        [](InferRequestWrapper& self, size_t idx, const py::list& tensors) {
+            py::object pyTensorVector = py::module_::import("openvino").attr("TensorVector");
+            self.m_request.set_input_tensors(idx, pyTensorVector(tensors).cast<ov::TensorVector>());
+        },
+        py::arg("idx"),
+        py::arg("tensors"),
+        R"(
+            Sets batch of tensors for single input data to infer by index.
+            Model input needs to have batch dimension and the number of `tensors`
+            needs to match with batch size.
+
+            :param idx: Index of input tensor.
+            :type idx: int
+            :param tensors: Input tensors for batched infer request. The type of each tensor
+                            must match the model input element type and shape (except batch dimension).
+                            Total size of tensors needs to match with input's size.
+            :type tensors: list[openvino.Tensor]
         )");
 
     // Overload for single input, it will throw error if a model has more than one input.
@@ -182,9 +276,9 @@ void regclass_InferRequest(py::module m) {
             GIL is released while running the inference.
 
             :param inputs: Data to set on single input tensor.
-            :type inputs: openvino.runtime.Tensor
+            :type inputs: openvino.Tensor
             :return: Dictionary of results from output tensors with ports as keys.
-            :rtype: Dict[openvino.runtime.ConstOutput, numpy.array]
+            :rtype: dict[openvino.ConstOutput, numpy.array]
         )");
 
     // Overload for general case, it accepts dict of inputs that are pairs of (key, value).
@@ -212,9 +306,9 @@ void regclass_InferRequest(py::module m) {
             GIL is released while running the inference.
 
             :param inputs: Data to set on input tensors.
-            :type inputs: Dict[Union[int, str, openvino.runtime.ConstOutput], openvino.runtime.Tensor]
+            :type inputs: dict[Union[int, str, openvino.ConstOutput], openvino.Tensor]
             :return: Dictionary of results from output tensors with ports as keys.
-            :rtype: Dict[openvino.runtime.ConstOutput, numpy.array]
+            :rtype: dict[openvino.ConstOutput, numpy.array]
         )");
 
     // Overload for single input, it will throw error if a model has more than one input.
@@ -225,7 +319,7 @@ void regclass_InferRequest(py::module m) {
             self.m_request.set_input_tensor(inputs);
             if (!userdata.is(py::none())) {
                 if (self.m_user_callback_defined) {
-                    self.m_userdata = userdata;
+                    *self.m_userdata = userdata;
                 } else {
                     PyErr_WarnEx(PyExc_RuntimeWarning, "There is no callback function to pass `userdata` into!", 1);
                 }
@@ -246,7 +340,7 @@ void regclass_InferRequest(py::module m) {
             running will lead to throwing exceptions.
 
             :param inputs: Data to set on single input tensors.
-            :type inputs: openvino.runtime.Tensor
+            :type inputs: openvino.Tensor
             :param userdata: Any data that will be passed inside callback call.
             :type userdata: Any
         )");
@@ -264,7 +358,7 @@ void regclass_InferRequest(py::module m) {
             Common::set_request_tensors(self.m_request, inputs);
             if (!userdata.is(py::none())) {
                 if (self.m_user_callback_defined) {
-                    self.m_userdata = userdata;
+                    *self.m_userdata = userdata;
                 } else {
                     PyErr_WarnEx(PyExc_RuntimeWarning, "There is no callback function!", 1);
                 }
@@ -285,7 +379,7 @@ void regclass_InferRequest(py::module m) {
             running will lead to throwing exceptions.
 
             :param inputs: Data to set on input tensors.
-            :type inputs: Dict[Union[int, str, openvino.runtime.ConstOutput], openvino.runtime.Tensor]
+            :type inputs: dict[Union[int, str, openvino.ConstOutput], openvino.Tensor]
             :param userdata: Any data that will be passed inside callback call.
             :type userdata: Any
         )");
@@ -306,7 +400,7 @@ void regclass_InferRequest(py::module m) {
             self.m_request.wait();
         },
         R"(
-            Waits for the result to become available. 
+            Waits for the result to become available.
             Blocks until the result becomes available.
 
             GIL is released while running this function.
@@ -335,9 +429,13 @@ void regclass_InferRequest(py::module m) {
     cls.def(
         "set_callback",
         [](InferRequestWrapper& self, py::function callback, py::object& userdata) {
-            self.m_userdata = userdata;
+            *self.m_userdata = userdata;
             self.m_user_callback_defined = true;
-            self.m_request.set_callback([&self, callback](std::exception_ptr exception_ptr) {
+
+            // need to acquire GIL before py::function deletion
+            auto callback_sp = Common::utils::wrap_pyfunction(std::move(callback));
+
+            self.m_request.set_callback([&self, callback_sp](std::exception_ptr exception_ptr) {
                 *self.m_end_time = Time::now();
                 try {
                     if (exception_ptr) {
@@ -346,9 +444,9 @@ void regclass_InferRequest(py::module m) {
                 } catch (const std::exception& e) {
                     OPENVINO_THROW("Caught exception: ", e.what());
                 }
-                // Acquire GIL, execute Python function
+                // For free-threaded Python, gil_scoped_acquire still ensures thread is attached
                 py::gil_scoped_acquire acquire;
-                callback(self.m_userdata);
+                (*callback_sp)(*self.m_userdata);
             });
         },
         py::arg("callback"),
@@ -374,7 +472,7 @@ void regclass_InferRequest(py::module m) {
             :param name: Name of tensor to get.
             :type name: str
             :return: A Tensor object with given name.
-            :rtype: openvino.runtime.Tensor
+            :rtype: openvino.Tensor
         )");
 
     cls.def(
@@ -387,9 +485,9 @@ void regclass_InferRequest(py::module m) {
             Gets input/output tensor of InferRequest.
 
             :param port: Port of tensor to get.
-            :type port: openvino.runtime.ConstOutput
+            :type port: openvino.ConstOutput
             :return: A Tensor object for the port.
-            :rtype: openvino.runtime.Tensor
+            :rtype: openvino.Tensor
         )");
 
     cls.def(
@@ -402,9 +500,9 @@ void regclass_InferRequest(py::module m) {
             Gets input/output tensor of InferRequest.
 
             :param port: Port of tensor to get.
-            :type port: openvino.runtime.Output
+            :type port: openvino.Output
             :return: A Tensor object for the port.
-            :rtype: openvino.runtime.Tensor
+            :rtype: openvino.Tensor
         )");
 
     cls.def(
@@ -421,7 +519,7 @@ void regclass_InferRequest(py::module m) {
             :return: An input Tensor with index idx for the model.
                      If a tensor with specified idx is not found,
             an exception is thrown.
-            :rtype: openvino.runtime.Tensor
+            :rtype: openvino.Tensor
         )");
 
     cls.def(
@@ -434,7 +532,7 @@ void regclass_InferRequest(py::module m) {
 
             :return: An input Tensor for the model.
                      If model has several inputs, an exception is thrown.
-            :rtype: openvino.runtime.Tensor
+            :rtype: openvino.Tensor
         )");
 
     cls.def(
@@ -450,7 +548,7 @@ void regclass_InferRequest(py::module m) {
             :type idx: int
             :return: An output Tensor with index idx for the model.
                      If a tensor with specified idx is not found, an exception is thrown.
-            :rtype: openvino.runtime.Tensor
+            :rtype: openvino.Tensor
         )");
 
     cls.def(
@@ -460,10 +558,27 @@ void regclass_InferRequest(py::module m) {
         },
         R"(
             Gets output tensor of InferRequest.
-            
+
             :return: An output Tensor for the model.
                      If model has several outputs, an exception is thrown.
-            :rtype: openvino.runtime.Tensor
+            :rtype: openvino.Tensor
+        )");
+
+    cls.def(
+        "set_tensor",
+        [](InferRequestWrapper& self, const std::string& name, const RemoteTensorWrapper& tensor) {
+            self.m_request.set_tensor(name, tensor.tensor);
+        },
+        py::arg("name"),
+        py::arg("tensor"),
+        R"(
+            Sets input/output tensor of InferRequest.
+
+            :param name: Name of input/output tensor.
+            :type name: str
+            :param tensor: RemoteTensor object. The element_type and shape of a tensor
+                           must match the model's input/output element_type and shape.
+            :type tensor: openvino.RemoteTensor
         )");
 
     cls.def(
@@ -480,7 +595,7 @@ void regclass_InferRequest(py::module m) {
             :type name: str
             :param tensor: Tensor object. The element_type and shape of a tensor
                            must match the model's input/output element_type and shape.
-            :type tensor: openvino.runtime.Tensor
+            :type tensor: openvino.Tensor
         )");
 
     cls.def(
@@ -494,10 +609,10 @@ void regclass_InferRequest(py::module m) {
             Sets input/output tensor of InferRequest.
 
             :param port: Port of input/output tensor.
-            :type port: openvino.runtime.ConstOutput
+            :type port: openvino.ConstOutput
             :param tensor: Tensor object. The element_type and shape of a tensor
                            must match the model's input/output element_type and shape.
-            :type tensor: openvino.runtime.Tensor
+            :type tensor: openvino.Tensor
         )");
 
     cls.def(
@@ -511,10 +626,10 @@ void regclass_InferRequest(py::module m) {
             Sets input/output tensor of InferRequest.
 
             :param port: Port of input/output tensor.
-            :type port: openvino.runtime.Output
+            :type port: openvino.Output
             :param tensor: Tensor object. The element_type and shape of a tensor
                            must match the model's input/output element_type and shape.
-            :type tensor: openvino.runtime.Tensor
+            :type tensor: openvino.Tensor
         )");
 
     cls.def(
@@ -532,7 +647,7 @@ void regclass_InferRequest(py::module m) {
             :type idx: int
             :param tensor: Tensor object. The element_type and shape of a tensor
                            must match the model's input element_type and shape.
-            :type tensor: openvino.runtime.Tensor
+            :type tensor: openvino.Tensor
         )");
 
     cls.def(
@@ -547,7 +662,7 @@ void regclass_InferRequest(py::module m) {
 
             :param tensor: Tensor object. The element_type and shape of a tensor
                            must match the model's input element_type and shape.
-            :type tensor: openvino.runtime.Tensor
+            :type tensor: openvino.Tensor
         )");
 
     cls.def(
@@ -564,7 +679,7 @@ void regclass_InferRequest(py::module m) {
             :type idx: int
             :param tensor: Tensor object. The element_type and shape of a tensor
                            must match the model's output element_type and shape.
-            :type tensor: openvino.runtime.Tensor
+            :type tensor: openvino.Tensor
         )");
 
     cls.def(
@@ -579,7 +694,7 @@ void regclass_InferRequest(py::module m) {
 
             :param tensor: Tensor object. The element_type and shape of a tensor
                            must match the model's output element_type and shape.
-            :type tensor: openvino.runtime.Tensor
+            :type tensor: openvino.Tensor
         )");
 
     cls.def(
@@ -595,8 +710,8 @@ void regclass_InferRequest(py::module m) {
 
             GIL is released while running this function.
 
-            :return: List of profiling information for operations in model.
-            :rtype: List[openvino.runtime.ProfilingInfo]
+            :return: list of profiling information for operations in model.
+            :rtype: list[openvino.ProfilingInfo]
         )");
 
     cls.def(
@@ -610,8 +725,8 @@ void regclass_InferRequest(py::module m) {
 
             GIL is released while running this function.
 
-            :return: List of VariableState objects.
-            :rtype: List[openvino.runtime.VariableState]
+            :return: list of VariableState objects.
+            :rtype: list[openvino.VariableState]
         )");
 
     cls.def(
@@ -633,13 +748,13 @@ void regclass_InferRequest(py::module m) {
             Returns the compiled model.
 
             :return: Compiled model object.
-            :rtype: openvino.runtime.CompiledModel
+            :rtype: openvino.CompiledModel
         )");
 
     cls.def_property_readonly(
         "userdata",
         [](InferRequestWrapper& self) {
-            return self.m_userdata;
+            return *self.m_userdata;
         },
         R"(
             Gets currently held userdata.
@@ -655,7 +770,7 @@ void regclass_InferRequest(py::module m) {
         R"(
             Gets all inputs of a compiled model which was used to create this InferRequest.
 
-            :rtype: List[openvino.runtime.ConstOutput]
+            :rtype: list[openvino.ConstOutput]
         )");
 
     cls.def_property_readonly(
@@ -666,25 +781,31 @@ void regclass_InferRequest(py::module m) {
         R"(
             Gets all outputs of a compiled model which was used to create this InferRequest.
 
-            :rtype: List[openvino.runtime.ConstOutput]
+            :rtype: list[openvino.ConstOutput]
         )");
 
-    cls.def_property_readonly("input_tensors",
-                              &InferRequestWrapper::get_input_tensors,
-                              R"(
-                                Gets all input tensors of this InferRequest.
-                                
-                                :rtype: List[openvino.runtime.Tensor]
-                              )");
+    cls.def_property_readonly(
+        "input_tensors",
+        [](InferRequestWrapper& self) {
+            return py::list(py::cast(self.get_input_tensors()));
+        },
+        R"(
+            Gets all input tensors of this InferRequest.
 
-    cls.def_property_readonly("output_tensors",
-                              &InferRequestWrapper::get_output_tensors,
-                              R"(
+            :rtype: list[openvino.Tensor]
+        )");
 
-                                Gets all output tensors of this InferRequest.
-                                
-                                :rtype: List[openvino.runtime.Tensor]
-                              )");
+    cls.def_property_readonly(
+        "output_tensors",
+        [](InferRequestWrapper& self) {
+            return py::list(py::cast(self.get_output_tensors()));
+        },
+        R"(
+
+            Gets all output tensors of this InferRequest.
+
+            :rtype: list[openvino.Tensor]
+        )");
 
     cls.def_property_readonly(
         "latency",
@@ -693,24 +814,23 @@ void regclass_InferRequest(py::module m) {
         },
         R"(
             Gets latency of this InferRequest.
-            
+
             :rtype: float
         )");
 
-    cls.def_property_readonly(
-        "profiling_info",
-        [](InferRequestWrapper& self) {
-            return self.m_request.get_profiling_info();
-        },
-        py::call_guard<py::gil_scoped_release>(),
-        R"(
+    cls.def_property_readonly("profiling_info",
+                              py::cpp_function([](InferRequestWrapper& self) {
+                                  py::gil_scoped_release release;
+                                  return self.m_request.get_profiling_info();
+                              }),
+                              R"(
             Performance is measured per layer to get feedback on the most time-consuming operation.
             Not all plugins provide meaningful data!
 
             GIL is released while running this function.
-            
+
             :return: Inference time.
-            :rtype: List[openvino.runtime.ProfilingInfo]
+            :rtype: list[openvino.ProfilingInfo]
         )");
 
     cls.def_property_readonly(
@@ -724,7 +844,7 @@ void regclass_InferRequest(py::module m) {
             Note: All string-based data is decoded by default.
 
             :return: Dictionary of results from output tensors with ports as keys.
-            :rtype: Dict[openvino.runtime.ConstOutput, numpy.array]
+            :rtype: dict[openvino.ConstOutput, numpy.array]
         )");
 
     cls.def("__repr__", [](const InferRequestWrapper& self) {

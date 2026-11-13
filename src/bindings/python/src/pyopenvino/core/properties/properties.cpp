@@ -1,9 +1,15 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "pyopenvino/core/properties/properties.hpp"
 
+#include <pybind11/stl.h>
+
+#include "openvino/runtime/auto/properties.hpp"
+#include "openvino/runtime/intel_cpu/properties.hpp"
+#include "openvino/runtime/intel_gpu/properties.hpp"
+#include "openvino/runtime/intel_npu/properties.hpp"
 #include "pyopenvino/core/common.hpp"
 #include "pyopenvino/graph/any.hpp"
 #include "pyopenvino/utils/utils.hpp"
@@ -14,30 +20,36 @@ void regmodule_properties(py::module m) {
     // Top submodule
     py::module m_properties = m.def_submodule("properties", "openvino.properties submodule");
 
-    // Submodule properties - enums
-    py::enum_<ov::Affinity>(m_properties, "Affinity", py::arithmetic())
-        .value("NONE", ov::Affinity::NONE)
-        .value("CORE", ov::Affinity::CORE)
-        .value("NUMA", ov::Affinity::NUMA)
-        .value("HYBRID_AWARE", ov::Affinity::HYBRID_AWARE);
+    py::enum_<ov::WorkloadType>(m_properties, "WorkloadType", py::arithmetic())
+        .value("DEFAULT", ov::WorkloadType::DEFAULT)
+        .value("EFFICIENT", ov::WorkloadType::EFFICIENT);
 
     py::enum_<ov::CacheMode>(m_properties, "CacheMode", py::arithmetic())
         .value("OPTIMIZE_SIZE", ov::CacheMode::OPTIMIZE_SIZE)
         .value("OPTIMIZE_SPEED", ov::CacheMode::OPTIMIZE_SPEED);
 
+    py::enum_<ov::CompatibilityCheck>(m_properties, "CompatibilityCheck", py::arithmetic())
+        .value("NOT_APPLICABLE", ov::CompatibilityCheck::NOT_APPLICABLE)
+        .value("SUPPORTED", ov::CompatibilityCheck::SUPPORTED)
+        .value("UNSUPPORTED", ov::CompatibilityCheck::UNSUPPORTED);
+
     // Submodule properties - properties
     wrap_property_RW(m_properties, ov::enable_profiling, "enable_profiling");
     wrap_property_RW(m_properties, ov::cache_dir, "cache_dir");
+    wrap_property_RW(m_properties, ov::workload_type, "workload_type");
     wrap_property_RW(m_properties, ov::cache_mode, "cache_mode");
     wrap_property_RW(m_properties, ov::auto_batch_timeout, "auto_batch_timeout");
     wrap_property_RW(m_properties, ov::num_streams, "num_streams");
     wrap_property_RW(m_properties, ov::inference_num_threads, "inference_num_threads");
     wrap_property_RW(m_properties, ov::compilation_num_threads, "compilation_num_threads");
-    OPENVINO_SUPPRESS_DEPRECATED_START
-    wrap_property_RW(m_properties, ov::affinity, "affinity");
-    OPENVINO_SUPPRESS_DEPRECATED_END
     wrap_property_RW(m_properties, ov::force_tbb_terminate, "force_tbb_terminate");
     wrap_property_RW(m_properties, ov::enable_mmap, "enable_mmap");
+    wrap_property_RW(m_properties, ov::weights_path, "weights_path");
+    wrap_property_RW(m_properties, ov::key_cache_precision, "key_cache_precision");
+    wrap_property_RW(m_properties, ov::value_cache_precision, "value_cache_precision");
+    wrap_property_RW(m_properties, ov::key_cache_group_size, "key_cache_group_size");
+    wrap_property_RW(m_properties, ov::value_cache_group_size, "value_cache_group_size");
+    wrap_property_RW(m_properties, ov::enable_weightless, "enable_weightless");
 
     wrap_property_RO(m_properties, ov::supported_properties, "supported_properties");
     wrap_property_RO(m_properties, ov::available_devices, "available_devices");
@@ -49,6 +61,10 @@ void regmodule_properties(py::module m) {
     wrap_property_RO(m_properties, ov::range_for_async_infer_requests, "range_for_async_infer_requests");
     wrap_property_RO(m_properties, ov::execution_devices, "execution_devices");
     wrap_property_RO(m_properties, ov::loaded_from_cache, "loaded_from_cache");
+    wrap_property_RO(m_properties, ov::compatibility_check, "compatibility_check");
+    wrap_property_RO(m_properties, ov::runtime_requirements, "runtime_requirements");
+
+    wrap_property_WO(m_properties, ov::cache_encryption_callbacks, "cache_encryption_callbacks");
 
     // Submodule hint
     py::module m_hint =
@@ -84,6 +100,7 @@ void regmodule_properties(py::module m) {
     wrap_property_RW(m_hint, ov::hint::model_priority, "model_priority");
     wrap_property_RW(m_hint, ov::hint::performance_mode, "performance_mode");
     wrap_property_RW(m_hint, ov::hint::enable_cpu_pinning, "enable_cpu_pinning");
+    wrap_property_RW(m_hint, ov::hint::enable_cpu_reservation, "enable_cpu_reservation");
     wrap_property_RW(m_hint, ov::hint::scheduling_core_type, "scheduling_core_type");
     wrap_property_RW(m_hint, ov::hint::model_distribution_policy, "model_distribution_policy");
     wrap_property_RW(m_hint, ov::hint::enable_hyper_threading, "enable_hyper_threading");
@@ -93,22 +110,30 @@ void regmodule_properties(py::module m) {
     wrap_property_RW(m_hint, ov::hint::allow_auto_batching, "allow_auto_batching");
     wrap_property_RW(m_hint, ov::hint::dynamic_quantization_group_size, "dynamic_quantization_group_size");
     wrap_property_RW(m_hint, ov::hint::kv_cache_precision, "kv_cache_precision");
+    wrap_property_RW(m_hint, ov::hint::activations_scale_factor, "activations_scale_factor");
+    wrap_property_RW(m_hint, ov::hint::compiled_blob, "compiled_blob");
 
     // Submodule intel_cpu
     py::module m_intel_cpu =
         m_properties.def_submodule("intel_cpu", "openvino.properties.intel_cpu submodule that simulates ov::intel_cpu");
+
+    py::enum_<ov::intel_cpu::TbbPartitioner>(m_intel_cpu, "TbbPartitioner", py::arithmetic())
+        .value("STATIC", ov::intel_cpu::TbbPartitioner::STATIC)
+        .value("AUTO", ov::intel_cpu::TbbPartitioner::AUTO);
 
     // Submodule intel_cpu property
     wrap_property_RW(m_intel_cpu, ov::intel_cpu::denormals_optimization, "denormals_optimization");
     wrap_property_RW(m_intel_cpu,
                      ov::intel_cpu::sparse_weights_decompression_rate,
                      "sparse_weights_decompression_rate");
+    wrap_property_RW(m_intel_cpu, ov::intel_cpu::tbb_partitioner, "tbb_partitioner");
 
     // Submodule intel_gpu
     py::module m_intel_gpu =
         m_properties.def_submodule("intel_gpu", "openvino.properties.intel_gpu submodule that simulates ov::intel_gpu");
 
     wrap_property_RO(m_intel_gpu, ov::intel_gpu::device_total_mem_size, "device_total_mem_size");
+    wrap_property_RO(m_intel_gpu, ov::intel_gpu::device_max_alloc_mem_size, "device_max_alloc_mem_size");
     wrap_property_RO(m_intel_gpu, ov::intel_gpu::uarch_version, "uarch_version");
     wrap_property_RO(m_intel_gpu, ov::intel_gpu::execution_units_count, "execution_units_count");
     wrap_property_RO(m_intel_gpu, ov::intel_gpu::memory_statistics, "memory_statistics");
@@ -139,6 +164,8 @@ void regmodule_properties(py::module m) {
     wrap_property_RW(m_intel_gpu_hint, ov::intel_gpu::hint::queue_priority, "queue_priority");
     wrap_property_RW(m_intel_gpu_hint, ov::intel_gpu::hint::host_task_priority, "host_task_priority");
     wrap_property_RW(m_intel_gpu_hint, ov::intel_gpu::hint::available_device_mem, "available_device_mem");
+    wrap_property_RW(m_intel_gpu_hint, ov::intel_gpu::hint::enable_lora_operation, "enable_lora_operation");
+    wrap_property_RW(m_intel_gpu_hint, ov::intel_gpu::hint::enable_large_allocations, "enable_large_allocations");
 
     // Submodule device
     py::module m_device =
@@ -169,6 +196,19 @@ void regmodule_properties(py::module m) {
         return ov::device::priorities(value);
     });
 
+    // Special case: ov::device::PCIInfo
+    py::class_<ov::device::PCIInfo, std::shared_ptr<ov::device::PCIInfo>> cls_pciinfo(m_device, "PCIInfo");
+    cls_pciinfo.def(py::init<const uint32_t&, const uint32_t&, const uint32_t&, const uint32_t&>());
+    cls_pciinfo.def_readonly("domain", &ov::device::PCIInfo::domain);
+    cls_pciinfo.def_readonly("bus", &ov::device::PCIInfo::bus);
+    cls_pciinfo.def_readonly("device", &ov::device::PCIInfo::device);
+    cls_pciinfo.def_readonly("function", &ov::device::PCIInfo::function);
+    cls_pciinfo.def("__repr__", [](const ov::device::PCIInfo& info) {
+        std::stringstream pciinfo_stream;
+        pciinfo_stream << info;
+        return py::cast(pciinfo_stream.str());
+    });
+
     // Submodule device - properties
     wrap_property_RW(m_device, ov::device::id, "id");
 
@@ -176,6 +216,7 @@ void regmodule_properties(py::module m) {
     wrap_property_RO(m_device, ov::device::architecture, "architecture");
     wrap_property_RO(m_device, ov::device::type, "type");
     wrap_property_RO(m_device, ov::device::gops, "gops");
+    wrap_property_RO(m_device, ov::device::pci_info, "pci_info");
     wrap_property_RO(m_device, ov::device::thermal, "thermal");
     wrap_property_RO(m_device, ov::device::capabilities, "capabilities");
     wrap_property_RO(m_device, ov::device::uuid, "uuid");
@@ -244,6 +285,7 @@ void regmodule_properties(py::module m) {
         "openvino.properties.intel_gpu.CapabilityGPU submodule that simulates ov::intel_gpu::capability");
 
     m_capability_gpu.attr("HW_MATMUL") = ov::intel_gpu::capability::HW_MATMUL;
+    m_capability_gpu.attr("USM_MEMORY") = ov::intel_gpu::capability::USM_MEMORY;
 
     // Submodule log
     py::module m_log = m_properties.def_submodule("log", "openvino.properties.log submodule that simulates ov::log");
@@ -298,5 +340,57 @@ void regmodule_properties(py::module m) {
     wrap_property_RW(m_intel_auto, ov::intel_auto::device_bind_buffer, "device_bind_buffer");
     wrap_property_RW(m_intel_auto, ov::intel_auto::enable_startup_fallback, "enable_startup_fallback");
     wrap_property_RW(m_intel_auto, ov::intel_auto::enable_runtime_fallback, "enable_runtime_fallback");
+    wrap_property_RW(m_intel_auto, ov::intel_auto::compile_for_all, "compile_for_all");
     wrap_property_RW(m_intel_auto, ov::intel_auto::schedule_policy, "schedule_policy");
+    wrap_property_RW(m_intel_auto, ov::intel_auto::devices_utilization_threshold, "devices_utilization_threshold");
+    // perf_curve_table: name/string/map overloads (map form uses pybind11's default STL caster).
+    m_intel_auto.def("perf_curve_table", []() {
+        return ov::intel_auto::perf_curve_table.name();
+    });
+    // String form, e.g. "{CPU:{0:0,100:100}}".
+    m_intel_auto.def("perf_curve_table", [](const std::string& value) {
+        try {
+            return ov::intel_auto::perf_curve_table(
+                ov::Any(value).as<std::map<std::string, std::map<unsigned, float>>>());
+        } catch (const ov::Exception& e) {
+            OPENVINO_THROW("PERF_CURVE_TABLE: failed to parse string '",
+                           value,
+                           "'. Expected format: {DeviceName:{util:score,...},...}. ",
+                           e.what());
+        }
+    });
+    m_intel_auto.def("perf_curve_table", [](const std::map<std::string, std::map<unsigned, float>>& value) {
+        return ov::intel_auto::perf_curve_table(value);
+    });
+    wrap_property_RW(m_intel_auto, ov::intel_auto::low_power_device, "low_power_device");
+
+    // Submodule npu
+    py::module m_intel_npu =
+        m_properties.def_submodule("intel_npu", "openvino.properties.intel_npu submodule that simulates ov::intel_npu");
+
+    wrap_property_RO(m_intel_npu, ov::intel_npu::device_alloc_mem_size, "device_alloc_mem_size");
+    wrap_property_RO(m_intel_npu, ov::intel_npu::device_total_mem_size, "device_total_mem_size");
+    wrap_property_RO(m_intel_npu, ov::intel_npu::driver_version, "driver_version");
+    wrap_property_RO(m_intel_npu, ov::intel_npu::compiler_version, "compiler_version");
+    wrap_property_RO(m_intel_npu, ov::intel_npu::max_tiles, "max_tiles");
+
+    wrap_property_RW(m_intel_npu, ov::intel_npu::compilation_mode_params, "compilation_mode_params");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::turbo, "turbo");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::platform, "platform");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::tiles, "tiles");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::bypass_umd_caching, "bypass_umd_caching");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::defer_weights_load, "defer_weights_load");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::compiler_dynamic_quantization, "compiler_dynamic_quantization");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::qdq_optimization, "qdq_optimization");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::qdq_optimization_aggressive, "qdq_optimization_aggressive");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::run_inferences_sequentially, "run_inferences_sequentially");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::disable_idle_memory_prunning, "disable_idle_memory_prunning");
+    wrap_property_RW(m_intel_npu, ov::intel_npu::enable_strides_for, "enable_strides_for");
+
+    py::enum_<ov::intel_npu::CompilerType>(m_intel_npu, "CompilerType", py::arithmetic())
+        .value("DRIVER", ov::intel_npu::CompilerType::DRIVER)
+        .value("PLUGIN", ov::intel_npu::CompilerType::PLUGIN)
+        .value("PREFER_PLUGIN", ov::intel_npu::CompilerType::PREFER_PLUGIN);
+
+    wrap_property_RW(m_intel_npu, ov::intel_npu::compiler_type, "compiler_type");
 }

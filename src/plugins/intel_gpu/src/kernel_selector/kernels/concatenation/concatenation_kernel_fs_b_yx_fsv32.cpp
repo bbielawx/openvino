@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,6 +17,8 @@ ParamsKey ConcatenationKernel_fs_b_yx_fsv32::GetSupportedKey() const {
     ParamsKey k;
     k.EnableInputDataType(Datatype::F16);
     k.EnableOutputDataType(Datatype::F16);
+    k.EnableInputDataType(Datatype::BF16);
+    k.EnableOutputDataType(Datatype::BF16);
     k.EnableInputLayout(DataLayout::fs_b_yx_fsv32);
     k.EnableOutputLayout(DataLayout::fs_b_yx_fsv32);
     k.EnableTensorOffset();
@@ -33,19 +35,20 @@ DeviceFeaturesKey ConcatenationKernel_fs_b_yx_fsv32::get_required_device_feature
 
 bool ConcatenationKernel_fs_b_yx_fsv32::Validate(const Params& p) const {
     if (!ConcatenationKernelBase::Validate(p)) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     const concatenation_params& params = static_cast<const concatenation_params&>(p);
 
-    if (params.axis != ConcatAxis::FEATURE)
-        return false;
+    if (params.axis != ConcatAxis::FEATURE) {
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     // all inputs have to have same layout
     auto same_layout = params.inputs[0].GetLayout();
     for (const auto& lt : params.inputs) {
         if (lt.GetLayout() != same_layout) {
-            return false;
+            DO_NOT_USE_THIS_KERNEL(p.layerID);
         }
     }
 
@@ -122,7 +125,8 @@ KernelsData ConcatenationKernel_fs_b_yx_fsv32::GetKernelsData(const Params& para
         kernel.params.scalars.push_back(s);
         kernel.params.arguments.push_back({ArgumentDescriptor::Types::SCALAR, 0});
 
-        size_t concatChannelIndex = (size_t)DataTensor::Channelndex(orgParams.inputs[i].GetLayout(), GetConcatChannel(orgParams));
+        auto concatChannelIndex = DataTensor::Channelndex(orgParams.inputs[i].GetLayout(), GetConcatChannel(orgParams));
+        OPENVINO_ASSERT(concatChannelIndex >= 0, "concatChannelIndex shouldn't be negative");
         lastOffset += (uint32_t)input.GetDims()[concatChannelIndex].v;
     }
 

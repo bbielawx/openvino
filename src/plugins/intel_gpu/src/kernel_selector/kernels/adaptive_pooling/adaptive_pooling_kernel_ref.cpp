@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -24,6 +24,7 @@ ParamsKey AdaptivePoolingRef::GetSupportedKey() const {
     k.EnableAllOutputLayout();
     k.EnableBatching();
     k.EnableTensorPitches();
+    k.EnableTensorOffset();
 
     return k;
 }
@@ -34,21 +35,19 @@ KernelsPriority AdaptivePoolingRef::GetKernelsPriority(const Params&) const {
 
 bool AdaptivePoolingRef::Validate(const Params& p) const {
     if (p.GetType() != KernelType::ADAPTIVE_POOLING) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     const auto& params = dynamic_cast<const adaptive_pooling_params&>(p);
     const auto& inputs = params.inputs;
 
-    if (!((params.mode == PoolType::AVG && inputs.size() == 1)
-          || (params.mode == PoolType::MAX && inputs.size() == 2)
-          || (params.mode == PoolType::MAX && inputs.size() == 1 && params.outputs_num == 2))) {
-        return false;
+    if (params.mode == PoolType::MAX && params.outputs_num != 2) {
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     const auto input_dims = inputs[0].Dimentions();
     if (input_dims < 2 || input_dims > 5) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     return true;
@@ -86,24 +85,13 @@ KernelsData AdaptivePoolingRef::GetKernelsData(const Params& params) const {
 
     cldnn_jit.AddConstant(MakeJitConstant(toString(new_params.mode) + "_POOLING", 1));
 
-    if (new_params.outputs_num == 2) {
-        cldnn_jit.AddConstant(MakeJitConstant("NEW_MULTIPLE_OUTPUTS", 1));
-    }
-
-    if (new_params.mode == PoolType::MAX) {
-        if (new_params.outputs_num == 1) {
-            // Legacy code of mutable data
-            cldnn_jit.Merge(MakeTypeJitConstants(new_params.poolIndexElementType, "INDICES"));
-        }
-    }
-
     const auto accumulator_type = new_params.inputs[0].GetDType();
     cldnn_jit.Merge(MakeTypeJitConstants(accumulator_type, "ACCUMULATOR"));
 
     const auto jit = CreateJit(kernelName, cldnn_jit, entry_point);
 
     auto& kernel = kd.kernels[0];
-    KernelBase::CheckDispatchData(kernelName, dispatchData, params.engineInfo.maxWorkGroupSize);
+    KernelBase::CheckDispatchData(kernelName, dispatchData, params.engineInfo);
     kernel.params.workGroups.global = dispatchData.gws;
     kernel.params.workGroups.local  = dispatchData.lws;
     kernel.code.kernelString = GetKernelString(kernelName, jit, entry_point, params.engineInfo);
@@ -112,12 +100,7 @@ KernelsData AdaptivePoolingRef::GetKernelsData(const Params& params) const {
     arguments.push_back({ArgumentDescriptor::Types::INPUT, 0});     // input data
     arguments.push_back({ArgumentDescriptor::Types::OUTPUT, 0});    // output
     if (new_params.mode == PoolType::MAX) {
-        if (new_params.outputs_num == 2) {
-            arguments.push_back({ArgumentDescriptor::Types::OUTPUT, 1});     // second output
-        } else {
-            // Legacy code of mutable data
-            arguments.push_back({ArgumentDescriptor::Types::INPUT, 1});     // indices
-        }
+        arguments.push_back({ArgumentDescriptor::Types::OUTPUT, 1});     // second output
     }
 
     KernelsData kernelsData;

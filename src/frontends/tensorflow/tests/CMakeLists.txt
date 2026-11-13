@@ -1,12 +1,15 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake)
 
 set(TARGET_NAME "ov_tensorflow_frontend_tests")
 
 list(APPEND TF_TESTS_DEPENDENCIES tensorflow_test_models tensorflow_fe_standalone_build_test openvino_intel_cpu_plugin)
 if (NOT ENABLE_INTEL_CPU)
     list(REMOVE_ITEM TF_TESTS_DEPENDENCIES openvino_intel_cpu_plugin)
+    list(REMOVE_ITEM OV_TENSORFLOW_TESTS_SRC ${CMAKE_CURRENT_SOURCE_DIR}/compilation.cpp)
     set(EXCLUDED_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/compilation.cpp)
 endif()
 
@@ -21,15 +24,20 @@ endif()
 
 ov_add_test_target(
     NAME ${TARGET_NAME}
-        ROOT ${CMAKE_CURRENT_SOURCE_DIR}
-        EXCLUDED_SOURCE_PATHS ${EXCLUDED_TESTS}
+        SOURCES
+            ${OV_TENSORFLOW_TESTS_SRC}
         DEPENDENCIES ${TF_TESTS_DEPENDENCIES}
         LINK_LIBRARIES
-            gtest_main_manifest 
-            frontend_shared_test_classes 
-            openvino_tensorflow_frontend 
+            gtest_main_manifest
+            frontend_shared_test_classes
+            openvino_tensorflow_frontend
             openvino_tensorflow_common
         ADD_CLANG_FORMAT
+        CHECK_SOURCES_LISTED
+        CHECK_SOURCES_EXCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/standalone_build
+        CHECK_SOURCES_EXCLUDE_FILES
+            ${EXCLUDED_TESTS}
         LABELS
             ${ctest_labels} TF_FE
 )
@@ -46,10 +54,8 @@ target_compile_definitions(${TARGET_NAME} PRIVATE -D TEST_TENSORFLOW_MODELS_DIRN
 if (tensorflow_FOUND)
     set(TEST_TENSORFLOW_MODELS ${TEST_MODEL_ZOO_OUTPUT_DIR}/tensorflow_test_models/)
 
-    file(GLOB_RECURSE TENSORFLOW_GEN_SCRIPTS ${CMAKE_CURRENT_SOURCE_DIR}/test_models/gen_scripts/generate_*.py)
-    file(GLOB_RECURSE TENSORFLOW_MODELS_PBTXT ${CMAKE_CURRENT_SOURCE_DIR}/test_models/models_pbtxt/*.pbtxt)
-    list (APPEND TENSORFLOW_GEN_SCRIPTS ${TENSORFLOW_MODELS_PBTXT})
-    file(GLOB_RECURSE TENSORFLOW_ALL_SCRIPTS ${CMAKE_CURRENT_SOURCE_DIR}/*.py)
+    list(APPEND TENSORFLOW_GEN_SCRIPTS ${TENSORFLOW_MODELS_PBTXT})
+
     set(OUT_FILES "")
     foreach(GEN_SCRIPT ${TENSORFLOW_GEN_SCRIPTS})
         get_filename_component(FILE_WE ${GEN_SCRIPT} NAME_WE)
@@ -80,6 +86,8 @@ else()
 endif()
 
 get_target_property(TENSORFLOW_FRONTEND_SRC_DIR openvino_tensorflow_frontend SOURCE_DIR)
+
+ov_build_target_faster(${TARGET_NAME} PCH)
 
 add_subdirectory(standalone_build)
 add_dependencies(${TARGET_NAME} tensorflow_fe_standalone_build_test)

@@ -1,13 +1,15 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "pooling.hpp"
 
-namespace ov {
-namespace intel_cpu {
+#include <utility>
 
-PoolingExecutor::PoolingExecutor(const ExecutorContext::CPtr context) : context(context) {}
+#include "nodes/executors/executor.hpp"
 
-}   // namespace intel_cpu
-}   // namespace ov
+namespace ov::intel_cpu {
+
+PoolingExecutor::PoolingExecutor(ExecutorContext::CPtr context) : context(std::move(context)) {}
+
+}  // namespace ov::intel_cpu

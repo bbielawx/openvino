@@ -1,9 +1,10 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "test_utils.h"
 
+#include <intel_gpu/primitives/concatenation.hpp>
 #include <intel_gpu/primitives/input_layout.hpp>
 #include <intel_gpu/primitives/softmax.hpp>
 #include <intel_gpu/primitives/reorder.hpp>
@@ -90,12 +91,12 @@ TEST(memory_reuse_realloc_reset_test, basic_conv_with_padding) {
                                   {2, 2},  /*pad_above*/
                                   {2, 2},  /*pad_below*/
                                   false,
-                                  ov::op::PadType::EXPLICIT,
-                                  padding{{0, 0, 0, 0}, 0}),
+                                  ov::op::PadType::EXPLICIT),
                       reorder("output", input_info("conv"), format::bfyx, data_types::f32)); /*output padding*/
 
     ExecutionConfig config = get_test_default_config(engine);
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{{"conv", {format::any, "", impl_types::ocl}}}));
 
     network network(engine, topology, config);
     network.set_input_data("input", input_mem_1);
@@ -104,7 +105,7 @@ TEST(memory_reuse_realloc_reset_test, basic_conv_with_padding) {
     auto outputs_2 = network.execute();
     auto output_mem_2 = outputs_2.begin()->second.get_memory();
     cldnn::mem_lock<float> output_mem_2_ptr(output_mem_2, get_test_stream());
-    for (size_t i = 0; i < output_mem_2->get_layout().get_buffer_size().count(); ++i) {
+    for (size_t i = 0; i < output_mem_2->get_layout().get_linear_size(); ++i) {
         ASSERT_EQ(output_mem_2_ptr[i], ref_output_2[i]);
     }
     // check padding of second run of reorder
@@ -121,6 +122,121 @@ TEST(memory_reuse_realloc_reset_test, basic_conv_with_padding) {
     }
     for (size_t i = 32; i < 35; ++i) {
         ASSERT_EQ((float)reorder_mem_ptr[i], 0.f);
+    }
+    // Mem should be reallocate when request size is bigger than existing buffer size
+    ASSERT_TRUE(reorder_mem->size() <= reorder_mem->get_mem_tracker()->size())
+                << "reorder mem buffer size: " <<  reorder_mem->size() << "bytes is bigger than original size of allocated mem: "
+                << reorder_mem->get_mem_tracker()->size() << "bytes.";
+}
+
+TEST(memory_reuse_realloc_reset_test, basic_conv_with_memory_get_from_padded_pool) {
+    auto& engine = get_test_engine();
+
+    layout weight_layout = layout{ov::PartialShape{1, 4, 3, 3}, data_types::f32, format::bfyx};
+    auto weights = engine.allocate_memory(weight_layout);
+    set_values<float>(weights, {
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f
+    });
+
+    layout weight_layout2 = layout{ov::PartialShape{1, 3, 3, 3}, data_types::f32, format::bfyx};
+    auto weights2 = engine.allocate_memory(weight_layout2);
+    set_values<float>(weights2, {
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f
+    });
+
+    layout elt_layout1 = layout{ov::PartialShape{1, 2, 4, 4}, data_types::f32, format::bfyx};
+    auto elt_mem1 = engine.allocate_memory(elt_layout1);
+    set_values<float>(elt_mem1, {
+        10.f, 10.f, 10.f, 10.f,
+        10.f, 10.f, 10.f, 10.f,
+        10.f, 10.f, 10.f, 10.f,
+        10.f, 10.f, 10.f, 10.f,
+
+        10.f, 10.f, 10.f, 10.f,
+        10.f, 10.f, 10.f, 10.f,
+        10.f, 10.f, 10.f, 10.f,
+        10.f, 10.f, 10.f, 10.f
+    });
+
+    std::vector<float> ref_output = {
+        1080, 1720, 1720, 1080,
+        1720, 2740, 2740, 1720,
+        1720, 2740, 2740, 1720,
+        1080, 1720, 1720, 1080
+    };
+
+    std::vector<float> subtract_val = {0.f, };
+    auto input_l = layout{ov::PartialShape::dynamic(4), data_types::f32, format::bfyx};
+    auto elt_input_l = layout{ov::PartialShape::dynamic(4), data_types::f32, format::bfyx};
+
+    topology topology(input_layout("elt_input", elt_input_l),
+                      data("weights", weights),
+                      data("weights2", weights2),
+                      reorder("reorder1-1", input_info("elt_input"), format::bfyx, data_types::f32, subtract_val, reorder_mean_mode::subtract),
+                      reorder("reorder1-2", input_info("elt_input"), format::bfyx, data_types::f32, subtract_val, reorder_mean_mode::subtract),
+                      concatenation("concat1", {input_info("reorder1-1"), input_info("reorder1-2")}, 1),
+                      convolution("conv1",
+                                  input_info("concat1"),
+                                  "weights",
+                                  "",     /*bias*/
+                                  1,
+                                  {1, 1}, /*stride*/
+                                  {1, 1}, /*dilation*/
+                                  {1, 1}, /*pad_above*/
+                                  {1, 1}, /*pad_below*/
+                                  false,
+                                  ov::op::PadType::EXPLICIT),
+                      reorder("reorder2-1", input_info("conv1"), format::bfyx, data_types::f32, subtract_val, reorder_mean_mode::subtract),
+                      concatenation("concat2", {input_info("reorder1-1"), input_info("reorder2-1")}, 1),
+                      convolution("conv2",
+                                  input_info("concat2"),
+                                  "weights2",
+                                  "",     /*bias*/
+                                  1,
+                                  {1, 1}, /*stride*/
+                                  {1, 1}, /*dilation*/
+                                  {1, 1}, /*pad_above*/
+                                  {1, 1}, /*pad_below*/
+                                  false,
+                                  ov::op::PadType::EXPLICIT),
+                      reorder("output", input_info("conv2"), format::bfyx, data_types::f32));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    config.set_property(ov::intel_gpu::queue_type(QueueTypes::in_order));
+
+    network network(engine, topology, config);
+    network.set_input_data("elt_input", elt_mem1);
+    auto outputs = network.execute();
+    auto output_mem = outputs.begin()->second.get_memory();
+    cldnn::mem_lock<float> output_mem_ptr(output_mem, get_test_stream());
+
+    for (size_t i = 0; i < output_mem->get_layout().get_linear_size(); ++i) {
+        ASSERT_EQ(output_mem_ptr[i], ref_output[i]);
     }
 }
 
@@ -193,7 +309,11 @@ TEST(softmax_gpu_dynamic_f32_test_upper_bound, input_same_values) {
     compare_out_buffer_with_expected(out_buffer_2, expected_buffer_2, out_size_2);
 
     // Check output is not reallocated
-    ASSERT_EQ(output_ptr_1.data(), output_ptr_2.data());
+    if (output_mem_1->get_allocation_type() == allocation_type::usm_device) {
+        ASSERT_EQ(output_mem_1->buffer_ptr(), output_mem_2->buffer_ptr());
+    } else {
+        ASSERT_EQ(output_ptr_1.data(), output_ptr_2.data());
+    }
     ASSERT_EQ(internal_mems_1.size(), internal_mems_2.size());
     for (size_t i = 0; i < internal_mems_1.size(); ++i) {
         ASSERT_EQ(internal_mems_1[i]->buffer_ptr(), internal_mems_2[i]->buffer_ptr());
@@ -264,5 +384,109 @@ TEST(dyn_shape_mem_test, igpu_shape_infer_dep_mem_type) {
     }
     auto expected_layout = layout{ov::PartialShape{3, 2, 1, 1}, data_types::f16, format::bfyx};
     ASSERT_EQ(output.begin()->second.get_memory()->get_layout(), expected_layout);
+}
+
+TEST(memory_reuse_realloc_reset_test, basic_conv_with_padding_reorder) {
+    auto& engine = get_test_engine();
+
+    layout weight_layout = layout{ov::PartialShape{1, 3, 3, 3}, data_types::f16, format::bfyx};
+
+    auto weights = engine.allocate_memory(weight_layout);
+    set_values<ov::float16>(weights, {
+            1.0f, 1.0f, 1.0f,
+            1.0f, 1.0f, 1.0f,
+            1.0f, 1.0f, 1.0f,
+            //
+            2.0f, 2.0f, 2.0f,
+            2.0f, 2.0f, 2.0f,
+            2.0f, 2.0f, 2.0f,
+            //
+            3.0f, 3.0f, 3.0f,
+            3.0f, 3.0f, 3.0f,
+            3.0f, 3.0f, 3.0f,
+    });
+
+    layout input_layout_1 = layout{ov::PartialShape{1, 3, 5, 5}, data_types::f32, format::bfyx};
+    auto input_mem_1 = engine.allocate_memory(input_layout_1);
+    set_values(input_mem_1, {
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         //
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         //
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                         1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                        });
+
+    std::vector<float> ref_output_1 = {6,   18,  36, 54,  72,  54,  30,  12,  36, 72, 108, 144, 108,
+                                       60,  18,  54, 108, 162, 216, 162, 90,  18, 54, 108, 162, 216,
+                                       162, 90,  18, 54,  108, 162, 216, 162, 90, 12, 36,  72,  108,
+                                       144, 108, 60, 6,   18,  36,  54,  72,  54, 30};
+
+    layout input_layout_2 = layout{ov::PartialShape{1, 3, 2, 2}, data_types::f32, format::bfyx};
+    auto input_mem_2 = engine.allocate_memory(input_layout_2);
+    set_values(input_mem_2, {11.0f,  11.0f, 11.0f, 11.0f,
+                             11.0f,  11.0f, 11.0f, 11.0f,
+                             11.0f,  11.0f, 11.0f, 11.0f});
+    std::vector<float> ref_output_2 = { 66, 132, 132, 66, 132, 264, 264, 132, 132, 264, 264, 132, 66, 132, 132, 66};
+     std::vector<float> values_to_subtract = {};
+    auto input_l = layout{ov::PartialShape::dynamic(4), data_types::f32, format::bfyx};
+    topology topology(input_layout("input", input_l),
+                      data("weights", weights),
+                      reorder("reorder", input_info("input"), format::bfyx, data_types::f16,
+                      values_to_subtract, reorder_mean_mode::subtract, padding{{0, 0, 2, 2}, 0}),
+                      convolution("conv",
+                                  input_info("reorder"),
+                                  "weights",
+                                  "",     /*bias*/
+                                  1,
+                                  {1, 1}, /*stride*/
+                                  {1, 1}, /*dilation*/
+                                  {2, 2},  /*pad_above*/
+                                  {2, 2},  /*pad_below*/
+                                  false,
+                                  ov::op::PadType::EXPLICIT),
+                      reorder("output", input_info("conv"), format::bfyx, data_types::f32)); /*output padding*/
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{{"conv", {format::any, "", impl_types::ocl}}}));
+
+    network network(engine, topology, config);
+    network.set_input_data("input", input_mem_2);
+    auto outputs_1 = network.execute();
+    network.set_input_data("input", input_mem_1);
+    auto outputs_2 = network.execute();
+
+    // check padding of second run of reorder
+    // 0, 0, 0, ... 0,  0, 0,
+    // 0, 0, 0, ... 0,  0, 0,
+    // 0, 0, 1, ... 5,  0, 0,
+    // .  .   .
+    // 0, 0, 1, ... 5,  0, 0,
+    // 0, 0,"0", .. "0","0","0", // !! check pad_after
+    // 0, 0,"0", .. "0","0","0", // !! check pad_after
+    auto reorder_mem = network.get_primitive("reorder")->output_memory_ptr();
+    cldnn::mem_lock<ov::float16, mem_lock_type::read> reorder_mem_ptr(reorder_mem, get_test_stream());
+    for (size_t i = (63 + 81 * 2); i < (71 + 81 * 2); ++i) {
+        ASSERT_EQ((float)reorder_mem_ptr[i], 0.f);
+    }
+    for (size_t i = (72 + 81 * 2); i < (80 + 81 * 2); ++i) {
+        ASSERT_EQ((float)reorder_mem_ptr[i], 0.f);
+    }
+    // Mem should be reallocate when request size is bigger than existing buffer size
+    ASSERT_TRUE(reorder_mem->size() <= reorder_mem->get_mem_tracker()->size())
+                << "reorder mem buffer size: " <<  reorder_mem->size() << "bytes is bigger than original size of allocated mem: "
+                << reorder_mem->get_mem_tracker()->size() << "bytes.";
 }
 }  // memory_realloc_tests

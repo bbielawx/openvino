@@ -1,137 +1,129 @@
-// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "emitters/snippets/x64/jit_kernel_emitter.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <set>
+#include <utility>
+#include <vector>
+
+#include "cpu_memory.h"
+#include "cpu_types.h"
+#include "emitters/snippets/input_repacker.hpp"
+#include "executors/subgraph.hpp"
+#include "graph_context.h"
 #include "node.h"
-#include "onednn/dnnl.h"
+#include "openvino/core/node.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "shape_inference/shape_inference_cpu.hpp"
+#include "snippets/lowered/pass/pass.hpp"
 #include "snippets/op/subgraph.hpp"
+#include "snippets/pass/manager.hpp"
 
-#include <array>
+#if defined(OPENVINO_ARCH_ARM64)
+#    include "cpu/aarch64/cpu_isa_traits.hpp"
+#elif defined(OPENVINO_ARCH_RISCV64)
+#    include "nodes/kernels/riscv64/cpu_isa_traits.hpp"
+#else
+#    include "cpu/x64/cpu_isa_traits.hpp"
+#endif
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+namespace ov::intel_cpu::node {
 
-/// Snippet represents subgraph node in CPU plugin
-/// potentially, snippet can be placed as a postop to any support operation while it doesn't support postops itself
-/// precision: fp32
-class Snippet : public Node {
+class Subgraph : public Node {
 public:
-    Snippet(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context);
-    ~Snippet() override = default;
+    Subgraph(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context);
+    ~Subgraph() override = default;
 
     void getSupportedDescriptors() override {};
     void initSupportedPrimitiveDescriptors() override;
     void selectOptimalPrimitiveDescriptor() override;
-    void initOptimalPrimitiveDescriptor() override;
     ov::element::Type getRuntimePrecision() const override;
 
-    // Here we convert to canonical for & jit everything
+    void createPrimitive() override;
     void prepareParams() override;
-    bool needPrepareParams() const override;
 
     bool canBeInPlace() const override;
     bool created() const override;
 
     // if generator is set, it would execute generated code otherwise it would fallback to nGraph reference
-    void execute(dnnl::stream strm) override;
-    void executeDynamicImpl(dnnl::stream strm) override;
+    void execute(const dnnl::stream& strm) override;
+    void executeDynamicImpl(const dnnl::stream& strm) override;
 
-    struct SnippetAttrs {
-        // Local copy of subgraph node for canonization & code generation
-        std::shared_ptr<snippets::op::Subgraph> snippet;
-        uint64_t bodyHash;
-        std::vector<VectorDims> inMemBlockedDims;
-        std::vector<VectorDims> inMemOrders;
-        std::vector<ov::element::Type> inMemPrecs;
-        std::vector<VectorDims> outMemBlockedDims;
-        std::vector<VectorDims> outMemOrders;
-        std::vector<ov::element::Type> outMemPrecs;
-        // todo: used flag if we need extra shape infer, can be removed after [121670]
-        bool has_non_planar_inputs;
-    };
+    bool has_domain_sensitive_ops() const;
+
+protected:
+    IShapeInfer::Result shapeInfer() const override;
 
 private:
-    typedef void (*kernel)(const void *, const void *);
+    void initMemoryPtrs();
+    void initAttributes();
+    void initStartOffsets();
+    void initPluginBlockedShapes() const;
+    void updateIsDynamic();
+    void optimizeIR();
 
-    static uint64_t get_body_hash(const std::shared_ptr<snippets::op::Subgraph>& snippet);
+    snippets::op::Subgraph::BlockedShapeVector getSnippetsBlockedShapes() const;
+    std::pair<std::vector<ov::element::Type>, std::vector<ov::element::Type>> getIOPrecisions() const;
 
-    size_t inputNum = 0;
-    size_t outputNum = 0;
+    static uint64_t getBodyHash(const std::shared_ptr<snippets::op::Subgraph>& snippet);
+    uint32_t getBroadcastingMask(const std::vector<VectorDims>& input_shapes);
+    void initConstantRepackedMask();
+#if defined(OPENVINO_ARCH_X86_64) || defined(OPENVINO_ARCH_ARM64)
+    uint32_t getConstantRepackedMask() const;
+#endif
+    std::set<size_t> getConstantInputIndexes() const;
+
+    using DataFlowPasses = std::vector<ov::snippets::pass::Manager::PositionedPassBase>;
+    using ControlFlowPasses = std::vector<ov::snippets::lowered::pass::PassPipeline::PositionedPassLowered>;
+
+    DataFlowPasses getDataFlowPasses();
+    ControlFlowPasses getControlFlowPasses();
 
     // Holds ISA version used is codeGeneration target
-    dnnl::impl::cpu::x64::cpu_isa_t host_isa;
-
-    std::vector<MemoryPtr> srcMemPtrs = {};
-    std::vector<MemoryPtr> dstMemPtrs = {};
-
-    mutable SnippetAttrs snippetAttrs;
-    bool is_dynamic = false;
-
-    class SnippetExecutor {
-        public:
-            SnippetExecutor(SnippetAttrs attrs, bool is_dynamic);
-            virtual void exec(const std::vector<MemoryPtr>& inMemPtrs, const std::vector<MemoryPtr>& outMemPtrs) = 0;
-            virtual ~SnippetExecutor() = default;
-            std::shared_ptr<IShapeInfer> shapeInference = nullptr;
-
-        protected:
-            SnippetAttrs snippetAttrs;
-            bool is_dynamic = false;
-    };
-
-    std::shared_ptr<SnippetExecutor> execPtr = nullptr;
-
-    class SnippetJitExecutor : public SnippetExecutor {
-        public:
-            SnippetJitExecutor(SnippetAttrs attrs, bool is_dynamic);
-            void exec(const std::vector<MemoryPtr>& inMemPtrs, const std::vector<MemoryPtr>& outMemPtrs) override;
-
-            bool schedule_created();
-
-        private:
-            static const size_t rank6D {6};
-
-            typedef void (*kernel)(const void *, const void *);
-
-            size_t numInput = 0;
-            size_t numOutput = 0;
-
-            void generate(const jit_snippets_compile_args*);
-            inline void update_ptrs(jit_snippets_call_args&, const std::vector<MemoryPtr>& inMemPtrs, const std::vector<MemoryPtr>& outMemPtrs);
-            // Evaluates generated snippet using parallel backend
-            void schedule_6d(const std::vector<MemoryPtr>& inMemPtrs, const std::vector<MemoryPtr>& outMemPtrs);
-            void schedule_nt(const std::vector<MemoryPtr>& inMemPtrs, const std::vector<MemoryPtr>& outMemPtrs);
-
-            // Holds generated snippet with information about how to schedule it
-            snippets::Schedule schedule;
-
-            // Holds index of output used as in execution domain
-            // it should be compatible with a schedule's work size
-            std::vector<size_t> parallel_exec_domain = {};
-
-            /// scheduling info
-            size_t tensorRank = 0;
-            size_t harnessWorkAmount = 0;
-
-            std::vector<size_t> dataSize = {};
-
-            std::vector<ptrdiff_t> start_offset_in = {};
-            std::vector<ptrdiff_t> start_offset_out = {};
-
-            // Buffer scratchpad
-            std::vector<uint8_t> buffer_scratchpad = {};
-            size_t buffer_scratchpad_size = 0;
-
-#ifdef SNIPPETS_DEBUG_CAPS
-            inline void segfault_detector();
+#if defined(OPENVINO_ARCH_ARM64)
+#    define _ov_dnnl_cpu_isa dnnl::impl::cpu::aarch64::cpu_isa_t
+#elif defined(OPENVINO_ARCH_RISCV64)
+#    define _ov_dnnl_cpu_isa ov::intel_cpu::riscv64::cpu_isa_t
+#else
+#    define _ov_dnnl_cpu_isa dnnl::impl::cpu::x64::cpu_isa_t
 #endif
-    };
+
+    _ov_dnnl_cpu_isa host_isa;
+
+    std::shared_ptr<SubgraphAttrs> subgraph_attrs;
+
+    // Index of Parameter -> Index of broadcastable dimension from end
+    std::map<size_t, size_t> broadcastable_inputs;
+
+    size_t input_num = 0;
+    size_t output_num = 0;
+
+    std::vector<MemoryPtr> srcMemPtrs;
+    std::vector<MemoryPtr> dstMemPtrs;
+
+    std::vector<ptrdiff_t> start_offset_in;
+    std::vector<ptrdiff_t> start_offset_out;
+
+    // Ptr indices which are not processed by the snippets kernel
+    // and used directly in the specific emitters (e.g. jit_brgemm_emitter)
+    std::set<size_t> external_ptrs_idces;
+
+    bool is_dynamic = false;
+    // Bitmask of inputs pre-packed at compile time (constant weights via RepackMatMulWeights).
+    // Cached once in initConstantRepackedMask() right after optimizeIR(), because
+    // BrgemmExternalRepackingAdjuster erases already-repacked entries from input_repackers at runtime.
+    uint32_t m_constant_repacked_mask = 0;
+    // Input shapes that are used in PrepareParams and ShapeInfer to avoid frequent memory allocation
+    mutable std::vector<VectorDims> in_shapes;
+
+    std::shared_ptr<SubgraphBaseExecutor> execPtr = nullptr;
 };
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

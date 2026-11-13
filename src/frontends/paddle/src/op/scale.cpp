@@ -1,14 +1,11 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "openvino/frontend/paddle/node_context.hpp"
 #include "openvino/opsets/opset6.hpp"
 
-namespace ov {
-namespace frontend {
-namespace paddle {
-namespace op {
+namespace ov::frontend::paddle::op {
 NamedOutputs scale(const NodeContext& node) {
     auto data = node.get_input("X");
     auto dtype = data.get_element_type();
@@ -24,11 +21,11 @@ NamedOutputs scale(const NodeContext& node) {
             scale = std::make_shared<opset6::Convert>(scale_tensor_node, dtype);
     } else {
         auto scale_val = node.get_attribute<float>("scale");
-        scale = ov::opset6::Constant::create(dtype, Shape{1}, {scale_val});
+        scale = ov::opset6::Constant::create(dtype, Shape{}, {scale_val});
     }
 
     auto bias_val = node.get_attribute<float>("bias");
-    bias = ov::opset6::Constant::create(dtype, Shape{1}, {bias_val});
+    bias = ov::opset6::Constant::create(dtype, Shape{}, {bias_val});
     auto bias_after_scale = node.get_attribute<bool>("bias_after_scale");
 
     std::shared_ptr<Node> result_node;
@@ -43,7 +40,4 @@ NamedOutputs scale(const NodeContext& node) {
     return node.default_single_output_mapping({result_node}, {"Out"});
 }
 
-}  // namespace op
-}  // namespace paddle
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::paddle::op

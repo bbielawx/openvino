@@ -1,10 +1,12 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "random_uniform_inst.h"
 #include "primitive_type_base.h"
 #include "json_object.h"
+
+#include <random>
 
 #include "random_uniform_shape_inference.hpp"
 
@@ -13,6 +15,26 @@ GPU_DEFINE_PRIMITIVE_TYPE_ID(random_uniform)
 
 random_uniform_inst::typed_primitive_inst(network& network, random_uniform_node const &node)
 : parent(network, node) {
+    const auto& desc = node.get_primitive();
+    _global_seed = desc->global_seed;
+    _op_seed = desc->op_seed;
+    // When both seed values are equal to zero RandomUniform should generate non-deterministic sequence.
+    if (_global_seed == 0 && _op_seed == 0) {
+        _global_seed = std::random_device{}();
+    }
+}
+
+uint64_t random_uniform_inst::get_counter_state() const {
+    return _counter_state > 0 ? _counter_state : _op_seed;
+}
+
+void random_uniform_inst::advance_state(size_t generated_elements) {
+    // Same as the CPU plugin: skip 256 * <number of output elements> values of n, carry the overflow into the counter.
+    const uint64_t skip_count = static_cast<uint64_t>(generated_elements) * 256;
+    _n_state += skip_count;
+    if (_n_state < skip_count) {
+        _counter_state++;
+    }
 }
 
 layout random_uniform_inst::calc_output_layout(random_uniform_node const &node, kernel_impl_params const& impl_param) {
@@ -32,7 +54,7 @@ std::vector<layout> random_uniform_inst::calc_output_layouts(random_uniform_node
                                             impl_param.get_input_layout(1).get_partial_shape(),
                                             impl_param.get_input_layout(2).get_partial_shape() };
 
-    auto& memory_deps = impl_param.memory_deps;
+    const auto& memory_deps = impl_param.memory_deps;
     std::unordered_map<size_t, ov::Tensor> const_data;
 
     auto run_shape_infer = [&]() {
@@ -47,9 +69,9 @@ std::vector<layout> random_uniform_inst::calc_output_layouts(random_uniform_node
             const_data.emplace(2, make_tensor(max_val->get_layout(), max_val_lock.data()));
 
             return ov::op::v8::shape_infer(&op, input_shapes, ov::make_tensor_accessor(const_data));
-        } else {
-            return ov::op::v8::shape_infer(&op, input_shapes, ov::make_tensor_accessor(const_data));
         }
+        return ov::op::v8::shape_infer(&op, input_shapes, ov::make_tensor_accessor(const_data));
+
     };
 
     if (memory_deps.count(0) > 0) {
@@ -72,7 +94,7 @@ std::string random_uniform_inst::to_string(random_uniform_node const &node) {
     json_composite random_uniform_info;
     random_uniform_info.add("input id", node.input().id());
     random_uniform_info.add("min_value id", node.input(1).id());
-    random_uniform_info.add("max_value  id", node.input(2).id());
+    random_uniform_info.add("max_value id", node.input(2).id());
     random_uniform_info.add("global_seed", node.get_primitive()->global_seed);
     random_uniform_info.add("op_seed", node.get_primitive()->op_seed);
     node_info->add("random uniform info", random_uniform_info);

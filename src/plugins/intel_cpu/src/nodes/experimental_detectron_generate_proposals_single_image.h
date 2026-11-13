@@ -1,28 +1,35 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "node.h"
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
+#include <vector>
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+#include "graph_context.h"
+#include "node.h"
+#include "openvino/core/node.hpp"
+
+namespace ov::intel_cpu::node {
 
 class ExperimentalDetectronGenerateProposalsSingleImage : public Node {
 public:
     ExperimentalDetectronGenerateProposalsSingleImage(const std::shared_ptr<ov::Node>& op,
-        const GraphContext::CPtr context);
+                                                      const GraphContext::CPtr& context);
 
     void getSupportedDescriptors() override {};
     void initSupportedPrimitiveDescriptors() override;
-    void execute(dnnl::stream strm) override;
+    void execute(const dnnl::stream& strm) override;
     bool created() const override;
 
     bool needShapeInfer() const override;
     bool needPrepareParams() const override;
-    void executeDynamicImpl(dnnl::stream strm) override { execute(strm); }
+    void executeDynamicImpl(const dnnl::stream& strm) override {
+        execute(strm);
+    }
     static bool isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::string& errorMessage) noexcept;
 
 private:
@@ -32,22 +39,20 @@ private:
     // Outputs:
     //      top_rois, shape [max_rois, 4]
 
-    const int INPUT_IM_INFO {0};
-    const int INPUT_ANCHORS {1};
-    const int INPUT_DELTAS {2};
-    const int INPUT_SCORES {3};
-    const int OUTPUT_ROIS {0};
-    const int OUTPUT_SCORES {1};
+    const int INPUT_IM_INFO{0};
+    const int INPUT_ANCHORS{1};
+    const int INPUT_DELTAS{2};
+    const int INPUT_SCORES{3};
+    const int OUTPUT_ROIS{0};
+    const int OUTPUT_SCORES{1};
 
     float min_size_;
-    int pre_nms_topn_;
-    int post_nms_topn_;
+    size_t pre_nms_topn_;
+    size_t post_nms_topn_;
     float nms_thresh_;
     float coordinates_offset;
 
     std::vector<int> roi_indices_;
 };
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

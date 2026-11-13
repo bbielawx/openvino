@@ -1,28 +1,9 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
-if(DEFINED BUILD_SHARED_LIBS AND NOT BUILD_SHARED_LIBS)
-    # 3.17: 'target_link_libraries' does not work correctly when called from
-    # different directory where 'add_library' is called: CMake generates
-    # incorrect OpenVINOConfig.cmake in this case
-    # 3.18: add_library cannot create ALIAS for non-GLOBAL targets
-    cmake_minimum_required(VERSION 3.18)
-else()
-    if(CPACK_GENERATOR STREQUAL "DEB")
-        # we have to use CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS variable
-        cmake_minimum_required(VERSION 3.20)
-    else()
-        if(WIN32)
-            # 3.16: FindPython3.cmake can find Python via -DPython3_EXECUTABLE
-            # 3.18: FindPython3.cmake can find Python automatically from virtualenv
-            cmake_minimum_required(VERSION 3.16)
-        else()
-            # 3.13: default choice
-            cmake_minimum_required(VERSION 3.13)
-        endif()
-    endif()
-endif()
+# 3.26 is required by the bundled ONNX version.
+cmake_minimum_required(VERSION 3.26)
 
 if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW) # Enables use of MSVC_RUNTIME_LIBRARY
@@ -33,7 +14,35 @@ if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
 
-project(OpenVINO DESCRIPTION "OpenVINO toolkit")
+if(POLICY CMP0149)
+    # VS generator looks for most recent Windows SDK, ignoring
+    # CMAKE_SYSTEM_VERSION and allowing override by WindowsSDKVersion
+    # environment variable. New in 3.27. This is to allow override
+    # in the Windows CI builds.
+    cmake_policy(SET CMP0149 NEW)
+endif()
+
+if(POLICY CMP0177)
+    # install() DESTINATION paths are normalized.
+    cmake_policy(SET CMP0177 NEW)
+endif()
+
+if(POLICY CMP0194)
+    # NOTE: Keeping the policy "OLD" in order to retain custom assembler search (icpx/icx/icx.exe)
+    # Making it "NEW" would result in (incorrect) usage of cl64.exe in certain contexts on Windows
+    set(CMAKE_POLICY_DEFAULT_CMP0194 OLD)
+    # NOTE: Some CMake versions have a typo in the policy number, so we set both to be safe
+    set(CMAKE_POLICY_DEFAULT_CMP194 OLD)
+endif()
+
+# set CMAKE_POLICY_VERSION_MINIMUM to avoid errors from 3rd party dependencies
+# after cmake is updated to 4.0
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
+project(OpenVINO
+        DESCRIPTION "OpenVINO toolkit"
+        HOMEPAGE_URL "https://docs.openvino.ai/2026/index.html"
+        LANGUAGES C CXX)
 
 find_package(OpenVINODeveloperScripts REQUIRED
              PATHS "${OpenVINO_SOURCE_DIR}/cmake/developer_package"
@@ -49,8 +58,14 @@ if(ENABLE_COVERAGE)
     include(cmake/coverage.cmake)
 endif()
 
+if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET AND
+    CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS 10.15)
+    message(FATAL_ERROR "OpenVINO requires MACOSX_DEPLOYMENT_TARGET at least 10.15, specified ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+endif()
+
 # resolving dependencies for the project
 message (STATUS "CMAKE_VERSION ......................... " ${CMAKE_VERSION})
+message (STATUS "CMAKE_CROSSCOMPILING .................. " ${CMAKE_CROSSCOMPILING})
 message (STATUS "OpenVINO_SOURCE_DIR ................... " ${OpenVINO_SOURCE_DIR})
 message (STATUS "OpenVINO_BINARY_DIR ................... " ${OpenVINO_BINARY_DIR})
 message (STATUS "CMAKE_GENERATOR ....................... " ${CMAKE_GENERATOR})
@@ -62,7 +77,7 @@ if(OV_GENERATOR_MULTI_CONFIG)
     string(REPLACE ";" " " config_types "${CMAKE_CONFIGURATION_TYPES}")
     message (STATUS "CMAKE_CONFIGURATION_TYPES ............. " ${config_types})
     unset(config_types)
-    if(CMAKE_GENERATOR MATCHES "^Ninja Multi-Config$")
+    if(CMAKE_GENERATOR STREQUAL "Ninja Multi-Config")
         message (STATUS "CMAKE_DEFAULT_BUILD_TYPE .............. " ${CMAKE_DEFAULT_BUILD_TYPE})
     endif()
 else()
@@ -77,8 +92,11 @@ endif()
 if(CMAKE_TOOLCHAIN_FILE)
     message (STATUS "CMAKE_TOOLCHAIN_FILE .................. " ${CMAKE_TOOLCHAIN_FILE})
 endif()
-if(NOT OV_GLIBC_VERSION VERSION_EQUAL 0.0)
-    message (STATUS "GLIBC_VERSION ......................... " ${OV_GLIBC_VERSION})
+if(NOT OV_LIBC_VERSION VERSION_EQUAL 0.0)
+    message (STATUS "LIBC_VERSION .......................... " ${OV_LIBC_VERSION})
+endif()
+if(DEFINED OPENVINO_STDLIB)
+    message (STATUS "STDLIB ................................ " ${OPENVINO_STDLIB})
 endif()
 
 # remove file with exported targets to force its regeneration
@@ -118,7 +136,7 @@ function(ov_developer_package_export_targets)
             endforeach()
         endif()
     else()
-        message(FATAL_ERROR "Internal error: ${target_name} does not represent a cmake target")
+        message(FATAL_ERROR "Internal error: '${EXPORT_TARGET}' does not represent a cmake target")
     endif()
 
     list(REMOVE_DUPLICATES _OPENVINO_DEVELOPER_PACKAGE_TARGETS)
@@ -129,6 +147,42 @@ endfunction()
 #
 # Build
 #
+
+# Configure job pools (only for Ninja generators)
+if(CMAKE_GENERATOR STREQUAL "Ninja" OR CMAKE_GENERATOR STREQUAL "Ninja Multi-Config")
+    # Because we use Ninja generator, we can set the number of parallel
+    # jobs separately for different tasks, like compiling and linking.
+    # Especially useful on Windows, we avoid to be out of memory during linking stage that way.
+    # Number of jobs will never exceed the amount passed in `--parallel` to `cmake --build` command,
+    # even if larger `JOB_POOL` specified.
+    # See also: https://cmake.org/cmake/help/latest/prop_gbl/JOB_POOLS.html
+
+    # Set default job pools.
+    # `four_jobs` is used in a few places across all CMake files to limit
+    # the number of concurrent jobs (e.g. to convert *.prototxt files
+    # in cmake/test_model_zoo.cmake:54).
+    set_property(GLOBAL PROPERTY JOB_POOLS "${CMAKE_JOB_POOLS};four_jobs=4")
+
+    if(CMAKE_JOB_POOLS)
+        message(STATUS "")
+        message(STATUS "Job pools configuration for Ninja generator:")
+        get_property(current_job_pools GLOBAL PROPERTY JOB_POOLS)
+        message(STATUS "CMAKE_JOB_POOLS is set to: ${CMAKE_JOB_POOLS}")
+        message(STATUS "JOB_POOLS global property is set to: ${current_job_pools}")
+
+        if(CMAKE_JOB_POOL_COMPILE)
+            message(STATUS "CMAKE_JOB_POOL_COMPILE is set to: ${CMAKE_JOB_POOL_COMPILE}")
+        endif()
+
+        if(CMAKE_JOB_POOL_LINK)
+            message(STATUS "CMAKE_JOB_POOL_LINK is set to: ${CMAKE_JOB_POOL_LINK}")
+        endif()
+
+        if(CMAKE_JOB_POOL_PRECOMPILE_HEADER)
+            message(STATUS "CMAKE_JOB_POOL_PRECOMPILE_HEADER is set to: ${CMAKE_JOB_POOL_PRECOMPILE_HEADER}")
+        endif()
+    endif()
+endif()
 
 if(ENABLE_TESTS)
     # add target with processed tests model zoo

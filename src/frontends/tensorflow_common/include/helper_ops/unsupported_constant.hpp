@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,9 +9,7 @@
 
 #include "internal_operation.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
+namespace ov::frontend::tensorflow {
 
 class UnsupportedConstant : public InternalOperation {
 public:
@@ -29,10 +27,8 @@ public:
     }
 
     void validate_and_infer_types() override {
-        set_output_type(0, ov::element::undefined, ov::PartialShape::dynamic());
+        set_output_type(0, ov::element::dynamic, ov::PartialShape::dynamic());
     }
 };
 
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow

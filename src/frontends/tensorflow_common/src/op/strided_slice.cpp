@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -14,10 +14,7 @@
 using namespace std;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_strided_slice_op(const NodeContext& node) {
     default_op_checks(node, 4, {"StridedSlice", "STRIDED_SLICE"}, true);
@@ -59,7 +56,7 @@ OutputVector translate_strided_slice_op(const NodeContext& node) {
     std::vector<int64_t> begin_axes;
     if (complex_type_mark) {
         complex_part_type = complex_type_mark->get_complex_part_type();
-        input = complex_type_mark->input_value(0);
+        input = complex_type_mark->get_data();
 
         TENSORFLOW_OP_VALIDATION(node,
                                  as_type_ptr<v0::Constant>(node.get_input(1).get_node_shared_ptr()),
@@ -107,7 +104,4 @@ OutputVector translate_strided_slice_op(const NodeContext& node) {
     return {strided_slice};
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

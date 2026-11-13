@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,12 +8,17 @@
 # define NOMINMAX
 #endif
 
+
 #ifdef _WIN32
 # include <openvino/runtime/intel_gpu/ocl/dx.hpp>
 #else
 # include <openvino/runtime/intel_gpu/ocl/va.hpp>
 #endif
+
 #include "openvino/runtime/iremote_tensor.hpp"
+#include "openvino/runtime/intel_gpu/remote_properties.hpp"
+#include "openvino/runtime/tensor.hpp"
+#include "openvino/util/mmap_object.hpp"
 
 #include "intel_gpu/runtime/memory_caps.hpp"
 #include "intel_gpu/runtime/memory.hpp"
@@ -24,8 +29,7 @@
 #include <map>
 #include <memory>
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 class RemoteContextImpl;
 
 class RemoteTensorImpl : public ov::IRemoteTensor {
@@ -37,7 +41,10 @@ public:
                      TensorType mem_type = TensorType::BT_BUF_INTERNAL,
                      cldnn::shared_handle mem = nullptr,
                      cldnn::shared_surface surf = 0,
-                     uint32_t plane = 0);
+                     uint32_t plane = 0,
+                     ov::intel_gpu::SharedBufferHandle shared_buffer_handle = {},
+                     ov::intel_gpu::VirtualAddressMemory va_mem = ov::intel_gpu::VirtualAddressMemory(nullptr),
+                     std::shared_ptr<ov::MappedMemory> mapped_memory = nullptr);
 
     ~RemoteTensorImpl() override;
     const AnyMap& get_properties() const override;
@@ -48,6 +55,9 @@ public:
     const ov::Shape& get_shape() const override;
     const ov::Strides& get_strides() const override;
 
+    void copy_to(const std::shared_ptr<ov::ITensor>& dst, size_t src_offset, size_t dst_offset, const ov::Shape& roi_shape) const override;
+    void copy_from(const std::shared_ptr<const ov::ITensor>& src, size_t src_offset, size_t dst_offset, const ov::Shape& roi_shape) override;
+
     void allocate();
     bool deallocate() noexcept;
 
@@ -56,6 +66,7 @@ public:
     bool is_shared() const noexcept;
     cldnn::memory::ptr get_memory() const;
     cldnn::memory::ptr get_original_memory() const;
+    void *get_original_memory_buf_ptr() const;
 
     void set_memory(cldnn::memory::ptr memory, size_t actual_size);
 
@@ -66,7 +77,7 @@ private:
 
     ov::element::Type m_element_type;
     ov::Shape m_shape;
-    ov::Strides m_strides{};
+    ov::Strides m_strides;
     ov::AnyMap m_properties;
 
     cldnn::memory::ptr m_memory_object = nullptr;
@@ -76,6 +87,9 @@ private:
     cldnn::shared_handle m_mem;
     cldnn::shared_surface m_surf;
     uint32_t m_plane;
+    ov::intel_gpu::SharedBufferHandle m_shared_buffer_handle;
+    ov::intel_gpu::VirtualAddressMemory m_va_mem;
+    std::shared_ptr<ov::MappedMemory> m_mapped_memory;  // keeps the file mapping alive for the whole tensor lifetime
     size_t m_hash = 0;
 
     bool supports_caching() const;
@@ -86,5 +100,4 @@ private:
     static TensorType allocation_type_to_tensor_type(cldnn::allocation_type t);
 };
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

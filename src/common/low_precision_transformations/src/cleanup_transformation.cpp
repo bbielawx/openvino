@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2023 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,7 +13,7 @@ namespace low_precision {
 CleanupTransformation::CleanupTransformation(const Params& params) : LayerTransformation(params) {
 }
 
-bool CleanupTransformation::canBeTransformed(const TransformationContext& context, std::shared_ptr<Node> layer) const {
+bool CleanupTransformation::canBeTransformed(const std::shared_ptr<Node>& layer) const {
     return canBeTransformedStatic(layer);
 }
 

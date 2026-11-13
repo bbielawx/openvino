@@ -1,11 +1,10 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "ov_lpt_models/recurrent_cell.hpp"
-
-#include "openvino/opsets/opset1.hpp"
-#include "openvino/opsets/opset5.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
+#include "openvino/opsets/opset5_decl.hpp"
 #include "ov_ops/type_relaxed.hpp"
 #include "low_precision/network_helper.hpp"
 #include "low_precision/rt_info/precision_preserved_attribute.hpp"
@@ -16,6 +15,9 @@
 #include "ov_lpt_models/common/fake_quantize_on_data.hpp"
 #include "ov_lpt_models/common/dequantization_operations.hpp"
 #include "ov_lpt_models/common/builders.hpp"
+#include "openvino/op/gru_sequence.hpp"
+#include "openvino/op/lstm_sequence.hpp"
+#include "openvino/op/util/rnn_cell_base.hpp"
 
 namespace ov {
 namespace builder {
@@ -30,7 +32,8 @@ std::shared_ptr<ov::Model> RecurrentCellFunction::get(
     const RNNType type,
     const std::vector<FakeQuantizeOnDataWithConstant>& fqOnDatas,
     const std::vector<DequantizationOperations::Convert>& converts,
-    const std::vector<DequantizationOperations>& dequantizations) {
+    const std::vector<DequantizationOperations>& dequantizations,
+    const bool addPrecisionTransparentOperations) {
     auto X = std::make_shared<ov::opset1::Parameter>(inputPrecision, inputActivationsShapes[0]);
     X->set_friendly_name("X");
     std::shared_ptr<Node> parent_X = makeQuantizationAndDequantization(X,
@@ -46,7 +49,8 @@ std::shared_ptr<ov::Model> RecurrentCellFunction::get(
                                                                        H->get_friendly_name(),
                                                                        fqOnDatas[1],
                                                                        converts[1],
-                                                                       dequantizations[1]);
+                                                                       dequantizations[1],
+                                                                       addPrecisionTransparentOperations);
     auto C = std::make_shared<ov::opset1::Parameter>(inputPrecision, inputActivationsShapes[2]);
     C->set_friendly_name("C");
 
@@ -58,7 +62,8 @@ std::shared_ptr<ov::Model> RecurrentCellFunction::get(
                                                                        W->get_friendly_name(),
                                                                        fqOnDatas[2],
                                                                        converts[2],
-                                                                       dequantizations[2]);
+                                                                       dequantizations[2],
+                                                                       addPrecisionTransparentOperations);
     auto R = ov::opset1::Constant::create(fqOnDatas[2].empty() ? ov::element::i8 : inputPrecision,
                                               inputWeightsShapes[1],
                                               {1});
@@ -127,12 +132,20 @@ std::shared_ptr<Node> makeQuantizationAndDequantization(const std::shared_ptr<No
                                                         const std::string friendly_name,
                                                         const FakeQuantizeOnDataWithConstant& fqOnData,
                                                         const DequantizationOperations::Convert& convert,
-                                                        const DequantizationOperations& dequantization) {
-    std::shared_ptr<Node> parent;
-    if (fqOnData.empty()) {
-        parent = input;
-    } else {
-        std::shared_ptr<Node> fakeQuantize1 = makeFakeQuantizeTypeRelaxed(input, inputPrecision, fqOnData);
+                                                        const DequantizationOperations& dequantization,
+                                                        const bool addPrecisionTransparentOperations) {
+    std::shared_ptr<Node> parent = input;
+    if (addPrecisionTransparentOperations) {
+        auto shape = input->get_output_shape(0);
+        std::swap(shape[shape.size() - 2], shape[shape.size() - 1]);
+        parent = std::make_shared<ov::opset1::Reshape>(
+            parent,
+            std::make_shared<ov::opset1::Constant>(element::u32, Shape({ shape.size() }), shape),
+            true);
+    }
+
+    if (!fqOnData.empty()) {
+        std::shared_ptr<Node> fakeQuantize1 = makeFakeQuantizeTypeRelaxed(parent, inputPrecision, fqOnData);
         fakeQuantize1->set_friendly_name("fakeQuantize_" + friendly_name);
         parent = fakeQuantize1;
     }
@@ -142,6 +155,15 @@ std::shared_ptr<Node> makeQuantizationAndDequantization(const std::shared_ptr<No
     if (!dequantization.empty()) {
         parent = makeDequantization(parent, dequantization);
     }
+
+    if (addPrecisionTransparentOperations) {
+        const auto& shape = input->get_output_shape(0);
+        parent = std::make_shared<ov::opset1::Reshape>(
+            parent,
+            std::make_shared<ov::opset1::Constant>(element::u32, Shape({ shape.size() }), shape),
+            true);
+    }
+
     return parent;
 }
 

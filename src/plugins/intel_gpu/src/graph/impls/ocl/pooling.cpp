@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -51,12 +51,17 @@ struct pooling_impl : typed_primitive_impl_ocl<pooling> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::pooling_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<pooling_impl>(*this);
+        return make_deep_copy<pooling_impl, kernel_params_t>(*this);
     }
 
 protected:
     kernel_arguments_data get_arguments(const typed_primitive_inst<pooling>& instance) const override {
         kernel_arguments_data args = parent::get_arguments(instance);
+        // Legacy multi-output
+        if (instance.get_typed_desc<pooling>()->maxPoolOpset8Features) {
+            args.inputs = { instance.dep_memory_ptr(0) };
+            args.outputs.push_back(instance.dep_memory_ptr(1));
+        }
         return args;
     }
 
@@ -112,8 +117,9 @@ public:
         auto& pp = params;
 
         pp.poolType = cldnn_2_pool_type(primitive->mode);
-        pp.remainderAction = primitive->rounding_type == ov::op::RoundingType::CEIL ? kernel_selector::pool_remainder::CEIL
-                                                                                    : kernel_selector::pool_remainder::FLOOR;
+        const bool ceil_mode = primitive->rounding_type == ov::op::RoundingType::CEIL ||
+                               primitive->rounding_type == ov::op::RoundingType::CEIL_TORCH;
+        pp.remainderAction = ceil_mode ? kernel_selector::pool_remainder::CEIL : kernel_selector::pool_remainder::FLOOR;
 
         // check if last pooling window goes outside of input size + padding. If so the avg pooling size will be
         // adjusted to that, to work properly this calculation must take pad_end into account.
@@ -123,29 +129,30 @@ public:
                                  static_cast<size_t>(pads_end[spatial_rank - i - 1] + pads_begin[spatial_rank - i - 1] + input_layout.spatial(i));
         }
 
-        if (primitive->mode == pooling_mode::average && dynamic_mode)
+        if (primitive->mode == pooling_mode::average && dynamic_mode) {
             pp.divMode = kernel_selector::kernel_divider_mode::DYNAMIC_WITH_PADDING;
-        else
+        } else {
             pp.divMode = cldnn_2_kernel_divider_mode(primitive->mode);
+        }
 
         uint32_t kernel_z = kernel.size() >= 3 ? static_cast<uint32_t>(kernel[kernel.size() - 3]) : 1;
         uint32_t kernel_y = kernel.size() >= 2 ? static_cast<uint32_t>(kernel[kernel.size() - 2]) : 1;
-        uint32_t kernel_x = kernel.size() >= 1 ? static_cast<uint32_t>(kernel[kernel.size() - 1]) : 1;
+        uint32_t kernel_x = !kernel.empty() ? static_cast<uint32_t>(kernel[kernel.size() - 1]) : 1;
         pp.poolSize = {kernel_x, kernel_y, kernel_z};
 
-        uint32_t pad_z = std::max<std::ptrdiff_t>(pads_begin.size() >= 3 ? pads_begin[pads_begin.size() - 3] : 0, 0);
-        uint32_t pad_y = std::max<std::ptrdiff_t>(pads_begin.size() >= 2 ? pads_begin[pads_begin.size() - 2] : 0, 0);
-        uint32_t pad_x = std::max<std::ptrdiff_t>(pads_begin.size() >= 1 ? pads_begin[pads_begin.size() - 1] : 0, 0);
+        uint32_t pad_z = static_cast<uint32_t>(std::max<std::ptrdiff_t>(pads_begin.size() >= 3 ? pads_begin[pads_begin.size() - 3] : 0, 0));
+        uint32_t pad_y = static_cast<uint32_t>(std::max<std::ptrdiff_t>(pads_begin.size() >= 2 ? pads_begin[pads_begin.size() - 2] : 0, 0));
+        uint32_t pad_x = static_cast<uint32_t>(std::max<std::ptrdiff_t>(!pads_begin.empty() ? pads_begin[pads_begin.size() - 1] : 0, 0));
         pp.poolPad  = {pad_x, pad_y, pad_z};
 
         uint32_t stride_z = stride.size() >= 3 ? static_cast<uint32_t>(stride[stride.size() - 3]) : 1;
         uint32_t stride_y = stride.size() >= 2 ? static_cast<uint32_t>(stride[stride.size() - 2]) : 1;
-        uint32_t stride_x = stride.size() >= 1 ? static_cast<uint32_t>(stride[stride.size() - 1]) : 1;
+        uint32_t stride_x = !stride.empty() ? static_cast<uint32_t>(stride[stride.size() - 1]) : 1;
         pp.poolStride = {stride_x, stride_y, stride_z};
 
         uint32_t dilation_z = dilation.size() >= 3 ? static_cast<uint32_t>(dilation[dilation.size() - 3]) : 1;
         uint32_t dilation_y = dilation.size() >= 2 ? static_cast<uint32_t>(dilation[dilation.size() - 2]) : 1;
-        uint32_t dilation_x = dilation.size() >= 1 ? static_cast<uint32_t>(dilation[dilation.size() - 1]) : 1;
+        uint32_t dilation_x = !dilation.empty() ? static_cast<uint32_t>(dilation[dilation.size() - 1]) : 1;
         pp.poolDilation = {dilation_x, dilation_y, dilation_z};
 
         return params;
@@ -162,6 +169,7 @@ attach_pooling_impl::attach_pooling_impl() {
                      format::b_fs_yx_fsv4,
                      format::b_fs_yx_fsv16,
                      format::b_fs_yx_fsv32,
+                     format::fs_b_yx_fsv32,
                      format::bs_fs_yx_bsv16_fsv16,
                      format::bs_fs_yx_bsv16_fsv32,
                      format::bs_fs_yx_bsv32_fsv16,
@@ -176,8 +184,6 @@ attach_pooling_impl::attach_pooling_impl() {
                      format::bs_fs_zyx_bsv32_fsv32 };
 
     auto keys = implementation_map<pooling>::combine(types, formats);
-    keys.emplace(data_types::f16, format::fs_b_yx_fsv32);
-    keys.emplace(data_types::f32, format::fs_b_yx_fsv32);
 
     implementation_map<pooling>::add(impl_types::ocl, typed_primitive_impl_ocl<pooling>::create<pooling_impl>, keys);
 }

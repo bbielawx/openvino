@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,6 +8,7 @@
 // Protobuf: conversion from 'XXX' to 'YYY', possible loss of data
 #    pragma warning(disable : 4244)
 #endif
+
 #include <onnx/onnx_pb.h>
 
 #include <functional>
@@ -297,7 +298,7 @@ void SubgraphExtractor::add_new_inputs(const std::vector<InputEdge>& new_inputs,
                 input_consumers = 0;
 
                 // get index of the current edge from new_inputs in order to pass it to append_new_graph_input()
-                auto it = std::find_if(new_inputs.begin(), new_inputs.begin(), [&](const InputEdge& input_edge) {
+                auto it = std::find_if(new_inputs.begin(), new_inputs.end(), [&](const InputEdge& input_edge) {
                     return get_input_tensor_name(m_onnx_graph, input_edge) == input.first;
                 });
                 index = static_cast<int>(std::distance(new_inputs.begin(), it));

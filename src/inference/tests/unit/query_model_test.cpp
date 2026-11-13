@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include <gtest/gtest.h>
@@ -7,13 +7,24 @@
 
 #include "openvino/core/rt_info.hpp"
 #include "openvino/op/add.hpp"
+#include "openvino/op/concat.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
+#include "openvino/op/divide.hpp"
+#include "openvino/op/gather.hpp"
+#include "openvino/op/interpolate.hpp"
+#include "openvino/op/log.hpp"
 #include "openvino/op/log_softmax.hpp"
+#include "openvino/op/matmul.hpp"
 #include "openvino/op/parameter.hpp"
+#include "openvino/op/prelu.hpp"
 #include "openvino/op/reduce_l2.hpp"
 #include "openvino/op/reshape.hpp"
 #include "openvino/op/result.hpp"
+#include "openvino/op/shape_of.hpp"
+#include "openvino/op/subtract.hpp"
+#include "openvino/op/transpose.hpp"
+#include "openvino/op/util/op_types.hpp"
 #include "openvino/pass/constant_folding.hpp"
 #include "openvino/pass/manager.hpp"
 #include "openvino/runtime/iplugin.hpp"
@@ -54,7 +65,7 @@ public:
              const std::unordered_set<std::string>& expected,
              float query_model_ratio = 1.0f) {
         auto supported = ov::get_supported_nodes(m_function, transform, is_node_supported, query_model_ratio);
-        auto const is_in_expected = [&expected](const std::string& x) {
+        const auto is_in_expected = [&expected](const std::string& x) {
             return expected.find(x) != expected.end();
         };
         bool is_equal =
@@ -454,7 +465,7 @@ TEST_F(GetSupportedNodesTest, ShuffleChannelFusion) {
         auto reshape_after = std::make_shared<ov::op::v1::Reshape>(permute, shape_reshape_after, true);
         reshape_after->set_friendly_name("reshape_after");
 
-        m_function = std::make_shared<ov::Model>(ov::NodeVector{reshape_after}, ov::ParameterVector{input});
+        m_function = std::make_shared<ov::Model>(ov::OutputVector{reshape_after}, ov::ParameterVector{input});
     }
     Run(
         [&](std::shared_ptr<ov::Model>& model) {
@@ -478,7 +489,7 @@ TEST_F(GetSupportedNodesTest, FusedNameReduceL2Test) {
         auto reduce_l2 = std::make_shared<ov::op::v4::ReduceL2>(data, axes, true);
         reduce_l2->set_friendly_name("reduce_l2");
 
-        m_function = std::make_shared<ov::Model>(ov::NodeVector{reduce_l2}, ov::ParameterVector{data});
+        m_function = std::make_shared<ov::Model>(ov::OutputVector{reduce_l2}, ov::ParameterVector{data});
     }
     Run(
         [&](std::shared_ptr<ov::Model>& model) {
@@ -634,9 +645,8 @@ TEST_P(GetSupportedNodesCommonTest, SplitModelWithDifferentRatioTest) {
         result->set_friendly_name("res");
         m_function = std::make_shared<ov::Model>(ov::ResultVector{result}, ov::ParameterVector{param});
     }
-    float query_model_ratio;
-    std::unordered_set<std::string> expected;
-    std::tie(query_model_ratio, expected) = this->GetParam();
+
+    const auto& [query_model_ratio, expected] = this->GetParam();
     Run(
         [&](std::shared_ptr<ov::Model>& model) {
             ov::pass::Manager m;
@@ -663,9 +673,8 @@ TEST_P(GetSupportedNodesOneConstOp, OneConstOpTest) {
         res->set_friendly_name("res");
         m_function = std::make_shared<ov::Model>(ov::ResultVector{res}, ov::ParameterVector{param});
     }
-    float query_model_ratio;
-    std::unordered_set<std::string> expected;
-    std::tie(query_model_ratio, expected) = this->GetParam();
+
+    const auto& [query_model_ratio, expected] = this->GetParam();
     Run(
         [&](std::shared_ptr<ov::Model>& model) {
             ov::pass::Manager m;
@@ -696,9 +705,8 @@ TEST_P(GetSupportedNodesStopSplit, StopSplitTest) {
         result->set_friendly_name("res");
         m_function = std::make_shared<ov::Model>(ov::ResultVector{result}, ov::ParameterVector{param});
     }
-    float query_model_ratio;
-    std::unordered_set<std::string> expected;
-    std::tie(query_model_ratio, expected) = this->GetParam();
+
+    const auto& [query_model_ratio, expected] = this->GetParam();
     Run(
         [&](std::shared_ptr<ov::Model>& model) {
             ov::pass::Manager m;
@@ -732,3 +740,41 @@ const std::vector<ConfigParams> testConfigs2 = {
 INSTANTIATE_TEST_SUITE_P(GetSupportedNodesTest, GetSupportedNodesCommonTest, ::testing::ValuesIn(testConfigs));
 INSTANTIATE_TEST_SUITE_P(GetSupportedNodesTest, GetSupportedNodesOneConstOp, ::testing::ValuesIn(testConfigs1));
 INSTANTIATE_TEST_SUITE_P(GetSupportedNodesTest, GetSupportedNodesStopSplit, ::testing::ValuesIn(testConfigs2));
+
+TEST_F(GetSupportedNodesTest, FilterShapeOf) {
+    {
+        auto param = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::PartialShape{1, 1});
+        param->set_friendly_name("input");
+        auto weights = ov::op::v0::Constant::create(ov::element::Type_t::f32, {1, 1}, {1});
+        weights->set_friendly_name("weights");
+        auto shapeOf = std::make_shared<ov::op::v0::ShapeOf>(weights);
+        shapeOf->set_friendly_name("shapeof");
+        auto const1 = ov::op::v0::Constant::create(ov::element::Type_t::i32, {1}, {1});
+        const1->set_friendly_name("const1");
+        auto const2 = ov::op::v0::Constant::create(ov::element::Type_t::i64, {}, {0});
+        const2->set_friendly_name("const2");
+        auto gather = std::make_shared<ov::op::v8::Gather>(shapeOf, const1, const2);
+        gather->set_friendly_name("gather");
+        auto const3 = ov::op::v0::Constant::create(ov::element::Type_t::i64, {1}, {1});
+        const3->set_friendly_name("const3");
+        auto concat = std::make_shared<ov::op::v0::Concat>(ov::NodeVector{const3, gather}, 0);
+        concat->set_friendly_name("concat");
+        auto reshape = std::make_shared<ov::op::v1::Reshape>(param, concat, false);
+        reshape->set_friendly_name("reshape");
+        auto result = std::make_shared<ov::op::v0::Result>(reshape);
+        result->set_friendly_name("result");
+
+        m_function = std::make_shared<ov::Model>(ov::ResultVector{result}, ov::ParameterVector{param});
+    }
+    Run(
+        [&](std::shared_ptr<ov::Model>& model) {
+            ov::pass::Manager m;
+            m.register_pass<ov::pass::InitNodeInfo>();
+            m.run_passes(model);
+        },
+        [&](const std::shared_ptr<ov::Node>& op) {
+            return true;
+        },
+        {"weights"},
+        0.5f);
+}

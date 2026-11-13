@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,7 +10,7 @@ namespace test {
 namespace snippets {
 namespace {
 
-INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise, ThreeInputsEltwise,
+INSTANTIATE_TEST_SUITE_P(smoke_Snippets_ThreeInputsEltwise, ThreeInputsEltwise,
                      ::testing::Combine(
                              ::testing::Values(InputShape {{}, {{1, 64, 10, 10}}}),
                              ::testing::Values(InputShape {{}, {{1, 64, 10,  1}}}),

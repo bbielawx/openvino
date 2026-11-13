@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,10 +17,7 @@ using namespace ov;
 using namespace ov::op;
 using namespace ov::frontend::tensorflow;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 ov::OutputVector translate_roll_op(const NodeContext& node) {
     default_op_checks(node, 3, {"Roll"}, true);
     auto input = node.get_input(0);
@@ -32,7 +29,7 @@ ov::OutputVector translate_roll_op(const NodeContext& node) {
     auto complex_type_mark = as_type_ptr<ComplexTypeMark>(input.get_node_shared_ptr());
     element::Type complex_part_type = element::dynamic;
     if (complex_type_mark) {
-        input = complex_type_mark->input_value(0);
+        input = complex_type_mark->get_data();
         complex_part_type = complex_type_mark->get_complex_part_type();
 
         // axes can be negative so we need to adjust them
@@ -55,7 +52,4 @@ ov::OutputVector translate_roll_op(const NodeContext& node) {
 
     return {roll};
 }
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

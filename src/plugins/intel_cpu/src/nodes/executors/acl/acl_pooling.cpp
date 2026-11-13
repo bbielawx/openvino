@@ -1,16 +1,47 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "acl_pooling.hpp"
-#include "acl_utils.hpp"
 
-namespace ov {
-namespace intel_cpu {
+#include <arm_compute/core/CoreTypes.h>
+#include <arm_compute/core/Error.h>
+#include <arm_compute/core/QuantizationInfo.h>
+#include <arm_compute/core/TensorInfo.h>
+#include <arm_compute/core/Types.h>
+#include <arm_compute/runtime/IFunction.h>
+#include <arm_compute/runtime/NEON/functions/NEPooling3dLayer.h>
+#include <arm_compute/runtime/NEON/functions/NEPoolingLayer.h>
+
+#include <any>
+#include <cstddef>
+#include <functional>
+#include <memory>
+#include <oneapi/dnnl/dnnl.hpp>
+#include <optional>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "acl_utils.hpp"
+#include "cpu_memory.h"
+#include "cpu_types.h"
+#include "memory_desc/cpu_memory_desc.h"
+#include "nodes/executors/common/common_utils.hpp"
+#include "nodes/executors/executor.hpp"
+#include "nodes/executors/pooling.hpp"
+#include "openvino/core/except.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/op/util/attr_types.hpp"
+#include "post_ops.hpp"
+#include "utils/debug_capabilities.h"
+#include "utils/general_utils.h"
+
+namespace ov::intel_cpu {
 
 using namespace arm_compute;
 
-AclPoolingExecutor::AclPoolingExecutor(const ExecutorContext::CPtr context) : PoolingExecutor(context) {}
+AclPoolingExecutor::AclPoolingExecutor(ExecutorContext::CPtr context) : PoolingExecutor(std::move(context)) {}
 
 bool AclPoolingExecutor::isSupported(const TensorInfo& srcTensorInfo,
                                      const TensorInfo& dstTensorInfo,
@@ -22,70 +53,96 @@ bool AclPoolingExecutor::isSupported(const TensorInfo& srcTensorInfo,
                                      PoolingLayerInfo* pool_info,
                                      Pooling3dLayerInfo* pool3d_info,
                                      bool ignoreOutShapeErrors) {
-    unsigned int pad_left   = (poolingAttrs.data_pad_begin.size() >= 2u) ? poolingAttrs.data_pad_begin[1] : poolingAttrs.data_pad_begin[0];
-    unsigned int pad_right  = (poolingAttrs.data_pad_end.size() >= 2u) ?   poolingAttrs.data_pad_end[1]   : poolingAttrs.data_pad_end[0];
-    unsigned int pad_top    = (poolingAttrs.data_pad_begin.size() >= 2u) ? poolingAttrs.data_pad_begin[0] : 0;
-    unsigned int pad_bottom = (poolingAttrs.data_pad_end.size() >= 2u) ?   poolingAttrs.data_pad_end[0]   : 0;
-    unsigned int kernel_w = (poolingAttrs.kernel.size() >= 2u) ? poolingAttrs.kernel[1] : poolingAttrs.kernel[0];
-    unsigned int kernel_h = (poolingAttrs.kernel.size() >= 2u) ? poolingAttrs.kernel[0] : 1;
-    unsigned int stride_x = (poolingAttrs.stride.size() >= 2u) ? poolingAttrs.stride[1] : poolingAttrs.stride[0];
-    unsigned int stride_y = (poolingAttrs.stride.size() >= 2u) ? poolingAttrs.stride[0] : 1;
+    unsigned int pad_left =
+        (poolingAttrs.data_pad_begin.size() >= 2U) ? poolingAttrs.data_pad_begin[1] : poolingAttrs.data_pad_begin[0];
+    unsigned int pad_right =
+        (poolingAttrs.data_pad_end.size() >= 2U) ? poolingAttrs.data_pad_end[1] : poolingAttrs.data_pad_end[0];
+    unsigned int pad_top = (poolingAttrs.data_pad_begin.size() >= 2U) ? poolingAttrs.data_pad_begin[0] : 0;
+    unsigned int pad_bottom = (poolingAttrs.data_pad_end.size() >= 2U) ? poolingAttrs.data_pad_end[0] : 0;
+    unsigned int kernel_w = (poolingAttrs.kernel.size() >= 2U) ? poolingAttrs.kernel[1] : poolingAttrs.kernel[0];
+    unsigned int kernel_h = (poolingAttrs.kernel.size() >= 2U) ? poolingAttrs.kernel[0] : 1;
+    unsigned int stride_x = (poolingAttrs.stride.size() >= 2U) ? poolingAttrs.stride[1] : poolingAttrs.stride[0];
+    unsigned int stride_y = (poolingAttrs.stride.size() >= 2U) ? poolingAttrs.stride[0] : 1;
 
-    PoolingType pool_type;
-    bool exclude_padding = false;
-    if (poolingAttrs.algorithm == Algorithm::PoolingMax) {
-        pool_type = PoolingType::MAX;
-        exclude_padding = (poolingAttrs.pad_type != op::PadType::EXPLICIT);
-    } else if (poolingAttrs.algorithm == Algorithm::PoolingAvg) {
-        pool_type = PoolingType::AVG;
-        exclude_padding = poolingAttrs.exclude_pad;
-    } else {
+    const auto poolTypeOpt = [&]() -> std::optional<PoolingType> {
+        if (poolingAttrs.algorithm == Algorithm::PoolingMax) {
+            return PoolingType::MAX;
+        }
+        if (poolingAttrs.algorithm == Algorithm::PoolingAvg) {
+            return PoolingType::AVG;
+        }
         DEBUG_LOG("Unknown pooling algorithm: ", static_cast<int>(poolingAttrs.algorithm));
+        return std::nullopt;
+    }();
+    if (!poolTypeOpt) {
         return false;
     }
+    const auto pool_type = poolTypeOpt.value();
+    const bool exclude_padding =
+        (pool_type == PoolingType::MAX) ? (poolingAttrs.pad_type != op::PadType::EXPLICIT) : poolingAttrs.exclude_pad;
 
     // The combination of parameters: NCHW + CEIL gives an accuracy problem in AvgPool.
     // One workaround is to disable the ACL executor for these parameters.
     // Then OneDNN will run this case in ACL backend as reorder -> NHWC -> reorder
-    if (pool_type == PoolingType::AVG &&
-        dataLayout == arm_compute::DataLayout::NCHW &&
+    if (pool_type == PoolingType::AVG && dataLayout == arm_compute::DataLayout::NCHW &&
         poolingAttrs.rounding == op::RoundingType::CEIL) {
         DEBUG_LOG("NCHW + CEIL gives an accuracy problem in ACL AvgPool. ACL executor will not be created.");
         return false;
     }
-    DimensionRoundingType round = (poolingAttrs.rounding == op::RoundingType::CEIL) ?
-                                   DimensionRoundingType::CEIL : DimensionRoundingType::FLOOR;
+    const auto roundOpt = [&]() -> std::optional<DimensionRoundingType> {
+        switch (poolingAttrs.rounding) {
+        case op::RoundingType::FLOOR:
+            return DimensionRoundingType::FLOOR;
+        case op::RoundingType::CEIL:
+        case op::RoundingType::CEIL_TORCH:
+            return DimensionRoundingType::CEIL;
+        default:
+            DEBUG_LOG("Unknown rounding type: ", poolingAttrs.rounding);
+            return std::nullopt;
+        }
+    }();
+    if (!roundOpt) {
+        return false;
+    }
+    const auto round = roundOpt.value();
 
     if (srcDimsSize == 5) {
         if (dstDescsSize > 1) {
             DEBUG_LOG("NEPooling3dLayer does not support indices");
             return false;
-        } else {
-            unsigned int kernel_d  = poolingAttrs.kernel[2];
-            unsigned int stride_z  = poolingAttrs.stride[2];
-            unsigned int pad_front = poolingAttrs.data_pad_begin[2];
-            unsigned int pad_back  = poolingAttrs.data_pad_end[2];
-            pool3d_info->pool_type       = pool_type;
-            pool3d_info->exclude_padding = exclude_padding;
-            pool3d_info->pool_size       = arm_compute::Size3D(kernel_w, kernel_h, kernel_d);
-            pool3d_info->stride          = arm_compute::Size3D(stride_x, stride_y, stride_z);
-            pool3d_info->padding         = arm_compute::Padding3D(pad_left, pad_right, pad_top, pad_bottom, pad_front, pad_back);
-            pool3d_info->round_type      = round;
-            arm_compute::Status s = arm_compute::NEPooling3dLayer::validate(&srcTensorInfo, &dstTensorInfo, *pool3d_info);
-            if (!s) {
-                DEBUG_LOG("NEPooling3dLayer validation failed: ", s.error_description());
-                return false;
-            }
         }
+        unsigned int kernel_d = poolingAttrs.kernel[2];
+        unsigned int stride_z = poolingAttrs.stride[2];
+        unsigned int pad_front = poolingAttrs.data_pad_begin[2];
+        unsigned int pad_back = poolingAttrs.data_pad_end[2];
+        pool3d_info->pool_type = pool_type;
+        pool3d_info->exclude_padding = exclude_padding;
+        pool3d_info->pool_size = arm_compute::Size3D(kernel_w, kernel_h, kernel_d);
+        pool3d_info->stride = arm_compute::Size3D(stride_x, stride_y, stride_z);
+        pool3d_info->padding = arm_compute::Padding3D(pad_left, pad_right, pad_top, pad_bottom, pad_front, pad_back);
+        pool3d_info->round_type = round;
+        arm_compute::Status s = arm_compute::NEPooling3dLayer::validate(&srcTensorInfo, &dstTensorInfo, *pool3d_info);
+        if (!s) {
+            DEBUG_LOG("NEPooling3dLayer validation failed: ", s.error_description());
+            return false;
+        }
+
     } else {
-        pool_info->data_layout       = dataLayout;
-        pool_info->pool_size         = arm_compute::Size2D(kernel_w, kernel_h);
-        pool_info->pad_stride_info   = arm_compute::PadStrideInfo(stride_x, stride_y, pad_left, pad_right, pad_top, pad_bottom, round);
-        pool_info->pool_type         = pool_type;
-        pool_info->exclude_padding   = exclude_padding;
+        pool_info->data_layout = dataLayout;
+        pool_info->pool_size = arm_compute::Size2D(kernel_w, kernel_h);
+        pool_info->pad_stride_info =
+            arm_compute::PadStrideInfo(stride_x, stride_y, pad_left, pad_right, pad_top, pad_bottom, round);
+        pool_info->pool_type = pool_type;
+        pool_info->exclude_padding = exclude_padding;
         if (dstDescsSize > 1) {
-            TensorInfo indTensorInfo = TensorInfo(shapeCast(*indDims), 1, arm_compute::DataType::U32, dataLayout);
-            arm_compute::Status s = arm_compute::NEPoolingLayer::validate(&srcTensorInfo, &dstTensorInfo, *pool_info, &indTensorInfo);
+            auto indShape = shapeCast(*indDims);
+            if (dataLayout == arm_compute::DataLayout::NHWC) {
+                changeLayoutToNH_C({&indShape});
+            }
+            // U32 is specified since this is the only data type supported by ACL
+            TensorInfo indTensorInfo = TensorInfo(indShape, 1, arm_compute::DataType::U32, dataLayout);
+            arm_compute::Status s =
+                arm_compute::NEPoolingLayer::validate(&srcTensorInfo, &dstTensorInfo, *pool_info, &indTensorInfo);
             if (!s) {
                 DEBUG_LOG("NEPoolingLayer validation with indices failed: ", s.error_description());
                 if (ignoreOutShapeErrors &&
@@ -112,23 +169,55 @@ bool AclPoolingExecutor::isSupported(const TensorInfo& srcTensorInfo,
 }
 
 bool AclPoolingExecutor::init(const PoolingAttrs& poolingAttrs,
-                             const std::vector<MemoryDescPtr>& srcDescs,
-                             const std::vector<MemoryDescPtr>& dstDescs,
-                             const dnnl::primitive_attr &attr) {
+                              const std::vector<MemoryDescPtr>& srcDescs,
+                              const std::vector<MemoryDescPtr>& dstDescs,
+                              [[maybe_unused]] const dnnl::primitive_attr& attr) {
     auto srcDims = srcDescs[0]->getShape().getStaticDims();
     auto dstDims = dstDescs[0]->getShape().getStaticDims();
 
-    TensorInfo srcTensorInfo = TensorInfo(shapeCast(srcDims), 1,
-    precisionToAclDataType(srcDescs[0]->getPrecision()), getAclDataLayoutByMemoryDesc(srcDescs[0]));
-    TensorInfo dstTensorInfo = TensorInfo(shapeCast(dstDims), 1,
-    precisionToAclDataType(dstDescs[0]->getPrecision()), getAclDataLayoutByMemoryDesc(dstDescs[0]));
+    auto srcShape = shapeCast(srcDims);
+    auto dstShape = shapeCast(dstDims);
+    if (srcDescs[0]->hasLayoutType(LayoutType::nspc) && dstDescs[0]->hasLayoutType(LayoutType::nspc)) {
+        changeLayoutToNH_C({&srcShape, &dstShape});
+    }
+
+    TensorInfo srcTensorInfo = TensorInfo(srcShape,
+                                          1,
+                                          convertToQuantizedType(precisionToAclDataType(srcDescs[0]->getPrecision())),
+                                          getAclDataLayoutByMemoryDesc(srcDescs[0]));
+    TensorInfo dstTensorInfo = TensorInfo(dstShape,
+                                          1,
+                                          convertToQuantizedType(precisionToAclDataType(dstDescs[0]->getPrecision())),
+                                          getAclDataLayoutByMemoryDesc(dstDescs[0]));
+
+    if (any_of(srcDescs[0]->getPrecision(), ov::element::u8, ov::element::i8) ||
+        any_of(dstDescs[0]->getPrecision(), ov::element::u8, ov::element::i8)) {
+        std::vector<float> fqInputScale;
+        std::vector<float> fqInputShift;
+
+        if (poolingAttrs.postOps.size() == 1) {
+            if (const auto* const fq = std::any_cast<FakeQuantizePostOp>(poolingAttrs.postOps.data())) {
+                fqInputScale = fq->inputScale();
+                fqInputShift = fq->inputShift();
+                foldFakeQuantizeOutputShift(fqInputShift, fq->outputScale(), fq->outputShift());
+            } else {
+                OPENVINO_THROW("AclPoolingExecutor: the executor supports FakeQuantize post op only");
+            }
+        } else if (poolingAttrs.postOps.size() > 1) {
+            OPENVINO_THROW("AclPoolingExecutor: ACL does not support more than 1 post op");
+        }
+
+        srcTensorInfo.set_quantization_info(arm_compute::QuantizationInfo(1.0F));
+        dstTensorInfo.set_quantization_info(
+            getDstQuantizationInfo(fqInputScale, fqInputShift, dstDescs[0]->getPrecision()));
+    }
 
     srcTensor.allocator()->init(srcTensorInfo);
     dstTensor.allocator()->init(dstTensorInfo);
 
     std::function<std::unique_ptr<IFunction>(void)> exec_func;
-    if (srcDims.size() == 5u) {
-        if (dstDescs.size() == 1u) {
+    if (srcDims.size() == 5U) {
+        if (dstDescs.size() == 1U) {
             Pooling3dLayerInfo pool_info;
             if (!isSupported(srcTensorInfo,
                              dstTensorInfo,
@@ -138,8 +227,9 @@ bool AclPoolingExecutor::init(const PoolingAttrs& poolingAttrs,
                              getAclDataLayoutByMemoryDesc(srcDescs[0]),
                              nullptr,
                              nullptr,
-                             &pool_info))
+                             &pool_info)) {
                 return false;
+            }
             exec_func = [this, pool_info]() -> std::unique_ptr<IFunction> {
                 auto acl_op = std::make_unique<arm_compute::NEPooling3dLayer>();
                 acl_op->configure(&srcTensor, &dstTensor, pool_info);
@@ -148,7 +238,7 @@ bool AclPoolingExecutor::init(const PoolingAttrs& poolingAttrs,
         }
     } else {
         arm_compute::PoolingLayerInfo pool_info;
-        if (dstDescs.size() > 1u) {
+        if (dstDescs.size() > 1U) {
             if (!isSupported(srcTensorInfo,
                              dstTensorInfo,
                              poolingAttrs,
@@ -157,11 +247,17 @@ bool AclPoolingExecutor::init(const PoolingAttrs& poolingAttrs,
                              getAclDataLayoutByMemoryDesc(srcDescs[0]),
                              &dstDescs[1]->getShape().getStaticDims(),
                              &pool_info,
-                             nullptr))
+                             nullptr)) {
                 return false;
+            }
             auto indDims = dstDescs[1]->getShape().getStaticDims();
-            TensorInfo indTensorInfo = TensorInfo(shapeCast(indDims), 1, precisionToAclDataType(dstDescs[1]->getPrecision()),
-                                                  getAclDataLayoutByMemoryDesc(dstDescs[1]));
+            auto indShape = shapeCast(indDims);
+            if (dstTensorInfo.data_layout() == arm_compute::DataLayout::NHWC) {
+                changeLayoutToNH_C({&indShape});
+            }
+            // U32 is specified since this is the only data type supported by ACL
+            TensorInfo indTensorInfo =
+                TensorInfo(indShape, 1, arm_compute::DataType::U32, getAclDataLayoutByMemoryDesc(dstDescs[1]));
             indTensor.allocator()->init(indTensorInfo);
             exec_func = [this, pool_info]() -> std::unique_ptr<IFunction> {
                 auto acl_op = std::make_unique<arm_compute::NEPoolingLayer>();
@@ -177,8 +273,9 @@ bool AclPoolingExecutor::init(const PoolingAttrs& poolingAttrs,
                              getAclDataLayoutByMemoryDesc(srcDescs[0]),
                              nullptr,
                              &pool_info,
-                             nullptr))
+                             nullptr)) {
                 return false;
+            }
             exec_func = [this, pool_info]() -> std::unique_ptr<IFunction> {
                 auto acl_op = std::make_unique<arm_compute::NEPoolingLayer>();
                 acl_op->configure(&srcTensor, &dstTensor, pool_info);
@@ -186,21 +283,28 @@ bool AclPoolingExecutor::init(const PoolingAttrs& poolingAttrs,
             };
         }
     }
-    configureThreadSafe([&] { ifunc = exec_func(); });
+    configureThreadSafe([&] {
+        ifunc = exec_func();
+    });
     return true;
 }
 
-void AclPoolingExecutor::exec(const std::vector<MemoryCPtr>& src, const std::vector<MemoryPtr>& dst, std::unordered_map<int, MemoryPtr> postOpsArgs) {
+void AclPoolingExecutor::exec(const std::vector<MemoryCPtr>& src,
+                              const std::vector<MemoryPtr>& dst,
+                              [[maybe_unused]] std::unordered_map<int, MemoryPtr> postOpsArgs) {
     srcTensor.allocator()->import_memory(src[0]->getData());
     dstTensor.allocator()->import_memory(dst[0]->getData());
-    if (dst.size() > 1u) indTensor.allocator()->import_memory(dst[1]->getData());
+    if (dst.size() > 1U) {
+        indTensor.allocator()->import_memory(dst[1]->getData());
+    }
 
     ifunc->run();
 
     srcTensor.allocator()->free();
     dstTensor.allocator()->free();
-    if (dst.size() > 1u) indTensor.allocator()->free();
+    if (dst.size() > 1U) {
+        indTensor.allocator()->free();
+    }
 }
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

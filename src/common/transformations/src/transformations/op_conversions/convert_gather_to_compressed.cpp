@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,25 +6,33 @@
 
 #include <memory>
 
+#include "openvino/core/graph_util.hpp"
 #include "openvino/core/rt_info.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
+#include "openvino/op/multiply.hpp"
 #include "openvino/op/reshape.hpp"
 #include "openvino/op/subtract.hpp"
-#include "openvino/opsets/opset10.hpp"
 #include "openvino/pass/pattern/op/or.hpp"
 #include "openvino/pass/pattern/op/pattern.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "ov_ops/gather_compressed.hpp"
+#include "transformations/rt_info/keep_const_precision.hpp"
 #include "transformations/utils/utils.hpp"
 
-ov::pass::ConvertGatherToGatherCompressed::ConvertGatherToGatherCompressed() {
-    using namespace ov::pass::pattern;
+using ov::pass::pattern::any_input;
+using ov::pass::pattern::Matcher;
+using ov::pass::pattern::type_matches;
+using ov::pass::pattern::wrap_type;
+using ov::pass::pattern::op::Or;
 
+namespace v0 = ov::op::v0;
+namespace v1 = ov::op::v1;
+namespace v8 = ov::op::v8;
+ov::pass::ConvertGatherToGatherCompressed::ConvertGatherToGatherCompressed() {
     auto compressed_constant = [](const ov::Output<ov::Node>& output) {
         return (output.get_element_type() == ov::element::u8 || output.get_element_type() == ov::element::i8 ||
                 output.get_element_type() == ov::element::u4 || output.get_element_type() == ov::element::i4) &&
-               output.get_target_inputs().size() == 1 &&
                (output.get_shape().size() == 2 || output.get_shape().size() == 3);
     };
 
@@ -34,55 +42,53 @@ ov::pass::ConvertGatherToGatherCompressed::ConvertGatherToGatherCompressed() {
         return in_ps.rank().is_static() && out_ps.rank().is_static() && in_ps.size() == 3 && out_ps.size() == 2;
     };
 
-    auto dicts_m = wrap_type<ov::op::v0::Constant>(compressed_constant);
-    auto convert_m = wrap_type<ov::op::v0::Convert>({dicts_m});
+    auto dicts_m = wrap_type<v0::Constant>(compressed_constant);
+    auto convert_m = wrap_type<v0::Convert>({dicts_m});
 
-    auto sub_const_m = ov::pass::pattern::any_input();  // const or const+convert
-    auto subtract_m = wrap_type<ov::op::v1::Subtract>({convert_m, sub_const_m});
+    auto sub_const_m = any_input();  // const or const+convert
+    auto subtract_m = wrap_type<v1::Subtract>({convert_m, sub_const_m});
 
-    auto mul_const_m = ov::pass::pattern::any_input();  // const or const+convert
-    auto mul_with_sub_m = wrap_type<ov::op::v1::Multiply>({subtract_m, mul_const_m});
-    auto mul_no_sub_m = wrap_type<ov::op::v1::Multiply>({convert_m, mul_const_m});
-    auto mul_m = std::make_shared<ov::pass::pattern::op::Or>(ov::OutputVector{mul_with_sub_m, mul_no_sub_m});
+    auto mul_const_m = any_input();  // const or const+convert
+    auto mul_with_sub_m = wrap_type<v1::Multiply>({subtract_m, mul_const_m});
+    auto mul_no_sub_m = wrap_type<v1::Multiply>({convert_m, mul_const_m});
+    auto mul_m = std::make_shared<Or>(ov::OutputVector{mul_with_sub_m, mul_no_sub_m});
 
-    auto reshape_const_m = wrap_type<ov::op::v0::Constant>();
-    auto reshape_m = wrap_type<ov::op::v1::Reshape>({mul_m, reshape_const_m}, reshape_3d_to_2d);
+    auto reshape_const_m = wrap_type<v0::Constant>();
+    auto reshape_m = wrap_type<v1::Reshape>({mul_m, reshape_const_m}, reshape_3d_to_2d);
 
-    auto last_convert_input = std::make_shared<ov::pass::pattern::op::Or>(ov::OutputVector{reshape_m, mul_m});
-    auto last_convert_m = wrap_type<ov::opset10::Convert>({last_convert_input});
+    auto last_convert_input = std::make_shared<Or>(ov::OutputVector{reshape_m, mul_m});
+    auto last_convert_m = wrap_type<v0::Convert>({last_convert_input});
 
-    auto dicts_input_m =
-        std::make_shared<ov::pass::pattern::op::Or>(ov::OutputVector{reshape_m, last_convert_m, mul_m});
-    auto gather_m = wrap_type<ov::opset10::Gather>({dicts_input_m, any_input(), wrap_type<ov::op::v0::Constant>()});
+    auto dicts_input_m = std::make_shared<Or>(ov::OutputVector{reshape_m, last_convert_m, mul_m});
+    auto gather_m = wrap_type<v8::Gather>({dicts_input_m, any_input(), wrap_type<v0::Constant>()});
 
-    ov::matcher_pass_callback callback = [=](ov::pass::pattern::Matcher& m) {
+    ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](Matcher& m) {
         const auto& pattern_map = m.get_pattern_value_map();
         OPENVINO_ASSERT(pattern_map.count(gather_m));
         OPENVINO_ASSERT(pattern_map.count(mul_const_m));
         OPENVINO_ASSERT(pattern_map.count(dicts_m));
         OPENVINO_ASSERT(pattern_map.count(convert_m));
         ov::Shape dicts_shape = pattern_map.at(dicts_m).get_node_shared_ptr()->get_shape();
-        auto gather_node =
-            std::dynamic_pointer_cast<ov::opset10::Gather>(pattern_map.at(gather_m).get_node_shared_ptr());
+        auto gather_node = ov::as_type_ptr<v8::Gather>(pattern_map.at(gather_m).get_node_shared_ptr());
         if (!gather_node || transformation_callback(gather_node)) {
             return false;
         }
 
         auto reshape_const_to_2d = [](std::shared_ptr<ov::Node> node) -> std::shared_ptr<ov::Node> {
-            auto convert = std::dynamic_pointer_cast<ov::op::v0::Convert>(node);
+            auto convert = ov::as_type_ptr<v0::Convert>(node);
             if (convert != nullptr) {
                 return node;
-            } else if (std::dynamic_pointer_cast<ov::op::v1::Reshape>(node) != nullptr) {
+            } else if (ov::as_type_ptr<v1::Reshape>(node) != nullptr) {
                 return node;
             } else {
-                auto constant = std::dynamic_pointer_cast<ov::op::v0::Constant>(node);
+                auto constant = ov::as_type_ptr<v0::Constant>(node);
                 OPENVINO_ASSERT(constant != nullptr);
                 ov::Shape current_shape = constant->get_shape();
                 if (current_shape.size() <= 2)
                     return constant;
                 OPENVINO_ASSERT(current_shape.size() == 3);
                 auto new_shape = ov::Shape{current_shape[0], current_shape[1] * current_shape[2]};
-                return std::make_shared<ov::op::v0::Constant>(*constant, new_shape);
+                return std::make_shared<v0::Constant>(*constant, new_shape);
             }
         };
 
@@ -91,8 +97,8 @@ ov::pass::ConvertGatherToGatherCompressed::ConvertGatherToGatherCompressed() {
         std::shared_ptr<ov::Node> gather_input_a =
             reshape_to_2d ? reshape_const_to_2d(pattern_map.at(dicts_m).get_node_shared_ptr())
                           : pattern_map.at(dicts_m).get_node_shared_ptr();
-        const auto& gather_input_b = gather_node->get_input_node_shared_ptr(1);
-        const auto& gather_input_c = gather_node->get_input_node_shared_ptr(2);
+        const auto& gather_input_b = gather_node->get_input_source_output(1);
+        const auto& gather_input_c = gather_node->get_input_source_output(2);
         const auto& scale = reshape_to_2d ? reshape_const_to_2d(pattern_map.at(mul_const_m).get_node_shared_ptr())
                                           : pattern_map.at(mul_const_m).get_node_shared_ptr();
         std::shared_ptr<ov::Node> optional_zero_point = nullptr;
@@ -107,27 +113,36 @@ ov::pass::ConvertGatherToGatherCompressed::ConvertGatherToGatherCompressed() {
         std::shared_ptr<ov::Node> gather_input_zp = optional_zero_point;
         std::vector<std::shared_ptr<ov::Node>> result_nodes = {};
 
-        std::shared_ptr<ov::Node> new_gather_node = nullptr;
-        if (with_zero_point) {
-            new_gather_node =
-                std::make_shared<ov::op::internal::GatherCompressed>(gather_input_a,
-                                                                     gather_input_b,
-                                                                     gather_input_c,
-                                                                     gather_node->get_batch_dims(),
-                                                                     gather_input_scale,
-                                                                     gather_input_zp,
-                                                                     gather_node->get_output_element_type(0));
-        } else {
-            new_gather_node =
-                std::make_shared<ov::op::internal::GatherCompressed>(gather_input_a,
-                                                                     gather_input_b,
-                                                                     gather_input_c,
-                                                                     gather_node->get_batch_dims(),
-                                                                     gather_input_scale,
-                                                                     gather_node->get_output_element_type(0));
+        // If Convert exists in scale branch, this means that the Scale Constant is stored in non-FP32 precision
+        // The Convert is inserted here to maintain graph correctness. GatherCompressed's output should
+        // follow the Convert's destination precision. The Convert should be kept, and later let the
+        // plugin to decide whether the Convert could be optimized
+        if (pattern_map.count(last_convert_m)) {
+            auto last_covert_node = pattern_map.at(last_convert_m).get_node_shared_ptr();
+            gather_input_scale = last_covert_node->clone_with_new_inputs({scale});
+            ov::copy_runtime_info(last_covert_node, gather_input_scale);
+            gather_input_scale->set_friendly_name(last_covert_node->get_friendly_name());
         }
 
-        transformation_callback(new_gather_node);
+        std::shared_ptr<ov::Node> new_gather_node = nullptr;
+        if (with_zero_point) {
+            new_gather_node = std::make_shared<ov::op::internal::GatherCompressed>(gather_input_a,
+                                                                                   gather_input_b,
+                                                                                   gather_input_c,
+                                                                                   gather_node->get_batch_dims(),
+                                                                                   gather_input_scale,
+                                                                                   gather_input_zp);
+        } else {
+            new_gather_node = std::make_shared<ov::op::internal::GatherCompressed>(gather_input_a,
+                                                                                   gather_input_b,
+                                                                                   gather_input_c,
+                                                                                   gather_node->get_batch_dims(),
+                                                                                   gather_input_scale);
+        }
+
+        if (transformation_callback(new_gather_node)) {
+            return false;
+        }
 
         result_nodes.push_back(new_gather_node);
         new_gather_node->set_friendly_name(gather_node->get_friendly_name());
@@ -136,6 +151,41 @@ ov::pass::ConvertGatherToGatherCompressed::ConvertGatherToGatherCompressed() {
         return true;
     };
 
-    auto m = std::make_shared<ov::pass::pattern::Matcher>(gather_m, "ConvertGatherToGatherCompressed");
+    auto m = std::make_shared<Matcher>(gather_m, "ConvertGatherToGatherCompressed");
+    this->register_matcher(m, callback);
+}
+
+ov::pass::MoveDecompressionAfterGather::MoveDecompressionAfterGather() {
+    auto dicts = wrap_type<v0::Constant>(ov::pass::pattern::type_matches_any({element::f16, element::bf16}));
+    // No consumers_count(1) check: when the Convert has other consumers (e.g. FC/MatMul weight tying in LLMs),
+    // we still want to peel the Gather branch off into Gather(bf16/f16) -> Convert(f32). The original Convert
+    // keeps feeding its other consumers — Gather+Convert is fused at the plugin level with no extra overhead.
+    auto convert = wrap_type<v0::Convert>({dicts}, type_matches(ov::element::f32));
+    auto gather = wrap_type<v8::Gather>({convert, any_input(), wrap_type<v0::Constant>()});
+
+    ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](Matcher& m) {
+        const auto& pattern_map = m.get_pattern_value_map();
+        auto constant_node = pattern_map.at(dicts).get_node_shared_ptr();
+        auto convert_node = pattern_map.at(convert).get_node_shared_ptr();
+        auto gather_node = pattern_map.at(gather).get_node_shared_ptr();
+        if (transformation_callback(gather_node)) {
+            return false;
+        }
+
+        auto new_gather = gather_node->clone_with_new_inputs(
+            {constant_node, gather_node->get_input_source_output(1), gather_node->get_input_source_output(2)});
+        auto new_convert = convert_node->clone_with_new_inputs({new_gather});
+        register_new_node(new_gather);
+        register_new_node(new_convert);
+
+        ov::enable_keep_const_precision(constant_node);
+
+        new_convert->set_friendly_name(gather_node->get_friendly_name());
+        ov::copy_runtime_info({convert_node, gather_node}, {new_gather, new_convert});
+        replace_node(gather_node, new_convert);
+        return true;
+    };
+
+    auto m = std::make_shared<Matcher>(gather, "MoveDecompressionAfterGather");
     this->register_matcher(m, callback);
 }

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -22,7 +22,7 @@ public:
     program_node& input() const { return get_dependency(0); }
     program_node& weights() const { return get_dependency(1); }
     program_node& bias() const { return get_dependency(2); }
-    bool bias_term() const { return !get_primitive()->bias.empty(); }
+    bool bias_term() const { return get_primitive()->bias.is_valid(); }
 
     std::vector<size_t> get_shape_infer_dependencies() const override { return {}; }
 
@@ -30,8 +30,9 @@ public:
     std::unique_ptr<kernel_impl_params> get_kernel_impl_params(const std::vector<layout>& in_layouts, const std::vector<layout>& out_layouts) const override {
         auto params = parent::get_kernel_impl_params(in_layouts, out_layouts);
         params->weights_layout = optional_layout(weights().get_output_layout());
-        if (bias_term())
+        if (bias_term()) {
             params->bias_layout = optional_layout(bias().get_output_layout());
+        }
         return params;
     }
 };
@@ -48,7 +49,9 @@ public:
     static std::vector<layout> calc_output_layouts(fully_connected_node const& /*node*/, const kernel_impl_params& impl_param);
     static layout calc_output_layout(fully_connected_node const& node, kernel_impl_params const& impl_param);
     static kernel_impl_params get_fake_aligned_params(kernel_impl_params const& orig_impl_param);
+    static bool has_fake_alignment() { return true; }
     static std::string to_string(fully_connected_node const& node);
+    static bool can_apply_single_batch_optimization(const kernel_impl_params& impl_param);
 
     typed_primitive_inst(network& network, fully_connected_node const& node);
 
@@ -57,9 +60,8 @@ public:
             auto weights_mem = _reordered_weights_cache.get(*_impl_params->weights_layout);
             OPENVINO_ASSERT(weights_mem != nullptr, "[GPU] Can't find proper weights memory buffer in cache");
             return weights_mem;
-        } else {
-            return dep_memory_ptr(1);
         }
+        return dep_memory_ptr(1);
     }
     memory::ptr bias_memory() const { return dep_memory_ptr(2); }
 

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -22,12 +22,9 @@
 
 using namespace ::ONNX_NAMESPACE;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace transform {
+namespace ov::frontend::onnx::transform {
 namespace {
-TypeProto get_input_type(std::string const& name, GraphProto& graph) {
+TypeProto get_input_type(const std::string& name, GraphProto& graph) {
     for (const auto& input : graph.input()) {
         if (input.name() == name) {
             return input.type();
@@ -75,10 +72,7 @@ void function_expand_and_remove_original_node(const NodeProto& node,
 }
 
 }  // namespace
-}  // namespace transform
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::onnx::transform
 
 void ov::frontend::onnx::transform::expand_onnx_functions(ModelProto& model_proto) {
     auto graph_proto = model_proto.mutable_graph();
@@ -94,8 +88,7 @@ void ov::frontend::onnx::transform::expand_onnx_functions(ModelProto& model_prot
 
         // Retrieve the operation schema from ONNX library
         int opset_version = static_cast<int>(get_opset_version(model_proto, node.domain()));
-        const auto* schema_registry = OpSchemaRegistry::Instance();
-        const auto node_op_schema = schema_registry->GetSchema(node.op_type(), opset_version, node.domain());
+        const auto node_op_schema = OpSchemaRegistry::Schema(node.op_type(), opset_version, node.domain());
 
         // Check if operation schema found
         if (!node_op_schema) {
@@ -113,10 +106,14 @@ void ov::frontend::onnx::transform::expand_onnx_functions(ModelProto& model_prot
             // In order to expand a context-dependent function, we need to infer types
             try {
                 shape_inference::InferShapes(model_proto);
+#ifdef ENABLE_OPENVINO_DEBUG
             } catch (const std::exception& e) {
-                OPENVINO_WARN << "ONNX ov::Shape inference failed: " << e.what();
+                OPENVINO_WARN("ONNX ov::Shape inference failed: ", e.what());
             }
-
+#else
+            } catch (const std::exception&) {
+            }
+#endif
             std::vector<TypeProto> input_types;
             for (const auto& input : node.input()) {
                 input_types.push_back(get_input_type(input, *graph_proto));

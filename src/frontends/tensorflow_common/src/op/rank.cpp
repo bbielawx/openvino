@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,17 +12,14 @@
 using namespace std;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 ov::OutputVector translate_rank_op(const NodeContext& node) {
-    default_op_checks(node, 1, {"Rank"}, true);
+    default_op_checks(node, 1, {"Rank", "RANK"}, true);
     auto input = node.get_input(0);
     auto complex_type_mark = as_type_ptr<ComplexTypeMark>(input.get_node_shared_ptr());
     if (complex_type_mark) {
-        input = complex_type_mark->input_value(0);
+        input = complex_type_mark->get_data();
         auto input_shape = make_shared<v3::ShapeOf>(input, ov::element::i32);
 
         auto unsqueeze_input_rank = make_shared<v3::ShapeOf>(input_shape, ov::element::i32);
@@ -40,7 +37,4 @@ ov::OutputVector translate_rank_op(const NodeContext& node) {
     return {input_rank};
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

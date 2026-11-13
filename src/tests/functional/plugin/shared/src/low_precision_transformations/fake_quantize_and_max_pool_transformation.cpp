@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,6 +7,7 @@
 #include <memory>
 #include <tuple>
 #include <vector>
+#include <sstream>
 #include <string>
 
 #include "transformations/init_node_info.hpp"
@@ -16,23 +17,15 @@
 namespace LayerTestsDefinitions {
 
 std::string FakeQuantizeAndMaxPoolTransformation::getTestCaseName(const testing::TestParamInfo<FakeQuantizeAndMaxPoolTransformationParams>& obj) {
-    ov::element::Type precision;
-    ov::PartialShape inputShapes;
-    std::string targetDevice;
-    ov::pass::low_precision::LayerTransformation::Params params;
-    ov::builder::subgraph::FakeQuantizeOnData fakeQuantize;
-    std::tie(precision, inputShapes, targetDevice, params, fakeQuantize) = obj.param;
-
-    return get_test_case_name_by_params(precision, inputShapes, targetDevice, params);
+    auto [precision, inputShapes, device, fakeQuantize] = obj.param;
+    std::ostringstream result;
+    result << get_test_case_name_by_params(precision, inputShapes, device) << "_" << fakeQuantize;
+    return result.str();
 }
 
 void FakeQuantizeAndMaxPoolTransformation::SetUp() {
-    ov::element::Type precision;
-    ov::PartialShape inputShape;
-    ov::pass::low_precision::LayerTransformation::Params params;
-    ov::builder::subgraph::FakeQuantizeOnData fakeQuantize;
-    std::tie(precision, inputShape, targetDevice, params, fakeQuantize) = this->GetParam();
-
+    auto [precision, inputShape, device, fakeQuantize] = this->GetParam();
+    targetDevice = device;
     init_input_shapes(inputShape);
 
     function = ov::builder::subgraph::MaxPoolFunction::getOriginal(

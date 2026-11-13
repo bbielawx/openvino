@@ -1,19 +1,13 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/scatter_elements.hpp"
-
+#include "core/operator_set.hpp"
 #include "exceptions.hpp"
 #include "openvino/op/scatter_elements_update.hpp"
-
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 ov::OutputVector scatter_elements(const ov::frontend::onnx::Node& node) {
     const auto data = node.get_ov_inputs().at(0);
     const auto indices = node.get_ov_inputs().at(1);
@@ -37,7 +31,7 @@ ov::OutputVector scatter_elements(const ov::frontend::onnx::Node& node) {
             CHECK_VALID_NODE(node,
                              false,
                              "Unsupported value of attribute: `reduction`. "
-                             "Supported modes: `none`, `add`, `mul`, `min`, `max`, got:",
+                             "Supported modes: `none`, `add`, `mul`, `min`, `max`, got: ",
                              reduction_onnx);
         }
     } else {
@@ -46,8 +40,12 @@ ov::OutputVector scatter_elements(const ov::frontend::onnx::Node& node) {
 
     return {std::make_shared<v12::ScatterElementsUpdate>(data, indices, updates, axis_node, reduction_ov)};
 }
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+
+static bool register_multiple_translators(void) {
+    ONNX_OP_M("ScatterElements", OPSET_SINCE(1), ai_onnx::opset_1::scatter_elements);
+    ONNX_OP_M("Scatter", OPSET_SINCE(1), ai_onnx::opset_1::scatter_elements);
+    return true;
+}
+
+static bool registered = register_multiple_translators();
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

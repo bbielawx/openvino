@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include "intel_gpu/runtime/error_handler.hpp"
@@ -169,16 +169,16 @@ void error_on_tensor_dims_not_dividable_by_other_tensor_dims(const std::string& 
                                                              const tensor& tens_to_compre,
                                                              const std::string& additional_message) {
     std::vector<std::string> errors;
-    if (tens.batch[0] % tens_to_compre.batch[0] != 0) {
+    if (tens_to_compre.batch[0] != 0 && tens.batch[0] % tens_to_compre.batch[0] != 0) {
         errors.push_back("Batch");
     }
-    if (tens.feature[0] % tens_to_compre.feature[0] != 0) {
+    if (tens_to_compre.feature[0] != 0 && tens.feature[0] % tens_to_compre.feature[0] != 0) {
         errors.push_back("Feature");
     }
-    if (tens.spatial[0] % tens_to_compre.spatial[0] != 0) {
+    if (tens_to_compre.spatial[0] != 0 && tens.spatial[0] % tens_to_compre.spatial[0] != 0) {
         errors.push_back("Spatial x");
     }
-    if (tens.spatial[1] % tens_to_compre.spatial[1] != 0) {
+    if (tens_to_compre.spatial[1] != 0 && tens.spatial[1] % tens_to_compre.spatial[1] != 0) {
         errors.push_back("Spatial y");
     }
 
@@ -210,10 +210,6 @@ void error_on_mismatch_layout(const std::string& file,
 
         if (layout_1.data_padding != layout_2.data_padding) {
             error_msg << layout_1_id << " data padding mismatch: " << layout_2_id << " data padding." << std::endl;
-            error_msg << layout_1_id << " upper data padding: " << layout_1.data_padding.upper_size() << ", "
-                      << layout_2_id << " upper data padding: " << layout_2.data_padding.upper_size() << std::endl;
-            error_msg << layout_1_id << " lower data padding: " << layout_1.data_padding.lower_size() << ", "
-                      << layout_2_id << " lower data padding: " << layout_2.data_padding.lower_size() << std::endl;
         }
         if (layout_1.data_type != layout_2.data_type) {
             error_msg << layout_1_id << " data type mismatch: " << layout_2_id << " data type." << std::endl;

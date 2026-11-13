@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -28,8 +28,7 @@ using IndirectGemm = ov::intel_gpu::op::IndirectGemm;
 }  // namespace op
 }  // namespace ov
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 static void CreateMatMulOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::MatMul>& op) {
     validate_inputs_count(op, {2});
@@ -53,8 +52,9 @@ static void CreateMatMulOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::
     };
 
     auto canTransposeInputs = [&] (const std::array<ov::PartialShape, 2>& shapes, bool transA, bool transB, ov::element::Type type) -> bool {
-        if (!transA && !transB)
+        if (!transA && !transB) {
             return false;
+        }
 
         // dynamic shapes and 1D tensors are not transposed
         if (shapes[0].is_dynamic() || shapes[1].is_dynamic()) {
@@ -63,12 +63,17 @@ static void CreateMatMulOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::
             // but the perf is worse than permute + gemm_tiled_opt.
             // So we'll use this permute + gemm_tiled_opt strategy as a temporal solution,
             // until we have an essential solution, i.e., fixing the gemm_tiled_opt kernel to support unaligned shape.
-            if (p.get_engine().get_device_info().dev_type == cldnn::device_type::integrated_gpu)
-                return true;
-            else
-                return false;
+            return p.get_engine().get_device_info().dev_type == cldnn::device_type::integrated_gpu;
         }
-        if (shapes[0].size() < 2 || shapes[1].size() < 2)
+        if (shapes[0].size() < 2 || shapes[1].size() < 2) {
+            return false;
+        }
+
+        // oneDNN matmul applies transpose_a/transpose_b by swapping the operand strides
+        // (see get_gemm_primitive_descriptor in impls/onednn/gemm_onednn.cpp), so a materialized
+        // permute is pure data movement. The heuristics below target the OCL gemm_tiled_opt
+        // kernel, which is not selected when oneDNN is available.
+        if (p.get_engine().get_device_info().supports_immad && type != ov::element::f32)
             return false;
 
         // don't transpose inputs if they're aligned to 16
@@ -76,8 +81,6 @@ static void CreateMatMulOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::
                                             [] (const ov::Dimension& dim) { return dim.is_static() && dim.get_length() % 16 == 0; }) &&
                                 std::all_of(shapes[1].rbegin(), shapes[1].rbegin() + 2,
                                             [] (const ov::Dimension& dim) { return dim.is_static() && dim.get_length() % 16 == 0; });
-        if (inputsAligned)
-            return false;
 
         // Heuristic condition for permute and tiled_opt kernel perform better than ref kernel.
         bool in0_large = std::all_of(shapes[0].rbegin(), shapes[0].rbegin() + 2,
@@ -90,7 +93,7 @@ static void CreateMatMulOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::
         bool in1_very_large = tensor_from_dims(shapes[0].to_shape()).count() > 100000;
         bool needs_to_transpose_inputs = (in0_very_large || in1_very_large) && !is_u8_i8 && !p.get_engine().get_device_info().supports_immad;
 
-        return (in0_large && in1_large) || needs_to_transpose_inputs;
+        return !inputsAligned || (in0_large && in1_large) || needs_to_transpose_inputs;
     };
 
     auto transposeInput = [] (ProgramBuilder& p, const std::shared_ptr<ov::Node>& op, const ov::PartialShape& shape,
@@ -156,23 +159,17 @@ static void CreateGemmOp(ProgramBuilder& p, const std::shared_ptr<ov::op::intern
     auto shape_b = op->get_input_partial_shape(1);
     auto out_shape = op->get_output_partial_shape(0);
 
-    size_t rank_a = op->get_input0_reshape_pattern().size() > 0 ? op->get_input0_reshape_pattern().size()
-                                                                : shape_a.rank().get_length();
-    size_t rank_b = op->get_input1_reshape_pattern().size() > 0 ? op->get_input1_reshape_pattern().size()
-                                                                :shape_b.rank().get_length();
+    size_t rank_a = shape_a.rank().get_length();
+    size_t rank_b = shape_b.rank().get_length();
     size_t output_rank = out_shape.rank().get_length();
 
-    OPENVINO_ASSERT(rank_a == op->get_input0_transpose_order().size(), "[GPU] Length of input0_order is not same as rank of input0");
-    OPENVINO_ASSERT(rank_b == op->get_input1_transpose_order().size(), "[GPU] Length of input1_order is not same as rank of input1");
-    OPENVINO_ASSERT(output_rank == op->get_output_transpose_order().size(), "[GPU] Length of output_order is not same as rank of output");
+    OPENVINO_ASSERT(rank_a == op->get_input0_transpose_order().size(), "[GPU] Length of input0_transpose_order is not same as rank of input0");
+    OPENVINO_ASSERT(rank_b == op->get_input1_transpose_order().size(), "[GPU] Length of input1_transpose_order is not same as rank of input1");
+    OPENVINO_ASSERT(output_rank == op->get_output_transpose_order().size(), "[GPU] Length of output_transpose_order is not same as rank of output");
 
     auto gemmPrim = cldnn::gemm(layerName,
                                 inputs,
                                 cldnn::element_type_to_data_type(op->get_output_element_type(0)),
-                                op->get_input0_broadcast_target_shape(),
-                                op->get_input1_broadcast_target_shape(),
-                                op->get_input0_reshape_pattern(),
-                                op->get_input1_reshape_pattern(),
                                 op->get_input0_transpose_order(),
                                 op->get_input1_transpose_order(),
                                 op->get_output_transpose_order(),
@@ -211,6 +208,7 @@ static void CreateIndirectGemmOp(ProgramBuilder& p, const std::shared_ptr<ov::in
                                 op->get_output_transpose_order(),
                                 op->get_indirect_a(),
                                 op->get_indirect_b(),
+                                op->get_indirect_axis(),
                                 alpha,
                                 beta);
 
@@ -221,5 +219,4 @@ REGISTER_FACTORY_IMPL(v0, MatMul);
 REGISTER_FACTORY_IMPL(internal, Gemm);
 REGISTER_FACTORY_IMPL(internal, IndirectGemm);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

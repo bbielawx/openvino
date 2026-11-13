@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,7 +15,10 @@ size_t experimental_detectron_roi_feature_extractor_inst::inputs_memory_count() 
 }
 
 memory::ptr experimental_detectron_roi_feature_extractor_inst::second_output_memory() const {
-    return input_memory_ptr(parent::inputs_memory_count() - 1);
+    if (desc()->num_outputs == 1) {
+        return input_memory_ptr(parent::inputs_memory_count() - 1);
+    }
+    return output_memory_ptr(1);
 }
 
 memory::ptr experimental_detectron_roi_feature_extractor_inst::rois_memory() const {
@@ -26,14 +29,33 @@ void experimental_detectron_roi_feature_extractor_inst::copy_rois_input_to_secon
     second_output_memory()->copy_from(get_network().get_stream(), *rois_memory());
 }
 
+template<typename ShapeType>
+std::vector<layout> experimental_detectron_roi_feature_extractor_inst::calc_output_layouts(
+        experimental_detectron_roi_feature_extractor_node const& /*node*/, const kernel_impl_params& impl_param) {
+    layout rois_layout = impl_param.get_input_layout(0);
+    layout data_layout = impl_param.get_input_layout(1);
+    auto desc = impl_param.typed_desc<experimental_detectron_roi_feature_extractor>();
+    auto num_rois = rois_layout.get_partial_shape()[0];
+    auto num_channels = data_layout.get_partial_shape()[1];
+
+    return {
+        layout(ov::PartialShape{num_rois, num_channels, desc->output_dim, desc->output_dim}, data_layout.data_type, format::bfyx),
+        layout(ov::PartialShape{num_rois, 4}, data_layout.data_type, format::bfyx)
+    };
+}
+
+template std::vector<layout>
+experimental_detectron_roi_feature_extractor_inst::calc_output_layouts<ov::PartialShape>(
+        experimental_detectron_roi_feature_extractor_node const& node, const kernel_impl_params& impl_param);
+
 layout experimental_detectron_roi_feature_extractor_inst::calc_output_layout(
     experimental_detectron_roi_feature_extractor_node const& node, kernel_impl_params const& impl_param) {
     assert(static_cast<bool>(impl_param.desc->output_data_types[0]) == false &&
            "Output data type forcing is not supported for roi_pooling_node!");
     layout rois_layout = impl_param.get_input_layout(0);
     layout data_layout = impl_param.get_input_layout(1);
-    int num_rois = rois_layout.batch();
-    int num_channels = data_layout.feature();
+    int64_t num_rois = rois_layout.batch();
+    int64_t num_channels = data_layout.feature();
     auto desc = impl_param.typed_desc<experimental_detectron_roi_feature_extractor>();
 
     return layout(data_layout.data_type, format::bfyx, {num_rois, num_channels, desc->output_dim, desc->output_dim});

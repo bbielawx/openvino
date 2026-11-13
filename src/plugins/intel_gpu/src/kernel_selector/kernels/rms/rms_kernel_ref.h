@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,10 +11,21 @@ class RMSKernelRef : public RMSKernelBase {
 public:
     using Parent = RMSKernelBase;
     RMSKernelRef() : RMSKernelBase("rms_gpu_ref") {}
-    virtual ~RMSKernelRef() {}
+    ~RMSKernelRef() override = default;
 
     KernelsData GetKernelsData(const Params& params) const override;
     KernelsPriority GetKernelsPriority(const Params& params) const override;
     ParamsKey GetSupportedKey() const override;
+
+protected:
+    std::vector<FusedOpType> GetSupportedFusedOps() const override {
+        return {
+            FusedOpType::ACTIVATION,
+            FusedOpType::QUANTIZE,
+            FusedOpType::ELTWISE,
+            FusedOpType::REORDER
+        };
+    }
+    JitConstants GetJitConstants(const rms_params& params, DispatchData dispatchData) const override;
 };
 }  // namespace kernel_selector

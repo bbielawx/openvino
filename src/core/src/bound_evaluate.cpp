@@ -1,51 +1,35 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "bound_evaluate.hpp"
 
+#include <stack>
+
 #include "compare.hpp"
+#include "openvino/core/bound_evaluation_util.hpp"
 #include "openvino/core/dimension.hpp"
 #include "openvino/core/rt_info.hpp"
 #include "openvino/core/shape_util.hpp"
+#include "openvino/core/tensor_util.hpp"
 #include "openvino/core/validation_util.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/equal.hpp"
+#include "openvino/op/logical_or.hpp"
+#include "openvino/op/parameter.hpp"
+#include "openvino/op/reduce_logical_or.hpp"
+#include "openvino/op/reduce_max.hpp"
+#include "openvino/op/reduce_min.hpp"
+#include "openvino/op/select.hpp"
+#include "openvino/op/shape_of.hpp"
+#include "openvino/op/unsqueeze.hpp"
+#include "openvino/op/util/op_types.hpp"
 #include "openvino/op/util/symbolic_info.hpp"
-#include "openvino/opsets/opset10.hpp"
 #include "transformations/rt_info/decompression.hpp"
 #include "transformations/rt_info/is_shape_subgraph.hpp"
 
 namespace {
 using namespace ov;
-
-void propagate_rt_info(Node* node, const Output<Node>& final_port) {
-    auto node_outputs = node->outputs();
-    bool same_outputs = std::all_of(node_outputs.begin(), node_outputs.end(), [](const Output<Node>& output) {
-        return output.get_tensor().has_and_set_bound();
-    });
-    if (same_outputs && op::util::is_constant(node))  // constant should not propagate it's rt_info
-    {
-        std::unordered_set<Node*> stop_nodes;
-        for (const auto& in : final_port.get_target_inputs())
-            stop_nodes.insert(in.get_node());
-
-        auto curr_node = node->shared_from_this();
-        for (const auto& output : node_outputs) {
-            if (output == final_port)
-                continue;
-            for (auto& in : output.get_target_inputs()) {
-                if (stop_nodes.count(in.get_node()))
-                    continue;
-                try {
-                    auto consumer = in.get_node()->shared_from_this();
-                    copy_runtime_info({curr_node, consumer}, consumer);
-                } catch (const std::bad_weak_ptr&) {
-                    // Exception can be thrown, if `shared_from_this()` was called during node creation.
-                    // Continue propagation for other nodes.
-                }
-            }
-        }
-    }
-}
 
 bool are_same_tensor(const ov::Tensor& lhs, const ov::Tensor& rhs) {
     return (lhs && rhs) && (lhs.get_element_type() == rhs.get_element_type()) && (lhs.get_shape() == rhs.get_shape()) &&
@@ -71,88 +55,223 @@ bool are_equal(const ov::Tensor& lhs, const ov::Tensor& rhs) {
 }
 
 bool is_type_allocable(const element::Type& type) {
-    return type != element::undefined && type.is_static();
+    return type != element::dynamic && type.is_static();
 }
 
-ov::Tensor evaluate_bound(const Output<Node>& output, bool is_upper, bool invalidate_all_unused_values = true) {
-    if (is_upper && output.get_tensor().get_upper_value()) {
-        return output.get_tensor().get_upper_value();
+/**
+ * @brief Checks if node's inputs has bound set and are equal.
+ *
+ * @param node  Node
+ * @return true if all inputs have both bounds set and are equal, otherwise false.
+ */
+bool node_has_same_inputs(const Node& node) {
+    const auto& values = node.input_values();
+
+    return std::all_of(values.begin(), values.end(), [](const Output<Node>& value) {
+        const auto& t_desc = value.get_tensor();
+        return t_desc.has_and_set_bound() || are_equal(t_desc.get_lower_value(), t_desc.get_upper_value());
+    });
+};
+
+/**
+ * @brief Invalidates unused tensor values for outputs (except Constants)
+ *
+ * @param outputs  Outputs to apply invalidation.
+ */
+void invalidate_unused_values(const ov::OutputVector& outputs) {
+    for (const auto& output : outputs) {
+        auto& tensor = output.get_tensor();
+        const auto& lower = tensor.get_lower_value();
+        const auto& upper = tensor.get_upper_value();
+        const auto should_invalidate =
+            (lower && shape_size(lower.get_shape()) > 10) || (upper && shape_size(upper.get_shape()) > 10);
+        if (should_invalidate && output.get_target_inputs().size() == 1) {
+            tensor.invalidate_values();
+        }
     }
+}
 
-    if (!is_upper && output.get_tensor().get_lower_value()) {
-        return output.get_tensor().get_lower_value();
-    }
-
-    std::vector<Node*> order;
-    if (could_propagate(output, order)) {
-        for (const auto& node : order) {
-            ov::TensorVector outputs;
-            for (const auto& out : node->outputs()) {
-                if (is_type_allocable(out.get_element_type())) {
-                    outputs.emplace_back(out);
-                } else {
-                    outputs.emplace_back();
-                }
-            }
-
-            if (is_upper ? node->evaluate_upper(outputs) : node->evaluate_lower(outputs)) {
-                const auto& input_values = node->input_values();
-                TensorSymbolVector output_symbols(outputs.size());
-
-                bool same_inputs = std::all_of(input_values.begin(), input_values.end(), [](const Output<Node>& input) {
-                    auto& t = input.get_tensor();
-                    return t.has_and_set_bound() || are_equal(t.get_lower_value(), t.get_upper_value());
-                });
-
-                for (size_t i = 0; i < outputs.size(); ++i) {
-                    if ((same_inputs || is_upper) && !node->get_output_tensor(i).get_upper_value() && outputs[i]) {
-                        node->get_output_tensor(i).set_upper_value(outputs[i]);
-                    }
-
-                    if ((same_inputs || !is_upper) && !node->get_output_tensor(i).get_lower_value() && outputs[i]) {
-                        node->get_output_tensor(i).set_lower_value(outputs[i]);
-                    }
-
-                    if (are_equal(node->get_output_tensor(i).get_lower_value(),
-                                  node->get_output_tensor(i).get_upper_value())) {
-                        node->get_output_tensor(i).set_lower_value(node->get_output_tensor(i).get_upper_value());
-                    }
-                }
-
-                bool symbols_evaluated = node->evaluate_symbol(output_symbols);
-                for (size_t i = 0; i < outputs.size(); ++i) {
-                    auto& out_tensor = node->get_output_tensor(i);
-                    if (!out_tensor.get_value_symbol().empty())
-                        continue;
-                    if (symbols_evaluated)
-                        out_tensor.set_value_symbol(output_symbols[i]);
-                    if (outputs[i])
-                        ov::populate_tensor_with_missing_symbols(out_tensor);
-                }
-
-                for (const auto& input : input_values) {
-                    auto& tensor = input.get_tensor();
-                    bool should_invalidate = invalidate_all_unused_values;
-                    if (tensor.get_lower_value() && shape_size(tensor.get_lower_value().get_shape()) > 10)
-                        should_invalidate |= true;
-
-                    if (tensor.get_upper_value() && shape_size(tensor.get_upper_value().get_shape()) > 10)
-                        should_invalidate |= true;
-
-                    if (should_invalidate && input.get_target_inputs().size() == 1)
-                        tensor.invalidate_values();
-                }
-                propagate_rt_info(node, output);
+/** @brief Common base for single bound evaluation. */
+struct SingleBound {
+    void init(const Node& node) {
+        bounds.resize(0);
+        for (const auto& output : node.outputs()) {
+            if (is_type_allocable(output.get_element_type())) {
+                bounds.emplace_back(output);
             } else {
-                break;
+                bounds.emplace_back();
             }
         }
     }
 
-    if (is_upper)
-        return output.get_tensor().get_upper_value();
-    else
-        return output.get_tensor().get_lower_value();
+    void set_same_bound_at_port(descriptor::Tensor& tensor_desc, const size_t port) const {
+        tensor_desc.set_lower_value(bounds[port]);
+        tensor_desc.set_upper_value(bounds[port]);
+    }
+
+    TensorVector bounds;
+};
+
+/** @brief Lower bound evaluation specific actions. */
+struct LowerBound : SingleBound {
+    static bool requires_evaluation(const descriptor::Tensor& tensor_desc) {
+        return !tensor_desc.get_lower_value();
+    }
+
+protected:
+    bool evaluate(const Node& node) {
+        return node.evaluate_lower(bounds);
+    }
+
+    void set_bound_at_port(descriptor::Tensor& tensor_desc, const size_t port) const {
+        tensor_desc.set_lower_value(bounds[port]);
+        if (are_equal(bounds[port], tensor_desc.get_upper_value())) {
+            tensor_desc.set_upper_value(bounds[port]);
+        }
+    }
+};
+
+/** @brief Upper bound evaluation specific actions. */
+struct UpperBound : SingleBound {
+    static bool requires_evaluation(const ov::descriptor::Tensor& tensor_desc) {
+        return !tensor_desc.get_upper_value();
+    }
+
+protected:
+    bool evaluate(const ov::Node& node) {
+        return node.evaluate_upper(bounds);
+    }
+
+    void set_bound_at_port(descriptor::Tensor& tensor_desc, const size_t port) const {
+        tensor_desc.set_upper_value(bounds[port]);
+        if (are_equal(bounds[port], tensor_desc.get_lower_value())) {
+            tensor_desc.set_lower_value(bounds[port]);
+        }
+    }
+};
+
+/** @brief Both bounds evaluation specific actions. */
+struct BothBounds {
+    static bool requires_evaluation(const descriptor::Tensor& tensor_desc) {
+        return !tensor_desc.get_lower_value() || !tensor_desc.get_upper_value();
+    }
+
+protected:
+    void init(const Node& node) {
+        lowers.resize(0);
+        uppers.resize(0);
+
+        for (const auto& output : node.outputs()) {
+            if (is_type_allocable(output.get_element_type())) {
+                lowers.emplace_back(output);
+                uppers.emplace_back(output);
+            } else {
+                lowers.emplace_back();
+                uppers.emplace_back();
+            }
+        }
+    }
+
+    void set_same_bound_at_port(descriptor::Tensor& tensor_desc, const size_t port) const {
+        tensor_desc.set_lower_value(lowers[port]);
+        tensor_desc.set_upper_value(lowers[port]);
+    }
+
+    void set_bound_at_port(descriptor::Tensor& tensor_desc, const size_t port) const {
+        tensor_desc.set_lower_value(lowers[port]);
+        if (are_equal(lowers[port], uppers[port])) {
+            tensor_desc.set_upper_value(lowers[port]);
+        } else {
+            tensor_desc.set_upper_value(uppers[port]);
+        }
+    }
+
+    bool evaluate(const Node& node) {
+        return node.evaluate_lower(lowers) && node.evaluate_upper(uppers);
+    }
+
+    ov::TensorVector lowers, uppers;
+};
+
+/** @brief Evaluates and sets symbols. */
+struct SymbolEvaluator {
+    void init() {
+        symbols.resize(0);
+    }
+
+    void evaluate(const Node& node) {
+        symbols.resize(node.get_output_size());
+        if (!node.evaluate_symbol(symbols)) {
+            symbols.resize(0);
+        }
+    }
+
+    void set_symbols_at_port(descriptor::Tensor& tensor_desc, const size_t port) const {
+        if (!symbols.empty() && tensor_desc.get_value_symbol().empty()) {
+            tensor_desc.set_value_symbol(symbols[port]);
+            ov::populate_tensor_with_missing_symbols(tensor_desc);
+        }
+    }
+
+    TensorSymbolVector symbols;
+};
+
+/** @brief Evaluator evaluate and set bound depends specified BoundType. */
+template <class BoundType>
+struct Evaluator : BoundType {
+    void init(const Node* n) {
+        node = n;
+        symbol_evaluator.init();
+        BoundType::init(*node);
+    }
+
+    void set_bounds_and_symbols() const {
+        const auto set_bound =
+            node_has_same_inputs(*node) ? &Evaluator::set_same_bound_at_port : &Evaluator::set_bound_at_port;
+
+        for (size_t port = 0; port < node->get_output_size(); ++port) {
+            auto& output_tensor_desc = node->get_output_tensor(port);
+
+            (this->*set_bound)(output_tensor_desc, port);
+            symbol_evaluator.set_symbols_at_port(output_tensor_desc, port);
+        }
+    }
+
+    bool evaluate() {
+        if (BoundType::evaluate(*node)) {
+            symbol_evaluator.evaluate(*node);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    const Node* node;
+    SymbolEvaluator symbol_evaluator;
+};
+
+/**
+ * @brief Evaluate bound(s) algorithm.
+ *
+ * Calculate required bounds for Node's output.
+ *
+ * @tparam        Evaluator Specify the bound type evaluator.
+ * @param output  Node's output for which bounds will be calculated.
+ */
+template <class Evaluator>
+void evaluate_bound(const Output<Node>& output) {
+    std::vector<Node*> ordered_nodes;
+    if (Evaluator::requires_evaluation(output.get_tensor()) && could_propagate(output, ordered_nodes)) {
+        auto bound_evaluator = Evaluator{};
+        for (const auto& node : ordered_nodes) {
+            bound_evaluator.init(node);
+            if (!bound_evaluator.evaluate()) {
+                break;
+            }
+            bound_evaluator.set_bounds_and_symbols();
+            invalidate_unused_values(node->input_values());
+        }
+    }
 }
 
 bool default_bound_evaluator(const ov::Node* node,
@@ -163,8 +282,8 @@ bool default_bound_evaluator(const ov::Node* node,
     ov::TensorVector inputs;
     inputs.reserve(size);
     for (size_t i = 0; i < size; ++i) {
-        if (auto bound = (node->get_input_tensor(i).*get_bound)()) {
-            inputs.push_back(bound);
+        if (auto&& bound = (node->get_input_tensor(i).*get_bound)()) {
+            inputs.push_back(std::move(bound));
         } else {
             return false;
         }
@@ -298,70 +417,20 @@ bool ov::could_propagate(const Output<Node>& output, std::vector<Node*>& result)
     return status;
 }
 
-ov::Tensor ov::evaluate_lower_bound(const Output<Node>& output) {
-    return evaluate_bound(output, false);
+ov::Tensor ov::util::evaluate_lower_bound(const Output<Node>& output) {
+    evaluate_bound<Evaluator<LowerBound>>(output);
+    return output.get_tensor().get_lower_value();
 }
 
-ov::Tensor ov::evaluate_upper_bound(const Output<Node>& output) {
-    return evaluate_bound(output, true);
+ov::Tensor ov::util::evaluate_upper_bound(const Output<Node>& output) {
+    evaluate_bound<Evaluator<UpperBound>>(output);
+    return output.get_tensor().get_upper_value();
 }
 
-std::pair<ov::Tensor, ov::Tensor> ov::evaluate_both_bounds(const Output<Node>& output) {
-    const auto& output_tensor = output.get_tensor();
-    if (output_tensor.get_lower_value() && output_tensor.get_upper_value())
-        return {output_tensor.get_lower_value(), output_tensor.get_upper_value()};
-    std::vector<Node*> order;
-    if (could_propagate(output, order)) {
-        for (const auto& node : order) {
-            ov::TensorVector outputs_lower, outputs_upper;
-            for (const auto& out : node->outputs()) {
-                if (is_type_allocable(out.get_element_type())) {
-                    outputs_lower.emplace_back(out);
-                    outputs_upper.emplace_back(out);
-                } else {
-                    outputs_lower.emplace_back();
-                    outputs_upper.emplace_back();
-                }
-            }
-            if (!node->evaluate_lower(outputs_lower) || !node->evaluate_upper(outputs_upper)) {
-                break;
-            }
-            auto input_values = node->input_values();
-            bool same_inputs = std::all_of(input_values.begin(), input_values.end(), [](const Output<Node>& input) {
-                auto& t = input.get_tensor();
-                return t.has_and_set_bound() || are_equal(t.get_lower_value(), t.get_upper_value());
-            });
-            TensorSymbolVector output_symbols(node->get_output_size());
-            bool symbols_evaluated = node->evaluate_symbol(output_symbols);
-            for (size_t i = 0; i < node->get_output_size(); ++i) {
-                auto& out_tensor = node->get_output_tensor(i);
-
-                out_tensor.set_lower_value(outputs_lower[i]);
-                if (same_inputs || are_equal(outputs_lower[i], outputs_upper[i])) {
-                    out_tensor.set_upper_value(outputs_lower[i]);
-                } else {
-                    out_tensor.set_upper_value(outputs_upper[i]);
-                }
-
-                if (!out_tensor.get_value_symbol().empty())
-                    continue;
-                if (symbols_evaluated)
-                    out_tensor.set_value_symbol(output_symbols[i]);
-                ov::populate_tensor_with_missing_symbols(node->get_output_tensor(i));
-            }
-            for (const auto& input : node->input_values()) {
-                auto& tensor = input.get_tensor();
-                const auto& lower = tensor.get_lower_value();
-                const auto& upper = tensor.get_upper_value();
-                const auto should_invalidate =
-                    (lower && shape_size(lower.get_shape()) > 10) || (upper && shape_size(upper.get_shape()) > 10);
-                if (should_invalidate && input.get_target_inputs().size() == 1)
-                    tensor.invalidate_values();
-            }
-            propagate_rt_info(node, output);
-        }
-    }
-    return {output_tensor.get_lower_value(), output_tensor.get_upper_value()};
+std::pair<ov::Tensor, ov::Tensor> ov::util::evaluate_both_bounds(const Output<Node>& output) {
+    evaluate_bound<Evaluator<BothBounds>>(output);
+    const auto& output_tensor_desc = output.get_tensor();
+    return {output_tensor_desc.get_lower_value(), output_tensor_desc.get_upper_value()};
 }
 
 bool ov::default_lower_bound_evaluator(const Node* node, TensorVector& output_values) {
@@ -380,10 +449,10 @@ bool ov::interval_bound_evaluator(const Node* node,
     OPENVINO_ASSERT(node->get_input_size() == 2);
 
     const auto num_of_outputs = node->get_output_size();
-    auto low_0 = ov::evaluate_lower_bound(node->get_input_source_output(0));
-    auto low_1 = ov::evaluate_lower_bound(node->get_input_source_output(1));
-    auto up_0 = ov::evaluate_upper_bound(node->get_input_source_output(0));
-    auto up_1 = ov::evaluate_upper_bound(node->get_input_source_output(1));
+    auto low_0 = ov::util::evaluate_lower_bound(node->get_input_source_output(0));
+    auto low_1 = ov::util::evaluate_lower_bound(node->get_input_source_output(1));
+    auto up_0 = ov::util::evaluate_upper_bound(node->get_input_source_output(0));
+    auto up_1 = ov::util::evaluate_upper_bound(node->get_input_source_output(1));
     if (!low_0 || !low_1 || !up_0 || !up_1)
         return false;
 
@@ -397,7 +466,7 @@ bool ov::interval_bound_evaluator(const Node* node,
                node->evaluate(lower_output_values, *input_variants.begin());
 
     auto zero = op::v0::Constant::create(element::i64, {1}, {0});
-    const auto zero_t = ov::Tensor(element::i64, Shape{});
+    auto zero_t = ov::Tensor(element::i64, Shape{});
     *zero_t.data<int64_t>() = 0;
 
     std::vector<TensorVector> unsqueezed_output_variants;
@@ -407,14 +476,12 @@ bool ov::interval_bound_evaluator(const Node* node,
             vector_of_output_variants.emplace_back(output.get_element_type(), output.get_shape());
         }
 
-        node->evaluate(vector_of_output_variants, input_variant);
+        if (!node->evaluate(vector_of_output_variants, input_variant)) {
+            return false;
+        };
 
-        TensorVector vector_of_unsqueezed_output_variants;
+        auto& vector_of_unsqueezed_output_variants = unsqueezed_output_variants.emplace_back();
         for (const auto& output : vector_of_output_variants) {
-            if (!output) {
-                return false;
-            }
-
             auto unsqueezed_shape = output.get_shape();
             unsqueezed_shape.insert(unsqueezed_shape.begin(), 1);
 
@@ -424,7 +491,6 @@ bool ov::interval_bound_evaluator(const Node* node,
             op::v0::Unsqueeze().evaluate(unsqueezed_outputs, TensorVector{output, zero_t});
             vector_of_unsqueezed_output_variants.push_back(unsqueezed);
         }
-        unsqueezed_output_variants.push_back(vector_of_unsqueezed_output_variants);
     }
     const auto input_0_maximum_value = ov::util::make_tensor_of_max_value(low_0.get_element_type());
     const auto input_1_maximum_value = ov::util::make_tensor_of_max_value(low_1.get_element_type());
@@ -446,28 +512,29 @@ bool ov::interval_bound_evaluator(const Node* node,
 
         auto concated_shape = all_variants_for_ith_output[0].get_shape();
         concated_shape[0] = all_variants_for_ith_output.size();
-        auto concat = Tensor(all_variants_for_ith_output[0].get_element_type(), concated_shape);
-        auto concat_out = TensorVector{concat};
+        auto concat = TensorVector{Tensor(all_variants_for_ith_output[0].get_element_type(), concated_shape)};
         auto c = op::v0::Concat();
         c.set_axis(0);
-        c.evaluate(concat_out, all_variants_for_ith_output);
+        c.evaluate(concat, all_variants_for_ith_output);
 
         auto fake_param =
             std::make_shared<op::v0::Parameter>(all_variants_for_ith_output[0].get_element_type(), concated_shape);
         auto reduce_min_op = op::v1::ReduceMin(fake_param, zero, false);
         auto lower_out = ov::TensorVector{lower_output_values[i]};
-        reduce_min_op.evaluate(lower_out, {concat, zero_t});
+        concat.push_back(zero_t);
+        reduce_min_op.evaluate(lower_out, concat);
 
         auto reduce_max_op = op::v1::ReduceMax(fake_param, zero, false);
         auto upper_out = ov::TensorVector{upper_output_values[i]};
-        reduce_max_op.evaluate(upper_out, {concat, zero_t});
+        reduce_max_op.evaluate(upper_out, concat);
 
         if (!upper_output_values[i]) {
             fully_defined = false;
         } else {
-            const auto output_maximum_value = make_tensor_max_of_type(upper_output_values[i].get_element_type());
+            auto output_maximum_value = make_tensor_max_of_type(upper_output_values[i].get_element_type());
 
-            op::v1::Select().evaluate(upper_out, {final_input_dyn_mask, output_maximum_value, upper_output_values[i]});
+            op::v1::Select().evaluate(upper_out,
+                                      {final_input_dyn_mask, std::move(output_maximum_value), upper_output_values[i]});
             node->get_output_tensor(i).set_upper_value(upper_output_values[i]);
         }
 
@@ -475,35 +542,12 @@ bool ov::interval_bound_evaluator(const Node* node,
             fully_defined = false;
         } else {
             // Can not set to make_tensor_of_min_value(lower_output_values[i]->get_element_type()) yet
-            const auto then = Tensor{lower_out[0].get_element_type(), Shape{}};
-            const auto then_data = static_cast<char*>(then.data());
-            std::memset(then_data, 0, then.get_byte_size());
-            op::v1::Select().evaluate(lower_out, {final_input_dyn_mask, then, lower_out[0]});
+            auto then = std::make_shared<op::v0::Constant>(lower_out[0].get_element_type(), Shape{}, 0);
+            op::v1::Select().evaluate(lower_out, {final_input_dyn_mask, then->get_tensor_view(), lower_out[0]});
             node->get_output_tensor(i).set_lower_value(lower_out[0]);
         }
     }
     return fully_defined;
-}
-
-bool ov::tensor_is_non_negative(const Tensor& bound) {
-    const auto bound_constant =
-        std::make_shared<op::v0::Constant>(bound.get_element_type(), bound.get_shape(), bound.data());
-    const auto zero_constant = op::v0::Constant::create(bound.get_element_type(), {1}, {0});
-    OutputVector greater(1);
-
-    bool folded = std::make_shared<op::v1::GreaterEqual>(bound_constant, zero_constant)
-                      ->constant_fold(greater, {bound_constant, zero_constant});
-    OPENVINO_ASSERT(folded);
-
-    auto axes_vector = std::vector<int64_t>(greater[0].get_shape().size());
-    std::iota(axes_vector.begin(), axes_vector.end(), 0);
-    const auto axes = op::v0::Constant::create(element::i64, {axes_vector.size()}, axes_vector);
-
-    OutputVector all(1);
-    folded = std::make_shared<op::v1::ReduceLogicalAnd>(greater[0], axes)->constant_fold(all, {greater[0], axes});
-    OPENVINO_ASSERT(folded && ov::is_type<op::v0::Constant>(all[0].get_node_shared_ptr()));
-    OPENVINO_ASSERT(all[0].get_shape() == Shape{});
-    return std::dynamic_pointer_cast<op::v0::Constant>(all[0].get_node_shared_ptr())->cast_vector<bool>()[0];
 }
 
 bool ov::tensor_has_max_value(const Tensor& bound) {
@@ -526,7 +570,7 @@ bool ov::tensor_has_max_value(const Tensor& bound) {
     folded = std::make_shared<op::v1::ReduceLogicalOr>(equal[0], axes)->constant_fold(all, {equal[0], axes});
     OPENVINO_ASSERT(folded && ov::is_type<op::v0::Constant>(all[0].get_node_shared_ptr()));
     OPENVINO_ASSERT(all[0].get_shape() == Shape{});
-    return std::dynamic_pointer_cast<op::v0::Constant>(all[0].get_node_shared_ptr())->cast_vector<bool>()[0];
+    return ov::as_type_ptr<op::v0::Constant>(all[0].get_node_shared_ptr())->cast_vector<bool>()[0];
 }
 
 bool ov::tensor_has_zero_value(const Tensor& bound) {
@@ -547,14 +591,14 @@ bool ov::tensor_has_zero_value(const Tensor& bound) {
     folded = std::make_shared<op::v1::ReduceLogicalOr>(equal[0], axes)->constant_fold(all, {equal[0], axes});
     OPENVINO_ASSERT(folded && ov::is_type<op::v0::Constant>(all[0].get_node_shared_ptr()));
     OPENVINO_ASSERT(all[0].get_shape() == Shape{});
-    return std::dynamic_pointer_cast<op::v0::Constant>(all[0].get_node_shared_ptr())->cast_vector<bool>()[0];
+    return ov::as_type_ptr<op::v0::Constant>(all[0].get_node_shared_ptr())->cast_vector<bool>()[0];
 }
 
 bool ov::has_and_set_equal_bounds(const Output<Node>& source) {
     if (op::util::is_constant(source.get_node_shared_ptr()))
         return true;
 
-    auto bounds = ov::evaluate_both_bounds(source);
+    auto bounds = ov::util::evaluate_both_bounds(source);
     return are_same_tensor(bounds.first, bounds.second);
 }
 
@@ -694,3 +738,16 @@ bool ov::default_symbol_evaluator(const Node* node,
     }
     return false;
 }
+
+namespace ov::util {
+ForceInvalidation::~ForceInvalidation() = default;
+
+bool have_same_bounds(const descriptor::Tensor& lhs, const descriptor::Tensor& rhs) {
+    return are_same_tensor(lhs.get_lower_value(), rhs.get_lower_value()) &&
+           are_same_tensor(lhs.get_upper_value(), rhs.get_upper_value());
+}
+
+void set_force_invalidation(descriptor::Tensor& tensor) {
+    tensor.get_rt_info().emplace(ForceInvalidation::get_type_info_static(), nullptr);
+}
+}  // namespace ov::util

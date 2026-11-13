@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,7 +13,9 @@
 
 #include "common_test_utils/ov_test_utils.hpp"
 #include "openvino/core/model.hpp"
-#include "openvino/opsets/opset1.hpp"
+#include "openvino/op/add.hpp"
+#include "openvino/op/convolution.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
 #include "transformations/rt_info/primitives_priority_attribute.hpp"
 
 using namespace ov;
@@ -35,13 +37,13 @@ TEST(TransformationTests, ConvBiasFusion) {
         auto add = std::make_shared<opset1::Add>(conv, bias);
         add->set_friendly_name("add");
 
-        f = std::make_shared<ov::Model>(NodeVector{add}, ParameterVector{input1});
+        f = std::make_shared<ov::Model>(OutputVector{add}, ParameterVector{input1});
     }
 
     std::unordered_map<std::string, std::string> pp;
 
     for (auto& op : f->get_ops()) {
-        if (auto conv = std::dynamic_pointer_cast<opset1::Convolution>(op)) {
+        if (auto conv = ov::as_type_ptr<opset1::Convolution>(op)) {
             auto& rtInfo = conv->get_rt_info();
             rtInfo[ov::PrimitivesPriority::get_type_info_static()] = ov::PrimitivesPriority("test");
             pp[op->get_friendly_name()] = "test";
@@ -51,7 +53,7 @@ TEST(TransformationTests, ConvBiasFusion) {
     auto funcs = f->clone();
 
     for (auto& op : funcs->get_ops()) {
-        if (auto conv = std::dynamic_pointer_cast<opset1::Convolution>(op)) {
+        if (auto conv = ov::as_type_ptr<opset1::Convolution>(op)) {
             ASSERT_TRUE(pp.find(op->get_friendly_name()) != pp.end());
             ASSERT_EQ(pp[op->get_friendly_name()], "test");
         }

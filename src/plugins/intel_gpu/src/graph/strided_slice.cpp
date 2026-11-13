@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -33,34 +33,36 @@ layout strided_slice_inst::calc_output_layout(strided_slice_node const& node, ke
 template<typename ShapeType>
 std::vector<layout> strided_slice_inst::calc_output_layouts(strided_slice_node const& /*node*/, const kernel_impl_params& impl_param) {
     auto desc = impl_param.typed_desc<strided_slice>();
-    auto input0_layout = impl_param.get_input_layout(0);
+    const auto& input0_layout = impl_param.get_input_layout(0);
     auto input0_shape = input0_layout.get<ShapeType>();
 
-    auto& constant_mem = impl_param.memory_deps;
-    auto begin_data = desc->begin;
-    auto end_data = desc->end;
-    auto strides_data = desc->strides;
+    const auto& constant_mem = impl_param.memory_deps;
+    const auto& begin_data = desc->begin;
+    const auto& end_data = desc->end;
+    const auto& strides_data = desc->strides;
 
     if ((begin_data.empty() && !constant_mem.count(1))
         || (end_data.empty() && !constant_mem.count(2))
         || (strides_data.empty() && !constant_mem.count(3))) {
         auto num_of_axis_mask_bit = [] (std::vector<int64_t> mask) -> size_t {
             size_t count = 0;
-            for (size_t i = 0; i < mask.size(); i++)
+            for (size_t i = 0; i < mask.size(); i++) {
                 if (mask[i]) count++;
+            }
             return count;
         };
 
-        auto input0_pshape = input0_layout.get_partial_shape();
+        const auto& input0_pshape = input0_layout.get_partial_shape();
         auto input0_len = input0_pshape.size();
         auto num_of_new_axis_bit = num_of_axis_mask_bit(desc->new_axis_mask);
         auto num_of_shrink_axis_bit = num_of_axis_mask_bit(desc->shrink_axis_mask);
 
         auto output_len = input0_len;
-        if (num_of_new_axis_bit)
+        if (num_of_new_axis_bit) {
             output_len += num_of_new_axis_bit;
-        else if (num_of_shrink_axis_bit)
+        } else if (num_of_shrink_axis_bit) {
             output_len -= num_of_shrink_axis_bit;
+        }
 
         auto output_shape = ov::PartialShape::dynamic(output_len);
         if (input0_layout.is_dynamic()) {
@@ -83,7 +85,8 @@ std::vector<layout> strided_slice_inst::calc_output_layouts(strided_slice_node c
                 if (num_of_new_axis_bit && desc->new_axis_mask[i]) {
                     output_shape[output_idx++] = {1};
                     continue;
-                } else if (num_of_shrink_axis_bit && desc->shrink_axis_mask[i]) {
+                }
+                if (num_of_shrink_axis_bit && desc->shrink_axis_mask[i]) {
                     continue;
                 }
 
@@ -122,9 +125,9 @@ std::vector<layout> strided_slice_inst::calc_output_layouts(strided_slice_node c
     std::unordered_map<size_t, ov::Tensor> const_data;
     const auto ta = ov::make_tensor_accessor(const_data);
     if (!begin_data.empty() && !end_data.empty() && !strides_data.empty()) {
-        auto begin_tensor = make_tensor({ begin_shape, data_types::i64, format::bfyx }, static_cast<void*>(begin_data.data()));
-        auto end_tensor = make_tensor({ end_shape, data_types::i64, format::bfyx }, static_cast<void*>(end_data.data()));
-        auto strides_tensor = make_tensor({ strides_shape, data_types::i64, format::bfyx }, static_cast<void*>(strides_data.data()));
+        auto begin_tensor = make_tensor({ begin_shape, data_types::i64, format::bfyx }, const_cast<void*>(static_cast<const void*>(begin_data.data())));
+        auto end_tensor = make_tensor({ end_shape, data_types::i64, format::bfyx }, const_cast<void*>(static_cast<const void*>(end_data.data())));
+        auto strides_tensor = make_tensor({ strides_shape, data_types::i64, format::bfyx }, const_cast<void*>(static_cast<const void*>(strides_data.data())));
 
         const_data.emplace(1, begin_tensor);
         const_data.emplace(2, end_tensor);
@@ -191,16 +194,30 @@ void strided_slice_inst::on_execute() {
 }
 
 void strided_slice_inst::update_output_memory() {
-    if (!can_be_optimized())
+    OPENVINO_ASSERT(!_outputs.empty(), "outputs is empty.");
+    OPENVINO_ASSERT(_node != nullptr, "_node should not be nullptr.");
+    if (!can_be_optimized()) {
         return;
-    if (static_cast<bool>(_outputs[0]) && _network.get_engine().is_the_same_buffer(output_memory(), input_memory()))
-        return;
+    }
 
-    if (_node != nullptr)
-        build_deps();
+    build_deps();
+
+    if (input_memory_ptr() == nullptr) {
+        return;
+    }
+
+    if (static_cast<bool>(_outputs[0]) && _network.get_engine().is_the_same_buffer(output_memory(), input_memory())) {
+        return;
+    }
 
     GPU_DEBUG_TRACE_DETAIL << id() << " : update_output_memory with mem of input " << get_node().get_dependency(0).id()
                            << " : " << input_memory_ptr()->buffer_ptr() << std::endl;
+    // Can_be_optimized nodes are allocating from memory_pool too. In this case,
+    // we need release the legacy output memory from memory pool explicitly.
+    if (static_cast<bool>(_outputs[0]) &&
+        get_node().get_program().get_config().get_enable_memory_pool()) {
+        get_network().get_memory_pool().release_memory(_outputs[0].get(), get_node().get_unique_id(), get_node().id(), get_network_id());
+    }
     _outputs[0] = input_memory_ptr();
     _mem_allocated = false;
 }

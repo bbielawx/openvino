@@ -1,24 +1,19 @@
-// Copyright (C) 2022-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "generate_proposals.hpp"
+#include "openvino/op/generate_proposals.hpp"
 
+#include "core/operator_set.hpp"
 #include "openvino/op/broadcast.hpp"
 #include "openvino/op/concat.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/gather.hpp"
-#include "openvino/op/generate_proposals.hpp"
 #include "openvino/op/shape_of.hpp"
-
 using namespace ov::op;
 using ov::Shape;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::org_openvinotoolkit::opset_1 {
 
 namespace {
 void validate_generate_proposals_inputs(const ov::OutputVector& inputs) {
@@ -66,8 +61,6 @@ ov::OutputVector generate_proposals(const ov::frontend::onnx::Node& node) {
 
     return proposals->outputs();
 }
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+
+ONNX_OP("GenerateProposals", OPSET_SINCE(1), org_openvinotoolkit::opset_1::generate_proposals, OPENVINO_ONNX_DOMAIN);
+}  // namespace ov::frontend::onnx::org_openvinotoolkit::opset_1

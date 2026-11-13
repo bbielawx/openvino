@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,10 +20,7 @@
 #include "openvino/pass/graph_rewrite.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -63,7 +60,6 @@ OutputVector make_batch_norm(const NodeContext& context,
     } else {
         b = context.mark_node(std::make_shared<v1::ConvertLike>(b, input));
     }
-    auto zero = context.mark_node(v0::Constant::create(element::i32, Shape{}, {0}));
     auto zero_1d = context.mark_node(v0::Constant::create(element::i32, Shape{1}, {0}));
     auto one = context.mark_node(v0::Constant::create(element::i32, Shape{}, {1}));
     auto two = context.mark_node(v0::Constant::create(element::i32, Shape{}, {2}));
@@ -156,7 +152,4 @@ OutputVector translate_batch_norm_legit_no_stats_fx(const NodeContext& context) 
     return {context.mark_node(make_list_construct(output))};
 }
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

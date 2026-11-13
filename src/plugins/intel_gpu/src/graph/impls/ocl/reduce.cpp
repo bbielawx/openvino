@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,12 +15,13 @@ static std::vector<uint16_t> convert_axes(std::vector<int64_t> axes, size_t rank
     std::vector<uint16_t> converted_axes;
     for (auto axis : axes) {
         if (axis == 0 || axis == 1) {
-            converted_axes.push_back(axis);
+            converted_axes.push_back(static_cast<uint16_t>(axis));
             continue;
         }
 
-        if (axis < 0)
+        if (axis < 0) {
             axis = axis + rank;
+        }
 
         converted_axes.push_back(static_cast<uint16_t>(rank + 1 - axis));
     }
@@ -69,7 +70,7 @@ struct reduce_impl : typed_primitive_impl_ocl<reduce> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::reduce_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<reduce_impl>(*this);
+        return make_deep_copy<reduce_impl, kernel_params_t>(*this);
     }
 
     void load(BinaryInputBuffer& ib) override {
@@ -84,14 +85,19 @@ struct reduce_impl : typed_primitive_impl_ocl<reduce> {
         auto params = get_default_params<kernel_selector::reduce_params>(impl_param, is_shape_agnostic);
 
         params.reduceAxes = convert_axes(primitive->axes, impl_param.input_layouts[0].get_rank());
-        params.keepDims = primitive->keep_dims;
+        params.keepDims = static_cast<int32_t>(primitive->keep_dims);
         params.reduceMode = cldnn_2_reduce_mode(primitive->mode);
         return params;
     }
 
     void update_dispatch_data(const kernel_impl_params& impl_param) override {
-        auto kernel_params = get_kernel_params(impl_param, true);
-        (_kernel_data.update_dispatch_data_func)(kernel_params, _kernel_data);
+        // If model loaded from cache, params are not initialized, so we create a new object and reuse it in the future
+        if (_kernel_data.params == nullptr) {
+            _kernel_data.params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true));
+        }
+
+        update_shapes(*_kernel_data.params, impl_param);
+        (_kernel_data.update_dispatch_data_func)(*_kernel_data.params, _kernel_data);
     }
 };
 
@@ -108,6 +114,7 @@ attach_reduce_impl::attach_reduce_impl() {
 
     auto static_formats = {
         format::bfyx,
+        format::byxf,
         format::bfzyx,
         format::bfwzyx,
         format::bfuwzyx,
@@ -125,6 +132,7 @@ attach_reduce_impl::attach_reduce_impl() {
 
     auto dyn_formats = {
         format::bfyx,
+        format::byxf,
         format::bfzyx,
         format::bfwzyx,
         format::bfuwzyx,

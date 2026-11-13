@@ -1,12 +1,11 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "low_precision/propagate_precisions.hpp"
 
 #include <memory>
-
-#include "openvino/opsets/opset1.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
 #include "low_precision/create_attribute.hpp"
 #include "low_precision/rt_info/precisions_attribute.hpp"
 #include "low_precision/propagate_through_precision_preserved.hpp"
@@ -21,7 +20,7 @@ ov::pass::low_precision::PropagatePrecisions::PropagatePrecisions(const Attribut
 
 bool ov::pass::low_precision::PropagatePrecisions::run_on_model(const std::shared_ptr<ov::Model>& f) {
     RUN_ON_FUNCTION_SCOPE(PropagatePrecisions);
-    ov::pass::Manager manager;
+    ov::pass::Manager manager("LPT:PropagatePrecisions");
     manager.set_per_pass_validation(false);
     std::shared_ptr<ov::pass::GraphRewrite> precisionsPropagation = manager.register_pass<ov::pass::GraphRewrite>();
     precisionsPropagation->add_matcher<low_precision::CreateAttribute<PrecisionsAttribute, opset1::FakeQuantize>>(params, AttributeSource::OutputPort);

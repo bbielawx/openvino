@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -91,7 +91,6 @@ void ReadValue::validate_and_infer_types() {
                         variable_type,
                         " Initialization type: ",
                         initial_type);
-        // workaround:
         // dynamic rank/type can be derived from the IRs generated via the prev versions of OV,
         // but dynamic rank/type are not supported in plugins,
         // so we are trying to fix them here using the rank/type of ReadValue 1st input, if it exists
@@ -126,10 +125,12 @@ bool ReadValue::visit_attributes(AttributeVisitor& visitor) {
     OV_OP_SCOPE(v6_ReadValue_visit_attributes);
     visitor.on_attribute("variable_id", m_variable);
 
-    auto variable_info = m_variable->get_info();
-    visitor.on_attribute("variable_type", variable_info.data_type);
-    visitor.on_attribute("variable_shape", variable_info.data_shape);
-    m_variable->update(variable_info);
+    if (m_variable) {
+        auto variable_info = m_variable->get_info();
+        visitor.on_attribute("variable_type", variable_info.data_type);
+        visitor.on_attribute("variable_shape", variable_info.data_shape);
+        m_variable->update(variable_info);
+    }
     return true;
 }
 
@@ -142,7 +143,6 @@ bool ReadValue::evaluate(TensorVector& outputs,
                          const EvaluationContext& evaluation_context) const {
     OV_OP_SCOPE(v6_ReadValue_evaluate);
     OPENVINO_ASSERT(outputs.size() == 1);
-    OPENVINO_ASSERT(inputs.size() == 1);
 
     const auto& found_context = evaluation_context.find("VariableContext");
     NODE_VALIDATION_CHECK(this, found_context != evaluation_context.end(), "VariableContext not found.");
@@ -152,10 +152,18 @@ bool ReadValue::evaluate(TensorVector& outputs,
 
     const auto use_context = var_value != variable_values.end() && !var_value->second->get_reset();
 
-    auto& output = outputs[0];
-    const auto& input = use_context ? var_value->second->get_state() : inputs[0];
-    output.set_shape(input.get_shape());
-    std::memcpy(output.data(), input.data(), output.get_byte_size());
+    if (auto& output = outputs[0]; use_context) {
+        output.set_shape(var_value->second->get_state().get_shape());
+        memcpy(output.data(), var_value->second->get_state().data(), output.get_byte_size());
+    } else if (!inputs.empty()) {
+        output.set_shape(inputs[0].get_shape());
+        memcpy(output.data(), inputs[0].data(), output.get_byte_size());
+    } else {
+        const auto var_info = m_variable->get_info();
+        OPENVINO_ASSERT(var_info.data_shape.is_static() && var_info.data_type.is_static());
+        output.set_shape(var_info.data_shape.get_shape());
+        memset(output.data(), 0, output.get_byte_size());
+    }
     return true;
 }
 
@@ -164,7 +172,7 @@ bool ReadValue::has_evaluate() const {
     return true;
 }
 
-bool ReadValue::constant_fold(OutputVector& output_values, const OutputVector& inputs_values) {
+bool ReadValue::can_constant_fold(const OutputVector& input_values) const {
     return false;
 }
 }  // namespace v6

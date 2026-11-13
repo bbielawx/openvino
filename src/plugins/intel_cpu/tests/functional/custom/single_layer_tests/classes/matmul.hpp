@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,7 +12,7 @@ using namespace CPUTestUtils;
 namespace ov {
 namespace test {
 
-enum class MatMulNodeType {
+enum class MatMulNodeType : uint8_t {
     MatMul,
     FullyConnected
 };
@@ -49,6 +49,7 @@ protected:
     void transpose(T& shape);
 
     void SetUp() override;
+    void generate_inputs(const std::vector<ov::Shape>& targetInputStaticShapes) override;
 };
 
 namespace MatMul {

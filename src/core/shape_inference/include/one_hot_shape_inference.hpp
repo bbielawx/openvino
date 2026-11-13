@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #pragma once
@@ -10,7 +10,6 @@
 namespace ov {
 namespace op {
 namespace util {
-
 template <class T>
 struct GetNotNegative {
     const Node* m_op;
@@ -23,23 +22,21 @@ struct GetNotNegative {
         return static_cast<T>(v);
     }
 };
-}  // namespace util
-namespace v1 {
-void inline resolve_axis(OneHot* op) {
+
+void inline resolve_axis(OneHotBase* op) {
     if (op->get_input_size() < 1) {
         return;
     }
     const auto& indices_shape = op->get_input_partial_shape(0);
     if (indices_shape.rank().is_static()) {
-        const auto indices_rank = indices_shape.rank().get_length();
-        op->m_axis = ov::util::normalize_axis(op, op->m_axis, indices_rank + 1, -indices_rank - 1, indices_rank);
+        op->m_axis = ov::util::try_normalize_axis(op->get_axis(), indices_shape.rank() + 1, *op);
     }
-}
+}  // namespace util
 
 template <class T, class TRShape = result_shape_t<T>>
-std::vector<TRShape> shape_infer(const OneHot* op,
-                                 const std::vector<T>& input_shapes,
-                                 const ITensorAccessor& ta = make_tensor_accessor()) {
+std::vector<TRShape> shape_infer_base(const OneHotBase* op,
+                                      const std::vector<T>& input_shapes,
+                                      const ITensorAccessor& ta = make_tensor_accessor()) {
     NODE_VALIDATION_CHECK(op, input_shapes.size() == 4);
     using DimType = typename T::value_type;
     const auto& indices_shape = input_shapes[0];
@@ -63,9 +60,7 @@ std::vector<TRShape> shape_infer(const OneHot* op,
     auto& result_shape = output_shapes[0];
     if (indices_shape.rank().is_static()) {
         result_shape = indices_shape;
-        const auto indices_rank = indices_shape.rank().get_length();
-        const auto axis =
-            ov::util::normalize_axis(op, op->get_axis(), indices_rank + 1, -indices_rank - 1, indices_rank);
+        const auto axis = ov::util::try_normalize_axis(op->get_axis(), indices_shape.rank() + 1, *op);
 
         auto depth_as_shape =
             get_input_const_data_as_shape<TRShape>(op, 1, ta, util::GetNotNegative<typename DimType::value_type>(op));
@@ -80,6 +75,25 @@ std::vector<TRShape> shape_infer(const OneHot* op,
     }
     return output_shapes;
 }
+}  // namespace util
+
+namespace v1 {
+template <class TShape, class TRShape = result_shape_t<TShape>>
+std::vector<TRShape> shape_infer(const OneHot* op,
+                                 const std::vector<TShape>& input_shapes,
+                                 const ITensorAccessor& ta = make_tensor_accessor()) {
+    return util::shape_infer_base(op, input_shapes, ta);
+}
 }  // namespace v1
+
+namespace v16 {
+template <class TShape, class TRShape = result_shape_t<TShape>>
+std::vector<TRShape> shape_infer(const OneHot* op,
+                                 const std::vector<TShape>& input_shapes,
+                                 const ITensorAccessor& ta = make_tensor_accessor()) {
+    return util::shape_infer_base(op, input_shapes, ta);
+}
+}  // namespace v16
+
 }  // namespace op
 }  // namespace ov

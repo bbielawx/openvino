@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -18,15 +18,6 @@ JitConstants CTCGreedyDecoderKernelBase::GetJitConstants(const ctc_greedy_decode
     });
 
     if (params.outputs_num == 2) {
-        if (params.inputs.size() == 3) {
-            jit.AddConstants({
-                MakeJitConstant("LEGACY_MULTIPLE_OUTPUTS", 1)
-            });
-        } else {
-            jit.AddConstants({
-                MakeJitConstant("NEW_MULTIPLE_OUTPUTS", 1)
-            });
-        }
         jit.AddConstants({
             MakeJitConstant("N_", inp.Batch().v),
             MakeJitConstant("T_", inp.Feature().v)
@@ -53,8 +44,9 @@ CTCGreedyDecoderKernelBase::DispatchData CTCGreedyDecoderKernelBase::SetDefault(
 KernelsData CTCGreedyDecoderKernelBase::GetCommonKernelsData(const Params& params) const {
     assert(params.GetType() == KernelType::CTC_GREEDY_DECODER);
 
-    if (!Validate(params))
+    if (!Validate(params)) {
         return {};
+    }
 
     const ctc_greedy_decoder_params& orgParams = static_cast<const ctc_greedy_decoder_params&>(params);
 
@@ -80,11 +72,7 @@ KernelsData CTCGreedyDecoderKernelBase::GetCommonKernelsData(const Params& param
                      GetFusedPrimitiveInputsCount(params));
 
     if (orgParams.outputs_num == 2) {
-        if (orgParams.inputs.size() == 3) {
-            kernel.params.arguments.push_back({ArgumentDescriptor::Types::INPUT, 2});
-        } else {
-            kernel.params.arguments.push_back({ArgumentDescriptor::Types::OUTPUT, 1});
-        }
+        kernel.params.arguments.push_back({ArgumentDescriptor::Types::OUTPUT, 1});
     }
 
     return {kd};

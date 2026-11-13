@@ -1,7 +1,8 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "intel_gpu/runtime/internal_properties.hpp"
 #include "test_utils.h"
 #include "random_generator.hpp"
 
@@ -19,6 +20,10 @@
 #include "batch_to_space_inst.h"
 #include "permute_inst.h"
 #include "concatenation_inst.h"
+#include "fully_connected_inst.h"
+#include "mvn_inst.h"
+#include "reduce_inst.h"
+#include "resample_inst.h"
 #include "pass_manager.h"
 #include "to_string_utils.h"
 
@@ -67,8 +72,7 @@ TEST(reorder_inputs, propagation) {
     auto& conv1_node = prog_impl->get_node("conv1");
     auto& conv2_node = prog_impl->get_node("conv2");
 
-    layout_optimizer lo;
-    auto conv_pref = lo.get_preferred_format(conv1_node);
+    auto conv_pref = prog->get_layout_optimizer().get_preferred_format(conv1_node);
 
     ASSERT_EQ(conv1_node.get_output_layout().format.value, conv_pref);
     ASSERT_EQ(conv2_node.get_output_layout().format.value, conv_pref);
@@ -96,7 +100,7 @@ TEST(reorder_inputs, mixed_ranks_irdft) {
     config.set_property(ov::intel_gpu::optimize_data(true));
 
     program::ptr prog = nullptr;
-    ASSERT_NO_THROW(prog = program::build_program(engine, topology, config));
+    OV_ASSERT_NO_THROW(prog = program::build_program(engine, topology, config));
     ASSERT_NE(prog, nullptr);
 
     auto prog_impl = prog.get();
@@ -162,6 +166,38 @@ TEST(reorder_inputs, mixed_ranks_gather) {
     ASSERT_EQ(gather2_node.get_output_layout().format, format::bfwzyx);
 }
 
+TEST(reorder_inputs, mixed_ranks_reshape) {
+    // Topology:
+    // transpose -> (5d) -> reshape -> (3d)
+    // Expected: (bfzyx:5d) -> reorder -> (bfyx:4d) -> reshape -> (bfyx:3d)
+
+    auto& engine = get_test_engine();
+    auto shape = engine.allocate_memory(layout{ { 3 }, data_types::i64, format::bfyx });
+    set_values<int64_t>(shape, { 0, -1, 2 });
+
+    topology topology;
+    topology.add(input_layout("input", layout{ { 1, 2, 32, 128, 128 }, data_types::f16, format::bzyxf }));
+    topology.add(input_layout("eltw_input", layout{ { 1, 524288, 2 }, data_types::f16, format::bfyx }));
+    topology.add(data("shape", shape));
+    topology.add(permute("permute", input_info("input"), { 0, 2, 3, 4, 1 }));
+    topology.add(reshape("reshape", input_info("permute"), input_info("shape"), true, ov::PartialShape{ 1, 524288, 2 }));
+    topology.add(eltwise("eltwise", input_info("reshape"), input_info("eltw_input"), eltwise_mode::sum));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+
+    program::ptr prog = nullptr;
+    OV_ASSERT_NO_THROW(prog = program::build_program(engine, topology, config));
+    ASSERT_NE(prog, nullptr);
+
+    auto prog_impl = prog.get();
+
+    auto& reshape_node = prog_impl->get_node("reshape");
+
+    ov::PartialShape expected_reorder_shape{ 1, 32, 128, 128, 2 };
+    ASSERT_EQ(reshape_node.get_input_layouts()[0].get_partial_shape(), expected_reorder_shape);
+}
+
 TEST(reorder_inputs, impl_forcing_basic_format) {
     auto& engine = get_test_engine();
     auto input = engine.allocate_memory({ data_types::f32, format::bfyx, { 1, 2, 4, 1 } });
@@ -170,10 +206,11 @@ TEST(reorder_inputs, impl_forcing_basic_format) {
     topology.add(input_layout("input", input->get_layout()));
     topology.add(pooling("pool", input_info("input"), pooling_mode::max, { 1, 2 }, { 1, 2 }));
 
-    ov::intel_gpu::ImplementationDesc pool_impl = { format::yxfb, "" };
+    ov::intel_gpu::ImplementationDesc pool_impl = { format::yxfb, "", impl_types::ocl };
 
     ExecutionConfig config = get_test_default_config(engine);
     config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{ {"pool", pool_impl} }));
+    config.set_property(ov::intel_gpu::optimize_data(true));
 
     network network(engine, topology, config);
 
@@ -181,7 +218,7 @@ TEST(reorder_inputs, impl_forcing_basic_format) {
                         7.f, 3.f, -2.f, -1.f });
 
     network.set_input_data("input", input);
-    network.execute();
+    auto outputs = network.execute();
 
     const auto& prog = network.get_program();
     auto& pool_node = prog->get_node("pool");
@@ -189,7 +226,7 @@ TEST(reorder_inputs, impl_forcing_basic_format) {
 
     ASSERT_EQ(pool_layout.format.value, format::yxfb);
 
-    auto out_mem = network.get_output("pool").get_memory();
+    auto out_mem = outputs.at("pool").get_memory();
     cldnn::mem_lock<float> out_mem_ptr(out_mem, get_test_stream());
 
     ASSERT_EQ(out_mem_ptr.size(), 4u);
@@ -208,10 +245,11 @@ TEST(reorder_inputs, impl_forcing_not_existing) {
     topology.add(input_layout("input", input->get_layout()));
     topology.add(pooling("pool", input_info("input"), pooling_mode::max, { 1, 2 }, { 1, 2 }));
 
-    ov::intel_gpu::ImplementationDesc pool_impl = { format::any, "NOT_EXISTING" };
+    ov::intel_gpu::ImplementationDesc pool_impl = { format::any, "NOT_EXISTING", impl_types::ocl };
 
     ExecutionConfig config = get_test_default_config(engine);
     config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{ {"pool", pool_impl} }));
+    config.set_property(ov::intel_gpu::optimize_data(true));
 
     ASSERT_ANY_THROW(network network(engine, topology, config));
 }
@@ -228,6 +266,7 @@ TEST(reorder_inputs, impl_forcing_basic_format_kernel) {
 
     ExecutionConfig config = get_test_default_config(engine);
     config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{ {"actv", actv_impl} }));
+    config.set_property(ov::intel_gpu::optimize_data(true));
 
     network network(engine, topology, config);
 
@@ -235,7 +274,7 @@ TEST(reorder_inputs, impl_forcing_basic_format_kernel) {
                         7.f, 3.f, -2.f, -1.f });
 
     network.set_input_data("input", input);
-    network.execute();
+    auto outputs = network.execute();
 
     auto prog = network.get_program();
     auto& node = prog->get_node("actv");
@@ -246,7 +285,7 @@ TEST(reorder_inputs, impl_forcing_basic_format_kernel) {
     ASSERT_EQ(actv_layout.format.value, format::yxfb);
     ASSERT_EQ(kernel_name, actv_impl.kernel_name);
 
-    auto out_mem = network.get_output("actv").get_memory();
+    auto out_mem = outputs.at("actv").get_memory();
     cldnn::mem_lock<float> out_mem_ptr(out_mem, get_test_stream());
 
     ASSERT_EQ(out_mem_ptr.size(), 8u);
@@ -349,9 +388,8 @@ TEST(reorder_inputs, no_need_of_reorder_for_strided_slice) {
     config.set_property(ov::intel_gpu::optimize_data(true));
 
     auto program = program::build_program(engine, topology, config, false, true);
-    layout_optimizer lo(true);
     reorder_factory rf;
-    program_wrapper::apply_opt_pass<reorder_inputs>(*program, lo, rf);
+    program_wrapper::apply_opt_pass<reorder_inputs>(*program, rf);
 
     ASSERT_NE(program, nullptr);
 
@@ -389,9 +427,8 @@ TEST(reorder_inputs, no_need_of_reorder_to_change_input_rank_for_rdft) {
     config.set_property(ov::intel_gpu::optimize_data(true));
 
     auto program = program::build_program(engine, topology, config, false, true);
-    layout_optimizer lo(true);
     reorder_factory rf;
-    program_wrapper::apply_opt_pass<reorder_inputs>(*program, lo, rf);
+    program_wrapper::apply_opt_pass<reorder_inputs>(*program, rf);
 
     ASSERT_NE(program, nullptr);
 
@@ -399,6 +436,170 @@ TEST(reorder_inputs, no_need_of_reorder_to_change_input_rank_for_rdft) {
     ASSERT_EQ(size_t(4), format::dimension(dft_node.get_input_layouts()[0].format));
 }
 
+TEST(reorder_inputs, add_reorder_between_single_output_type_node_and_multiple_users) {
+    // Topology:
+    //
+    //         Add (single output)               Add
+    //          |                                 |
+    //  0->0 -------- 0->0    ------------>    Reorder
+    //       |      |                           |   |
+    //      FC      FC                         FC   FC
+    //
+    // Description :
+    //     : Test the case where a node which doens't have muptiple output but have multiple users,
+    //     : and port number to each user is same all.
+    //     : In this case reorder should be inserted to each FC
+
+    tests::random_generator rg(GET_SUITE_NAME);
+    auto& engine = get_test_engine();
+
+    auto in_layout1 = layout{ ov::PartialShape{1, 4096, 256}, data_types::i32, format::bfyx };
+    auto weights = engine.allocate_memory({ data_types::i32, format::bfyx, {128, 256, 1, 1} });
+
+    topology topology(
+        input_layout("input1", in_layout1),
+        input_layout("input2", in_layout1),
+        data("weights1", weights),
+        data("weights2", weights),
+        eltwise("add", input_info("input1"), input_info("input2"), eltwise_mode::sum),
+        fully_connected("fc1", input_info("add"), "weights1"),
+        fully_connected("fc2", input_info("add"), "weights2")
+    );
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+
+    auto program = program::build_program(engine, topology, config, false, true);
+    reorder_factory rf;
+    program_wrapper::apply_opt_pass<reorder_inputs>(*program, rf);
+
+    ASSERT_NE(program, nullptr);
+
+    auto& add = program->get_node("add");
+    for (auto& user : add.get_users()) {
+        ASSERT_TRUE(user->is_type<reorder>());
+    }
+
+    auto& fc1 = program->get_node("fc1");
+    auto& fc2 = program->get_node("fc2");
+
+    ASSERT_TRUE(fc1.get_dependency(0).is_type<reorder>());
+    ASSERT_TRUE(fc2.get_dependency(0).is_type<reorder>());
+}
+
+TEST(reorder_inputs, mvn_expected_plain_format) {
+    // Topology: fsv16 -> permute -> mvn -> permute
+    // Given input shape is not supported by mvn fsv16 kernel, so expected format of mvn should be plain (bfyx) with proper reorders
+    auto& engine = get_test_engine();
+
+    topology topology;
+    topology.add(input_layout("input", layout{ { 1, 256, 60, 60 }, data_types::i8, format::b_fs_yx_fsv16 }));
+    topology.add(permute("permute1", input_info("input"), { 0, 2, 3, 1 }));
+    topology.add(mvn("mvn", input_info("permute1"), true, 1e-10f, true, {3}));
+    topology.add(permute("permute2", input_info("mvn"), { 0, 2, 3, 1 }));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+
+    program::ptr prog = nullptr;
+    OV_ASSERT_NO_THROW(prog = program::build_program(engine, topology, config));
+    ASSERT_NE(prog, nullptr);
+
+    auto prog_impl = prog.get();
+
+    auto& mvn_node = prog_impl->get_node("mvn");
+
+    ASSERT_EQ(mvn_node.get_input_layouts()[0].format, format::bfyx);
+    ASSERT_EQ(mvn_node.get_output_layout().format, format::bfyx);
+}
+
+// Across-channels MVN has no optimized blocked-layout kernel: the bfyx opt kernel is planar-only and
+// the fsv16/fsv32 kernels implement WITHIN_CHANNELS only. The OCL MVN impl must therefore report no
+// support for non-planar layouts on an across-channels MVN, so layout_optimizer::is_format_supported
+// (via has_impl_for) rejects the blocked format, a reorder to planar bfyx is inserted, and the fast
+// bfyx opt kernel runs instead of falling back to the slow reference (mvn_gpu_ref) kernel.
+// Reduction over axis 1 (channel) makes an MVN across-channels; axes={1,2} mirrors DialogSeparator.
+TEST(reorder_inputs, mvn_across_channels_rejects_blocked_layout) {
+    auto& engine = get_test_engine();
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+
+    const ov::PartialShape shape{1, 256, 60, 60};
+    const ov::PartialShape dyn_shape = ov::PartialShape::dynamic(4);
+
+    auto build = [&](const std::vector<int64_t>& axes, const ov::PartialShape& in_shape) {
+        topology topology;
+        topology.add(input_layout("input", layout{in_shape, data_types::f16, format::bfyx}));
+        topology.add(mvn("mvn", input_info("input"), true, 1e-10f, true, axes));
+        return program::build_program(engine, topology, config, false, true);
+    };
+
+    auto supports = [](program::ptr prog, format::type fmt) {
+        auto& node = prog->get_node("mvn");
+        return test_format<bool>(node, fmt, [](program_node& n) { return n.type()->has_impl_for(n); });
+    };
+
+    // Across-channels (axes include channel axis 1): blocked layouts must be rejected, planar allowed.
+    auto across = build({1, 2, 3}, shape);
+    ASSERT_TRUE(across->get_node("mvn").as<mvn>().get_primitive()->across_channels());
+    EXPECT_FALSE(supports(across, format::b_fs_yx_fsv16));
+    EXPECT_FALSE(supports(across, format::b_fs_yx_fsv32));
+    EXPECT_FALSE(supports(across, format::byxf));
+    EXPECT_TRUE(supports(across, format::bfyx));
+
+    // Within-channels (spatial-only reduction): the fsv16/fsv32 opt kernels support this mode, so the
+    // blocked layout must remain supported (no unnecessary reorder-to-planar; preserves the fast path).
+    auto within = build({2, 3}, shape);
+    ASSERT_FALSE(within->get_node("mvn").as<mvn>().get_primitive()->across_channels());
+    EXPECT_TRUE(supports(within, format::b_fs_yx_fsv16));
+    EXPECT_TRUE(supports(within, format::bfyx));
+
+    // Dynamic shapes: the rejection must apply for dynamic across-channels MVN too. A dynamic node can
+    // still be assigned a blocked layout (e.g. inherited from an fsv16-producing dynamic convolution),
+    // and across-channels + blocked selects the slow mvn_gpu_ref kernel just like the static case, so
+    // the across_channels() check must precede the dynamic-shape early-return. Within-channels dynamic
+    // keeps deferring to the dynamic-shape format list (blocked stays supported).
+    auto across_dyn = build({1, 2, 3}, dyn_shape);
+    EXPECT_FALSE(supports(across_dyn, format::b_fs_yx_fsv16));
+    EXPECT_FALSE(supports(across_dyn, format::b_fs_yx_fsv32));
+    EXPECT_TRUE(supports(across_dyn, format::bfyx));
+
+    auto within_dyn = build({2, 3}, dyn_shape);
+    EXPECT_TRUE(supports(within_dyn, format::b_fs_yx_fsv16));
+
+    // Aligned MVN (PR #36649): a last-axis LayerNorm (axes={3}) reduces a strict subset of the spatial
+    // axes, so requires_alignment() holds and the impl flattens the normalized axes into the innermost
+    // dimension. That reinterpretation is only valid for planar or single feature-blocked layouts, so
+    // byxf (feature innermost) must be rejected - otherwise the GPU normalizes over the wrong physical
+    // axis and silently returns incorrect results in f16. This is the case none of the branches above
+    // reach: it passes the across_channels() and requires_alignment() gates and exercises the
+    // block_sizes logic itself.
+    auto last_axis = build({3}, shape);
+    ASSERT_FALSE(last_axis->get_node("mvn").as<mvn>().get_primitive()->across_channels());
+    EXPECT_FALSE(supports(last_axis, format::byxf));
+    EXPECT_TRUE(supports(last_axis, format::bfyx));
+    // Single feature-blocked layout with a channel count divisible by the block size stays supported
+    // (the flatten_axis=1 special case), and the channel axis is not normalized.
+    EXPECT_TRUE(supports(last_axis, format::b_fs_yx_fsv16));
+
+    // Same aligned case, but the channel count is not divisible by the fsv16 block size, so the
+    // flattening would cross block padding: must be rejected.
+    auto last_axis_unaligned = build({3}, ov::PartialShape{1, 8, 64, 64});
+    EXPECT_FALSE(supports(last_axis_unaligned, format::b_fs_yx_fsv16));
+    EXPECT_TRUE(supports(last_axis_unaligned, format::bfyx));
+
+    // Aligned MVN with a dynamic batch is always reordered to planar by reorder_inputs, so blocked layouts
+    // must not be offered; otherwise format propagation wraps the MVN in a reorder pair.
+    auto last_axis_dyn = build({3}, ov::PartialShape{-1, 24, 24, 256});
+    EXPECT_FALSE(supports(last_axis_dyn, format::b_fs_yx_fsv16));
+    EXPECT_FALSE(supports(last_axis_dyn, format::b_fs_yx_fsv32));
+    EXPECT_TRUE(supports(last_axis_dyn, format::bfyx));
+
+    // A non-reduced spatial axis with max length 1 does not require alignment: blocked stays supported.
+    auto unit_y_dyn = build({3}, ov::PartialShape{-1, 32, 1, 256});
+    EXPECT_TRUE(supports(unit_y_dyn, format::b_fs_yx_fsv16));
+}
 // TODO Not yet implemented
 //TEST(reorder_inputs, impl_forcing_conv_format_kernel) {
 //    auto& engine = get_test_engine();
@@ -454,6 +655,139 @@ TEST(reorder_inputs, no_need_of_reorder_to_change_input_rank_for_rdft) {
 //        ASSERT_EQ(out_mem_ptr[7], 44.f);
 //    }
 //}
+
+TEST(reorder_inputs, dynamic_conv_chain_no_throw) {
+    // conv2 is fully static (feature comes from weights.out_ch) so it enters
+    // the native format-selection heuristics, which then inspect the previous
+    // conv whose input is still dynamic. Those helpers used to call feature()/
+    // count()/get_linear_size() on the dynamic layout and throw.
+    auto& engine = get_test_engine();
+    auto input_layout_dyn = layout{ ov::PartialShape{1, ov::Dimension::dynamic(), 1, 3000},
+                                    data_types::f16,
+                                    format::bfyx };
+    auto weights1 = engine.allocate_memory({ {384,  80, 1, 3}, data_types::f16, format::bfyx });
+    auto weights2 = engine.allocate_memory({ {384, 384, 1, 3}, data_types::f16, format::bfyx });
+
+    topology topology;
+    topology.add(input_layout("input", input_layout_dyn));
+    topology.add(data("weights1", weights1));
+    topology.add(data("weights2", weights2));
+    topology.add(convolution("conv1", input_info("input"),  "weights1", "", 1, {1, 1}, {1, 1}, {0, 1}, {0, 1}, false));
+    topology.add(convolution("conv2", input_info("conv1"), "weights2", "", 1, {1, 1}, {1, 1}, {0, 1}, {0, 1}, false));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    config.set_property(ov::intel_gpu::optimize_data(true));
+
+    program::ptr prog = nullptr;
+    OV_ASSERT_NO_THROW(prog = program::build_program(engine, topology, config));
+    ASSERT_NE(prog, nullptr);
+}
+
+// There are other rank-changing ops, such as eltwise and broadcast,
+// but we test these two as representative cases.
+enum class rank_changing_op { reshape, gather };
+
+class static_resample_with_rank_changing_user : public ::testing::TestWithParam<rank_changing_op> {};
+
+TEST_P(static_resample_with_rank_changing_user, no_recursion) {
+    // Topology:
+    //
+    // input -> Resample -> RankChange (4D -> 5D) --+
+    //                                              +-> Concat -> Reduce -> Convolution
+    // skip -------------> Reshape (Unsqueeze) -----+
+    //
+    // Resample checks its users via all_users_simple_format_until_output(), which queries the user(RankChange)'s
+    // preferred format. RankChange (Reshape, Gather, ..) changes the rank, so it queries its Resample dependency's
+    // preferred format, which must not restart the user check and recurse endlessly.
+    auto& engine = get_test_engine();
+    auto weights = engine.allocate_memory({data_types::f16, format::bfyx, {512, 384, 1, 1}});
+
+    topology topology;
+    topology.add(data("weights", weights));
+    topology.add(input_layout("input", layout{{1, 384, 20, 20}, data_types::f16, format::bfyx}));
+    topology.add(input_layout("skip", layout{{1, 384, 40, 40}, data_types::f16, format::bfyx}));
+    topology.add(resample("resample",
+                          input_info("input"),
+                          std::vector<int64_t>{},
+                          std::vector<float>{2.0f, 2.0f},
+                          std::vector<int64_t>{2, 3},
+                          std::vector<size_t>{0, 0, 0, 0},
+                          std::vector<size_t>{0, 0, 0, 0},
+                          0,
+                          -0.75f,
+                          resample::InterpolateOp::InterpolateMode::NEAREST,
+                          resample::InterpolateOp::ShapeCalcMode::SCALES,
+                          resample::InterpolateOp::CoordinateTransformMode::ASYMMETRIC,
+                          resample::InterpolateOp::NearestMode::SIMPLE));
+    switch (GetParam()) {
+    case rank_changing_op::reshape:
+        topology.add(reshape("rank_change", input_info("resample"), false, {1}, {1, 1, 384, 40, 40}, reshape::reshape_mode::unsqueeze));
+        break;
+    case rank_changing_op::gather: {
+        auto indices = engine.allocate_memory(layout{ov::PartialShape{1, 1}, data_types::i32, format::bfyx});
+        set_values<int32_t>(indices, {0});
+        topology.add(data("indices", indices));
+        topology.add(gather("rank_change", input_info("resample"), input_info("indices"), 0, 4, ov::Shape{1, 1, 384, 40, 40}));
+        break;
+    }
+    }
+    topology.add(reshape("skip_reshape",
+                         input_info("skip"),
+                         false,
+                         {1},
+                         {1, 1, 384, 40, 40},
+                         reshape::reshape_mode::unsqueeze));
+    topology.add(concatenation("concat", {input_info("rank_change"), input_info("skip_reshape")}, 0));
+    topology.add(reduce("reduce", input_info("concat"), reduce_mode::sum, {0}, false));
+    topology.add(convolution("output", input_info("reduce"), "weights", "", 1, {1, 1}, {1, 1}, {0, 0}, {0, 0}, false));
+    topology.add(reorder("sink", input_info("output"), format::bfyx, data_types::f16));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    config.set_property(ov::intel_gpu::optimize_data(true));
+
+    program::ptr prog = nullptr;
+    OV_ASSERT_NO_THROW(prog = program::build_program(engine, topology, config, false, true));
+    ASSERT_NE(prog, nullptr);
+
+    program_wrapper::apply_opt_pass<mark_nodes>(*prog);
+    ASSERT_TRUE(prog->is_new_shape_infer());
+    ASSERT_FALSE(prog->get_node("resample").is_dynamic());
+    ASSERT_TRUE(prog->get_node("rank_change").is_in_data_flow());
+    ASSERT_NE(prog->get_node("rank_change").get_input_layout(0).get_rank(), prog->get_node("rank_change").get_output_layout().get_rank());
+    OV_ASSERT_NO_THROW(prog->get_layout_optimizer().get_preferred_format(prog->get_node("resample")));
+    OV_ASSERT_NO_THROW(prog->get_layout_optimizer().get_preferred_format(prog->get_node("rank_change")));
+
+    reorder_factory rf;
+    OV_ASSERT_NO_THROW(program_wrapper::apply_opt_pass<reorder_inputs>(*prog, rf));
+
+    ASSERT_EQ(prog->get_node("resample").get_output_layout().format, format::bfyx);
+    ASSERT_EQ(prog->get_node("rank_change").get_input_layout(0).format, format::bfyx);
+    ASSERT_EQ(prog->get_node("rank_change").get_output_layout().format, format::bfzyx);
+    ASSERT_EQ(prog->get_node("reduce").get_output_layout().format, format::bfyx);
+
+    auto blocked_prog = program::build_program(engine, topology, config, false, true);
+    ASSERT_NE(blocked_prog, nullptr);
+    program_wrapper::apply_opt_pass<mark_nodes>(*blocked_prog);
+    blocked_prog->get_layout_optimizer().set_implementation_forcing(
+        ov::intel_gpu::ImplForcingMap{{"output", {format::b_fs_yx_fsv16, ""}}});
+
+    // The rank-changing user is a traversal pass-through, not a traversal stop. The blocked consumer
+    // after it must still prevent the Resample from being forced to a plain format.
+    ASSERT_EQ(blocked_prog->get_layout_optimizer().get_preferred_format(blocked_prog->get_node("resample")),
+              format::any);
+
+    OV_ASSERT_NO_THROW(prog = program::build_program(engine, topology, config));
+    ASSERT_NE(prog, nullptr);
+}
+
+INSTANTIATE_TEST_SUITE_P(reorder_inputs,
+                         static_resample_with_rank_changing_user,
+                         ::testing::Values(rank_changing_op::reshape, rank_changing_op::gather),
+                         [](const ::testing::TestParamInfo<rank_changing_op>& info) {
+                             return info.param == rank_changing_op::reshape ? "reshape" : "gather";
+                         });
 
 #ifdef ENABLE_ONEDNN_FOR_GPU
 TEST(reorder_inputs, has_reshape_user) {
@@ -526,5 +860,42 @@ TEST(reorder_inputs, has_reshape_user) {
     for (size_t x = 0; x < out_l.count(); ++x) {
         ASSERT_EQ(static_cast<float>(ref_output[x]), output_ptr[x]);
     }
+}
+
+TEST(reorder_inputs, two_connections_with_different_format) {
+    // Topology:
+    // convolution(fsv16) ___ convolution
+    //                    \__ deformable_conv
+    //                     \_ reshape
+    // Purpose:
+    // When convolution has reshape as a user, its layout may be chosen in a confusing way from get_preferred_format.
+    // This test mimics the behavior.
+    //
+    // Expectation:
+    // Reorder should be added only to deformable_conv as deformable_conv supports bfyx only.
+
+    auto& engine = get_test_engine();
+    auto input = engine.allocate_memory({ data_types::f16, format::bfyx, { 1, 32, 128, 128 } });
+    auto weights = engine.allocate_memory({ data_types::f16, format::bfyx, { 32, 32, 1, 1 } });
+    auto trans = engine.allocate_memory({ data_types::f16, format::bfyx, { 1, 2, 128, 128 } });
+
+    topology topology;
+    topology.add(data("weights", weights));
+    topology.add(data("trans", trans));
+    topology.add(input_layout("input", input->get_layout()));
+    topology.add(convolution("conv1", input_info("input"), "weights", "", 1, {1, 1}, {1, 1}, {0, 0}, {0, 0}, false));
+    topology.add(convolution("conv2", input_info("conv1"), "weights", "", 1, {1, 1}, {1, 1}, {0, 0}, {0, 0}, false));
+    topology.add(convolution("deform_conv", {input_info("conv1"), input_info("trans")}, "weights", "", true, 1, 1, {1, 1}, {1, 1}, {0, 0}, {0, 0}));
+    topology.add(reshape("reshape", input_info("conv1"), tensor(2, 16, 128, 128), cldnn::reshape::reshape_mode::base));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    auto prog = program::build_program(engine, topology, config);
+
+    auto& node = prog->get_node("deform_conv");
+    ASSERT_NE(node.get_selected_impl(), nullptr);
+    auto kernel_name = node.get_selected_impl()->get_kernel_name();
+    ASSERT_EQ(kernel_name, "deformable_convolution_gpu_bfyx_opt");
 }
 #endif

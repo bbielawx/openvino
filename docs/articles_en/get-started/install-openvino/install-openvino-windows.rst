@@ -1,5 +1,3 @@
-.. {#openvino_docs_install_guides_installing_openvino_windows_header}
-
 Install OpenVINO™ Runtime on Windows
 ======================================
 
@@ -21,7 +19,7 @@ Install OpenVINO™ Runtime on Windows
    Use Docker <install-openvino-docker-linux>
    Use Conan <install-openvino-conan>
    Use npm <install-openvino-npm>
-
+   Use WinGet <install-openvino-winget>
 
 If you want to install OpenVINO™ Runtime on Windows, you have the following options:
 
@@ -32,5 +30,5 @@ If you want to install OpenVINO™ Runtime on Windows, you have the following op
 * :doc:`Install OpenVINO using Docker  <install-openvino-docker-linux>`
 * :doc:`Install OpenVINO using Conan Package Manager <install-openvino-conan>`
 * :doc:`Install OpenVINO using npm <install-openvino-npm>`
-
+* :doc:`Install OpenVINO using WinGet <install-openvino-winget>`
 

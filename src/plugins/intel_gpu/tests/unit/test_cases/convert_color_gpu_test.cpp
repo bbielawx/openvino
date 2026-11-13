@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -94,7 +94,7 @@ TEST(convert_color, nv12_to_rgb_two_planes_buffer_fp32) {
     createReferenceDataNV12<float, float>(input_y_data.data(), input_uv_data.data(), ref_res.data(),
                                           1, height, width, height * width, height * width / 2, true);
     auto output = outputs.at("convert_color").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_res.size(); ++i) {
         ASSERT_NEAR(ref_res[i], output_ptr[i], 1.001f);
@@ -136,7 +136,7 @@ TEST(convert_color, nv12_to_bgr_two_planes_buffer_fp32) {
                                    1, height, width, height * width, height * width / 2, false);
 
     auto output = outputs.at("convert_color").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_res.size(); ++i) {
         ASSERT_NEAR(ref_res[i], output_ptr[i], 1.001f);
@@ -178,7 +178,7 @@ TEST(convert_color, nv12_to_rgb_two_planes_buffer_u8) {
                                             1, height, width, height * width, height * width / 2, true);
 
     auto output = outputs.at("convert_color").get_memory();
-    cldnn::mem_lock<uint8_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<uint8_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_res.size(); ++i) {
         ASSERT_NEAR(ref_res[i], static_cast<float>(output_ptr[i]), 1.001f);
@@ -220,7 +220,7 @@ TEST(convert_color, nv12_to_rgb_two_planes_buffer_fp16) {
                                             1, height, width, height * width, height * width / 2, true);
 
     auto output = outputs.at("convert_color").get_memory();
-    cldnn::mem_lock<uint16_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<uint16_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
      for (size_t i = 0; i < ref_res.size(); ++i) {
         ASSERT_NEAR(ref_res[i], half_to_float(output_ptr[i]), 1.001f);
@@ -258,7 +258,7 @@ TEST(convert_color, nv12_to_rgb_single_plane_buffer_fp32) {
     createReferenceDataNV12<float, float>(input_data.data(), input_data.data() + height * width, ref_res.data(),
                                           1, height, width, input_height * width, input_height * width, true);
     auto output = outputs.at("convert_color").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_res.size(); ++i) {
         ASSERT_NEAR(ref_res[i], output_ptr[i], 1.001f);
@@ -296,7 +296,7 @@ TEST(convert_color, nv12_to_rgb_single_plane_buffer_u8) {
     createReferenceDataNV12<uint8_t, float>(input_data.data(), input_data.data() + height * width, ref_res.data(),
                                             1, height, width, input_height * width, input_height * width, true);
     auto output = outputs.at("convert_color").get_memory();
-    cldnn::mem_lock<uint8_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<uint8_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_res.size(); ++i) {
         ASSERT_NEAR(ref_res[i], static_cast<float>(output_ptr[i]), 1.001f);
@@ -308,7 +308,7 @@ TEST(convert_color, nv12_to_rgb_two_planes_surface_u8) {
     int width = 224;
     int height = 448;
 
-    device_query query(engine_types::ocl, runtime_types::ocl);
+    device_query query(engine_types::ocl, runtime_types::ocl, nullptr, nullptr, 0, -1, true);
     auto devices = query.get_available_devices();
     ASSERT_TRUE(!devices.empty());
     auto iter = devices.find(std::to_string(device_query::device_id));
@@ -377,7 +377,7 @@ TEST(convert_color, nv12_to_rgb_two_planes_surface_u8) {
                                               1, height, width, height * width, height * width / 2, true);
 
     auto output_prim = outputs.begin()->second.get_memory();
-    cldnn::mem_lock<uint8_t> output_ptr(output_prim, get_test_stream());
+    cldnn::mem_lock<uint8_t, mem_lock_type::read> output_ptr(output_prim, get_test_stream());
     for (size_t i = 0; i < reference_results.size(); i++) {
         ASSERT_EQ(reference_results[i], output_ptr[i]);
     }
@@ -391,7 +391,7 @@ TEST(convert_color, nv12_to_rgb_single_plane_surface_u8) {
     int height = 448;
     int input_height = height + height / 2;
 
-    device_query query(engine_types::ocl, runtime_types::ocl);
+    device_query query(engine_types::ocl, runtime_types::ocl, nullptr, nullptr, 0, -1, true);
     auto devices = query.get_available_devices();
     ASSERT_TRUE(!devices.empty());
     auto iter = devices.find(std::to_string(device_query::device_id));
@@ -443,7 +443,7 @@ TEST(convert_color, nv12_to_rgb_single_plane_surface_u8) {
                                             1, height, width, input_height * width, input_height * width, true);
 
     auto output_prim = outputs.begin()->second.get_memory();
-    cldnn::mem_lock<uint8_t> output_ptr(output_prim, get_test_stream());
+    cldnn::mem_lock<uint8_t, mem_lock_type::read> output_ptr(output_prim, get_test_stream());
     for (size_t i = 0; i < reference_results.size(); i++) {
         ASSERT_EQ(reference_results[i], output_ptr[i]);
     }
@@ -484,8 +484,8 @@ void createReferenceDataI420(const T* arg_y, const T* arg_u, const T* arg_v, U* 
                 auto uv_index = (h / 2) * (image_w / 2) + (w / 2);
                 auto u_val = static_cast<float>(u_ptr[uv_index]);
                 auto v_val = static_cast<float>(v_ptr[uv_index]);
-                T r, g, b;
-                std::tie(r, g, b) = yuv_pixel_to_rgb<U>(y_val, u_val, v_val);
+
+                const auto& [r, g, b] = yuv_pixel_to_rgb<U>(y_val, u_val, v_val);
                 if (rgb_color_format) {
                     out[y_index * 3] = r;
                     out[y_index * 3 + 1] = g;
@@ -539,7 +539,7 @@ TEST(convert_color, i420_to_rgb_three_planes_buffer_fp32) {
     createReferenceDataI420<float, float>(input_y_data.data(), input_u_data.data(), input_v_data.data(), ref_res.data(),
                                           1, height, width, height * width, height * width / 2, true);
     auto output = outputs.at("convert_color").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < ref_res.size(); ++i) {
         ASSERT_NEAR(ref_res[i], output_ptr[i], 1.001f);
@@ -552,7 +552,7 @@ void test_convert_color_i420_to_rgb_three_planes_surface_u8(bool is_caching_test
     int width = 224;
     int height = 448;
 
-    device_query query(engine_types::ocl, runtime_types::ocl);
+    device_query query(engine_types::ocl, runtime_types::ocl, nullptr, nullptr, 0, -1, true);
     auto devices = query.get_available_devices();
     ASSERT_TRUE(!devices.empty());
     auto iter = devices.find(std::to_string(device_query::device_id));
@@ -630,7 +630,7 @@ void test_convert_color_i420_to_rgb_three_planes_surface_u8(bool is_caching_test
                                             1, height, width, height * width, height * width / 2, true);
 
     auto output_prim = outputs.begin()->second.get_memory();
-    cldnn::mem_lock<uint8_t> output_ptr(output_prim, get_test_stream());
+    cldnn::mem_lock<uint8_t, mem_lock_type::read> output_ptr(output_prim, get_test_stream());
     for (size_t i = 0; i < reference_results.size(); i++) {
         ASSERT_EQ(reference_results[i], output_ptr[i]) << " i = " << i;
     }

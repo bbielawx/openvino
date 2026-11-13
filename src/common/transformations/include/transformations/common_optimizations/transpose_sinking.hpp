@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,13 +8,13 @@
 #include <vector>
 
 #include "openvino/pass/graph_rewrite.hpp"
-#include "openvino/pass/pattern/matcher.hpp"
 #include "transformations_visibility.hpp"
 
 namespace ov {
 namespace pass {
 
 class TRANSFORMATIONS_API TransposeSinking;
+class TRANSFORMATIONS_API TransposeFQ;
 class TRANSFORMATIONS_API TransposeConvert;
 class TRANSFORMATIONS_API TransposeEltwise;
 class TRANSFORMATIONS_API TransposeReduction;
@@ -26,11 +26,21 @@ class TRANSFORMATIONS_API TransposeFuse;
 
 /**
  * @ingroup ov_transformation_common_api
+ * @brief TransposeFQ transformation sinks Transpose through FakeQuantize
+ */
+class ov::pass::TransposeFQ : public ov::pass::MatcherPass {
+public:
+    OPENVINO_MATCHER_PASS_RTTI("TransposeFQ");
+    TransposeFQ();
+};
+
+/**
+ * @ingroup ov_transformation_common_api
  * @brief TransposeReduction transformation sinks Transpose through Reduce operations
  */
 class ov::pass::TransposeReduction : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("TransposeReduction", "0");
+    OPENVINO_MATCHER_PASS_RTTI("TransposeReduction");
     TransposeReduction();
 };
 
@@ -41,7 +51,7 @@ public:
  */
 class ov::pass::TransposeFQReduction : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("TransposeFQReduction", "0");
+    OPENVINO_MATCHER_PASS_RTTI("TransposeFQReduction");
     TransposeFQReduction();
 };
 
@@ -51,7 +61,7 @@ public:
  */
 class ov::pass::TransposeConvert : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("TransposeConvert", "0");
+    OPENVINO_MATCHER_PASS_RTTI("TransposeConvert");
     TransposeConvert();
 };
 
@@ -61,7 +71,7 @@ public:
  */
 class ov::pass::TransposeEltwise : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("TransposeEltwise", "0");
+    OPENVINO_MATCHER_PASS_RTTI("TransposeEltwise");
     TransposeEltwise();
 };
 
@@ -72,7 +82,7 @@ public:
  */
 class ov::pass::TransposeFuse : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("TransposeFuse", "0");
+    OPENVINO_MATCHER_PASS_RTTI("TransposeFuse");
     TransposeFuse();
 };
 
@@ -82,8 +92,9 @@ public:
  */
 class ov::pass::TransposeSinking : public ov::pass::GraphRewrite {
 public:
-    OPENVINO_RTTI("TransposeSinking", "0");
+    OPENVINO_GRAPH_REWRITE_RTTI("TransposeSinking");
     TransposeSinking() {
+        add_matcher<ov::pass::TransposeFQ>();
         add_matcher<ov::pass::TransposeFQReduction>();
         add_matcher<ov::pass::TransposeReduction>();
         add_matcher<ov::pass::TransposeConvert>();

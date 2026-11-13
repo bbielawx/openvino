@@ -1,10 +1,9 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/gru.hpp"
-
 #include "core/null_node.hpp"
+#include "core/operator_set.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/concat.hpp"
 #include "openvino/op/constant.hpp"
@@ -12,15 +11,10 @@
 #include "utils/recurrent.hpp"
 #include "utils/reshape.hpp"
 #include "utils/split.hpp"
-
 using namespace ov::op;
 using ov::Shape;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 namespace {
 struct GRUInputMap : public recurrent::OpInputMap {
     GRUInputMap(const Node& node, std::size_t gates_count) : OpInputMap(node, gates_count) {
@@ -100,11 +94,12 @@ ov::OutputVector gru(const ov::frontend::onnx::Node& node) {
     const auto Y = gru_sequence->output(0);
     const auto Y_h = gru_sequence->output(1);
 
+    if (attributes.m_layout == 1) {
+        // OV [batch, num_directions, seq, hidden] -> ONNX [batch, seq, num_directions, hidden]; Y_h already matches.
+        return {ov::op::util::reorder_axes(Y, {0, 2, 1, 3}), Y_h};
+    }
+
     return {ov::op::util::reorder_axes(Y, {2, 1, 0, 3}), ov::op::util::reorder_axes(Y_h, {1, 0, 2})};
 }
-
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("GRU", OPSET_SINCE(1), ai_onnx::opset_1::gru);
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

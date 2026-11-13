@@ -1,5 +1,3 @@
-.. {#openvino_docs_install_guides_installing_openvino_vcpkg}
-
 Install OpenVINO™ Runtime via vcpkg
 =====================================
 
@@ -13,29 +11,18 @@ Install OpenVINO™ Runtime via vcpkg
    Note that the vcpkg distribution:
 
    * offers C/C++ API only
-   * does not offer support for NPU inference
    * is dedicated to users of all major OSes: Windows, Linux, and macOS
      (all x86_64 / arm64 architectures)
 
-.. tab-set::
+   Before installing OpenVINO, see the
+   :doc:`System Requirements page <../../../about-openvino/release-notes-openvino/system-requirements>`.
 
-   .. tab-item:: System Requirements
-      :sync: system-requirements
-
-      | Full requirement listing is available in:
-      | :doc:`System Requirements Page <../../../about-openvino/system-requirements>`
-
-   .. tab-item:: Processor Notes
-      :sync: processor-notes
-
-      | To see if your processor includes the integrated graphics technology and supports iGPU inference, refer to:
-      | `Product Specifications <https://ark.intel.com/>`__
-
-   .. tab-item:: Software Requirements
-      :sync: software-requirements
-
-      * `vcpkg <https://vcpkg.io/en/getting-started>`__
-
+.. note::
+    This community-maintained distribution channel is provided to help users explore and evaluate OpenVINO.
+    
+    Please note that accuracy, performance, and behavior may differ from officially supported OpenVINO distributions, and are not guaranteed by the OpenVINO team in this channel. Due to the community-driven nature of this distribution channel, the OpenVINO team does not guarantee timely updates aligned with official releases, nor update availability for all OpenVINO versions.
+    
+    For production deployments and product integration, we recommend using officially supported distribution channels (for example, official S3 archives or PyPI packages), which provide validated builds and defined guarantees.
 
 
 Installing OpenVINO Runtime
@@ -81,7 +68,7 @@ And running from terminal:
 
 Congratulations! You've just Installed and used OpenVINO in your project! For some use cases you may still
 need to install additional components. Check the
-:doc:`list of additional configurations <../configurations>`
+:doc:`list of additional configurations <./configurations>`
 to see if your case needs any of them.
 
 Uninstalling OpenVINO
@@ -91,7 +78,7 @@ To uninstall OpenVINO via vcpkg, use the following command:
 
 .. code-block:: sh
 
-   vcpkg uninstall openvino
+   vcpkg remove openvino
 
 
 What's Next?
@@ -101,9 +88,9 @@ Now that you've installed OpenVINO Runtime, you can try the following things:
 
 * Learn more about :doc:`OpenVINO Workflow <../../../openvino-workflow>`.
 * To prepare your models for working with OpenVINO, see :doc:`Model Preparation <../../../openvino-workflow/model-preparation>`.
-* See pre-trained deep learning models in our :doc:`Open Model Zoo <../../../documentation/legacy-features/model-zoo>`.
+* See pre-trained deep learning models on `Hugging Face <https://huggingface.co/OpenVINO>`__.
 * Learn more about :doc:`Inference with OpenVINO Runtime <../../../openvino-workflow/running-inference>`.
-* See sample applications in :doc:`OpenVINO toolkit Samples Overview <../../../learn-openvino/openvino-samples>`.
+* See sample applications in :doc:`OpenVINO toolkit Samples Overview <../../../get-started/learn-openvino/openvino-samples>`.
 * Check out the OpenVINO `product home page <https://software.intel.com/en-us/openvino-toolkit>`__ .
 
 

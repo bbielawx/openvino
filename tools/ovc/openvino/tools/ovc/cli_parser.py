@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
@@ -7,10 +7,10 @@ import os
 import pathlib
 import re
 from collections import OrderedDict, namedtuple
-from typing import List, Union
+from typing import Union
 
 import openvino
-from openvino.runtime import PartialShape, Dimension, Type  # pylint: disable=no-name-in-module,import-error
+from openvino import PartialShape, Dimension, Type  # pylint: disable=no-name-in-module,import-error
 from openvino.tools.ovc.error import Error
 from openvino.tools.ovc.help import get_convert_model_help_specifics
 from openvino.tools.ovc.moc_frontend.shape_utils import to_partial_shape, is_shape_type
@@ -202,8 +202,8 @@ def get_mo_convert_params():
     return mo_convert_params
 
 
-def canonicalize_and_check_paths(values: Union[str, List[str], None], param_name,
-                                 try_mo_root=False, check_existence=True) -> List[str]:
+def canonicalize_and_check_paths(values: Union[str, list[str], None], param_name,
+                                 try_mo_root=False, check_existence=True) -> list[str]:
     if values is not None:
         list_of_values = list()
         if isinstance(values, str):
@@ -486,7 +486,7 @@ def parse_input_value(input_value: str):
 
 
 def split_inputs(input_str):
-    pattern = r'^(?:[^[\]()<]*(\[[\.)-9,\-\s?]*\])*,)*[^[\]()<]*(\[[\.0-9,\-\s?]*\])*$'
+    pattern = r'^(?:[^[\]()<]*(\[[\.0-9,\-\s?]*\])*,)*[^[\]()<]*(\[[\.0-9,\-\s?]*\])*$'
     if not re.match(pattern, input_str):
         raise Error(f"input value '{input_str}' is incorrect. Input should be in the following format: "
                     f"{get_convert_model_help_specifics()['input']['description']}")
@@ -495,6 +495,7 @@ def split_inputs(input_str):
     inputs = []
     while input_str:
         idx = 0
+        separator_found = False
         for c in input_str:
             if c == '[':
                 brakets_count += 1
@@ -505,9 +506,10 @@ def split_inputs(input_str):
                     idx += 1
                     continue
                 else:
+                    separator_found = True
                     break
             idx += 1
-        if idx >= len(input_str) - 1:
+        if not separator_found:
             inputs.append(input_str)
             break
         inputs.append(input_str[:idx])
@@ -623,7 +625,7 @@ def depersonalize(value: str, key: str):
 
 
 def get_available_front_ends(fem=None):
-    # Use this function as workaround to avoid IR frontend usage by MO
+    # Use this function as workaround to avoid IR frontend usage by OVC
     if fem is None:
         return []
     available_moc_front_ends = fem.get_available_front_ends()

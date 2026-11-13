@@ -1,9 +1,12 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "transformations/utils/utils.hpp"
+
+#include <cstdint>
+#include <limits>
 
 #include "openvino/op/tanh.hpp"
 #include "openvino/op/elu.hpp"
@@ -23,6 +26,7 @@
 #include "openvino/op/floor.hpp"
 #include "openvino/op/ceiling.hpp"
 #include "openvino/op/erf.hpp"
+#include "openvino/op/erfinv.hpp"
 #include "openvino/op/hard_sigmoid.hpp"
 #include "openvino/op/log.hpp"
 #include "openvino/op/negative.hpp"
@@ -33,7 +37,9 @@
 #include "openvino/op/sinh.hpp"
 #include "openvino/op/cos.hpp"
 #include "openvino/op/cosh.hpp"
+#include "openvino/op/softsign.hpp"
 #include "openvino/op/swish.hpp"
+#include "openvino/op/sqrt.hpp"
 #include "openvino/op/hswish.hpp"
 #include "openvino/op/mish.hpp"
 #include "openvino/op/gelu.hpp"
@@ -43,8 +49,7 @@
 
 #include "intel_gpu/primitives/activation.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 void CreateUnaryEltwiseOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op,
                           cldnn::activation_func func, cldnn::activation_additional_params params) {
@@ -74,7 +79,7 @@ static void CreateReluOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::Re
 static void CreatePReluOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::PRelu>& op) {
     validate_inputs_count(op, {2});
 
-    auto slope_node = std::dynamic_pointer_cast<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
+    auto slope_node = ov::as_type_ptr<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
     auto slope_shape = op->get_input_partial_shape(1);
     auto out_shape = op->get_output_partial_shape(0);
 
@@ -98,6 +103,9 @@ static void CreateClampOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::C
     double min = op->get_min();
     double max = op->get_max();
     if (op->get_output_element_type(0) == ov::element::i32) {
+        // Precision conversion preserves Clamp attributes, including i64 lower bounds.
+        // INT32_MIN is exactly representable as float and avoids an out-of-range convert_int.
+        min = std::max<double>(std::numeric_limits<int32_t>::lowest(), min);
         // Currently jitter saves all compile time constant as floats
         // and we have a code like that: (int)(as_float(0x4f000000))
         // So values in range (2147483583.0, 2147483647.0] are converted to  2147483648.0 due to fp32 representation error
@@ -161,10 +169,14 @@ static void CreateErfOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::Erf
     CreateUnaryEltwiseOp(p, op, cldnn::activation_func::erf, {});
 }
 
+static void CreateErfInvOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v17::ErfInv>& op) {
+    CreateUnaryEltwiseOp(p, op, cldnn::activation_func::erfinv, {});
+}
+
 static void CreateHardSigmoidOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::HardSigmoid>& op) {
     validate_inputs_count(op, {3});
-    auto alpha_node = std::dynamic_pointer_cast<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
-    auto beta_node = std::dynamic_pointer_cast<ov::op::v0::Constant>(op->get_input_node_shared_ptr(2));
+    auto alpha_node = ov::as_type_ptr<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
+    auto beta_node = ov::as_type_ptr<ov::op::v0::Constant>(op->get_input_node_shared_ptr(2));
     if (!alpha_node || !beta_node) {
         OPENVINO_THROW("[GPU] Unsupported parameter nodes type in ", op->get_friendly_name(), " (", op->get_type_name(), ")");
     }
@@ -189,8 +201,8 @@ static void CreateNegativeOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0
 
 static void CreateSeluOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::Selu>& op) {
     validate_inputs_count(op, {3});
-    auto alpha_node = std::dynamic_pointer_cast<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
-    auto lambda_node = std::dynamic_pointer_cast<ov::op::v0::Constant>(op->get_input_node_shared_ptr(2));
+    auto alpha_node = ov::as_type_ptr<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
+    auto lambda_node = ov::as_type_ptr<ov::op::v0::Constant>(op->get_input_node_shared_ptr(2));
     if (!alpha_node || !lambda_node) {
         OPENVINO_THROW("Unsupported parameter nodes type in ", op->get_friendly_name(), " (", op->get_type_name(), ")");
     }
@@ -234,7 +246,7 @@ static void CreateCoshOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::Co
 static void CreateSwishOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v4::Swish>& op) {
     validate_inputs_count(op, {1, 2});
     if (op->get_input_size() == 2) {
-        auto beta_node = std::dynamic_pointer_cast<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
+        auto beta_node = ov::as_type_ptr<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
         if (beta_node) {
             if (ov::shape_size(beta_node->get_output_shape(0)) == 1) {
                 float beta;
@@ -313,6 +325,7 @@ REGISTER_FACTORY_IMPL(v0, Floor);
 REGISTER_FACTORY_IMPL(v0, Ceiling);
 REGISTER_FACTORY_IMPL(v0, Sqrt);
 REGISTER_FACTORY_IMPL(v0, Erf);
+REGISTER_FACTORY_IMPL(v17, ErfInv);
 REGISTER_FACTORY_IMPL(v0, HardSigmoid);
 REGISTER_FACTORY_IMPL(v0, Log);
 REGISTER_FACTORY_IMPL(v0, Negative);
@@ -333,5 +346,4 @@ REGISTER_FACTORY_IMPL(v5, HSigmoid);
 REGISTER_FACTORY_IMPL(v5, Round);
 REGISTER_FACTORY_IMPL(v9, SoftSign);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

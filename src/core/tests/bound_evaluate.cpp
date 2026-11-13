@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,12 +6,21 @@
 
 #include <gtest/gtest.h>
 
+#include "common_test_utils/test_assertions.hpp"
 #include "common_test_utils/type_prop.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/reduce_prod.hpp"
+#include "openvino/op/subtract.hpp"
 #include "openvino/op/util/framework_node.hpp"
-#include "openvino/opsets/opset10.hpp"
 
 using namespace ov;
-using namespace ov::opset10;
+using ov::op::v0::Concat;
+using ov::op::v0::Constant;
+using ov::op::v0::Parameter;
+using ov::op::v0::Result;
+using ov::op::v1::ReduceProd;
+using ov::op::v1::Subtract;
+using ov::op::v3::ShapeOf;
 
 class EvaluateBoundTest : public TypePropOpTest<op::util::FrameworkNode> {
 protected:
@@ -41,7 +50,7 @@ TEST_F(EvaluateBoundTest, no_exception_when_node_has_output_with_dynamic_rank) {
     fn_op->set_output_type(1, element::i32, PartialShape{{1, 4}});
     fn_op->validate_and_infer_types();
 
-    EXPECT_NO_THROW(evaluate_both_bounds(fn_op));
+    EXPECT_NO_THROW(ov::util::evaluate_both_bounds(fn_op));
 }
 
 TEST_F(EvaluateBoundTest, no_exception_when_node_has_output_with_dynamic_element_type) {
@@ -49,7 +58,7 @@ TEST_F(EvaluateBoundTest, no_exception_when_node_has_output_with_dynamic_element
     fn_op->set_output_type(1, element::dynamic, PartialShape{4});
     fn_op->validate_and_infer_types();
 
-    EXPECT_NO_THROW(evaluate_both_bounds(fn_op));
+    EXPECT_NO_THROW(ov::util::evaluate_both_bounds(fn_op));
 }
 
 using BoundEvaluatorTest = ::testing::Test;
@@ -66,16 +75,41 @@ TEST(BoundEvaluatorTest, no_exception_on_single_bound) {
     int32_t o_[1] = {INT32_MIN};  // initial value of output tensor is not needed, it's set to check whether changed
     TensorVector output{{et, s, o_}};
     // evaluations won't be performed due to missing upper bound tensor of parameter a
-    ASSERT_NO_THROW(sub->evaluate_lower(output));
+    OV_ASSERT_NO_THROW(sub->evaluate_lower(output));
     EXPECT_EQ(o_[0], INT32_MIN);
-    ASSERT_NO_THROW(sub->evaluate_upper(output));
+    OV_ASSERT_NO_THROW(sub->evaluate_upper(output));
     EXPECT_EQ(o_[0], INT32_MIN);
 
     int32_t a_u[1] = {11};
     a->get_output_tensor(0).set_upper_value(Tensor{et, s, a_u});
     // now both bounds of sub node can be calculated
-    ASSERT_NO_THROW(sub->evaluate_lower(output));
+    OV_ASSERT_NO_THROW(sub->evaluate_lower(output));
     EXPECT_EQ(o_[0], 0);
-    ASSERT_NO_THROW(sub->evaluate_upper(output));
+    OV_ASSERT_NO_THROW(sub->evaluate_upper(output));
     EXPECT_EQ(o_[0], 10);
+}
+
+TEST(BoundEvaluatorTest, reduce_prod_no_bounds_for_possibly_negative_data) {
+    const auto data = std::make_shared<Parameter>(element::f32, PartialShape{{1, 2}, {1, 3}});
+    const auto shape = std::make_shared<ShapeOf>(data);
+    // bounds of shape - 3 are [-2, -2] and [-1, 0], prod of them is not a valid interval
+    const auto shifted = std::make_shared<Subtract>(shape, Constant::create(element::i64, Shape{1}, {3}));
+    const auto axes = Constant::create(element::i64, Shape{1}, {0});
+    const auto prod = std::make_shared<ReduceProd>(shifted, axes, false);
+
+    const auto& [lower, upper] = ov::util::evaluate_both_bounds(prod->output(0));
+    EXPECT_FALSE(lower);
+    EXPECT_FALSE(upper);
+}
+
+TEST(BoundEvaluatorTest, reduce_prod_bounds_for_non_negative_data) {
+    const auto data = std::make_shared<Parameter>(element::f32, PartialShape{{1, 2}, {1, 3}});
+    const auto shape = std::make_shared<ShapeOf>(data);
+    const auto axes = Constant::create(element::i64, Shape{1}, {0});
+    const auto prod = std::make_shared<ReduceProd>(shape, axes, false);
+
+    const auto& [lower, upper] = ov::util::evaluate_both_bounds(prod->output(0));
+    ASSERT_TRUE(lower && upper);
+    EXPECT_EQ(lower.data<int64_t>()[0], 1);
+    EXPECT_EQ(upper.data<int64_t>()[0], 6);
 }

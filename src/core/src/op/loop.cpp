@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -90,7 +90,7 @@ void Loop::validate_and_infer_types() {
             m_num_iterations = 1;  // condition_always_false, do_while mode
         }
     } else if (const auto& cond_param =
-                   std::dynamic_pointer_cast<const op::v0::Parameter>(body_execution_condition.get_node_shared_ptr())) {
+                   ov::as_type_ptr<const op::v0::Parameter>(body_execution_condition.get_node_shared_ptr())) {
         // Const(true or false) -> Loop (body: Parameter -> execution_condition output)
         for (const auto& desc : get_input_descriptions()) {
             if (m_bodies[0]->get_parameters().at(desc->m_body_parameter_index) == cond_param) {
@@ -124,7 +124,7 @@ void Loop::validate_and_infer_types() {
             m_num_iterations = val[0];
     }
 
-    // WA: input description with index 0 or 1 means that Loop consructor will duplicate it in
+    // Input description with index 0 or 1 means that Loop consructor will duplicate it in
     // the inputs.
     // When using visit_attributes() no duplication occurs, input_offset shall be decremented.
     int64_t input_offset = 2;
@@ -160,7 +160,7 @@ void Loop::validate_and_infer_types() {
             } else {
                 auto out_shape = input_partial_shape;
                 const auto axis =
-                    ov::util::normalize_axis(this, slice_input_description->m_axis, input_partial_shape.rank());
+                    ov::util::try_normalize_axis(slice_input_description->m_axis, input_partial_shape.rank(), *this);
                 out_shape[axis] = slice_input_description->m_part_size;
                 body_parameter->set_partial_shape(out_shape);
             }
@@ -169,18 +169,33 @@ void Loop::validate_and_infer_types() {
 
             auto body_parameter = m_bodies[0]->get_parameters().at(merged_input_description->m_body_parameter_index);
 
-            auto input_partial_shape = input(index).get_partial_shape();
-            auto input_type = input(index).get_element_type();
+            const auto& input_partial_shape = input(index).get_partial_shape();
+            const auto& input_type = input(index).get_element_type();
 
-            body_parameter->set_partial_shape(input_partial_shape);
+            // A merged (back-edged) input holds the outer initial value only on the first iteration;
+            // from the second iteration on it is overwritten by the body result. A statically-empty
+            // dimension (size 0, e.g. an empty KV cache) therefore describes just that initial value,
+            // not the loop-carried shape, so set it dynamic up front instead of clamping the body
+            // parameter at 0. A static 0 is "compatible" with the body's [0, ...] interval, so the
+            // back-edge reconciliation below could not relax it afterwards.
+            PartialShape body_parameter_shape = input_partial_shape;
+            if (body_parameter_shape.rank().is_static()) {
+                for (auto& dim : body_parameter_shape) {
+                    if (dim.is_static() && dim.get_length() == 0) {
+                        dim = Dimension::dynamic();
+                    }
+                }
+            }
+
+            body_parameter->set_partial_shape(body_parameter_shape);
             body_parameter->set_element_type(input_type);
             back_edges[merged_input_description->m_body_value_index] = merged_input_description->m_body_parameter_index;
         } else if (auto invariant_input_description =
                        as_type_ptr<op::v0::TensorIterator::InvariantInputDescription>(input_description)) {
             auto body_parameter = m_bodies[0]->get_parameters().at(invariant_input_description->m_body_parameter_index);
 
-            auto input_partial_shape = input(index).get_partial_shape();
-            auto input_type = input(index).get_element_type();
+            const auto& input_partial_shape = input(index).get_partial_shape();
+            const auto& input_type = input(index).get_element_type();
 
             body_parameter->set_partial_shape(input_partial_shape);
             body_parameter->set_element_type(input_type);
@@ -221,9 +236,9 @@ void Loop::validate_and_infer_types() {
                             PartialShape new_ps;
                             bool shape_changed = false;
                             if (body_rank_len == input_rank_len) {
-                                new_ps = body_value_shape;
+                                new_ps = input_param_ps;
                                 for (auto j = 0; j < body_rank_len; j++) {
-                                    if (!body_value_shape[j].compatible(input_param_ps[j])) {
+                                    if (!input_param_ps[j].relaxes(body_value_shape[j])) {
                                         new_ps[j] = Dimension::dynamic();
                                         shape_changed = true;
                                     }
@@ -269,7 +284,8 @@ void Loop::validate_and_infer_types() {
             if (zero_number_of_iter) {
                 out_shape = PartialShape{0};
             } else if (out_shape.rank().is_static()) {
-                const auto axis = ov::util::normalize_axis(this, concat_output_description->m_axis, out_shape.rank());
+                const auto axis =
+                    ov::util::try_normalize_axis(concat_output_description->m_axis, out_shape.rank(), *this);
                 const auto rank = out_shape.rank().get_length();
                 if (rank == 0) {
                     out_shape = PartialShape{1};
@@ -333,13 +349,31 @@ Output<Node> Loop::get_concatenated_slices(const Output<Node>& value,
 
 bool Loop::evaluate(TensorVector& outputs, const TensorVector& inputs) const {
     OV_OP_SCOPE(v5_Loop_evaluate);
-    reference::loop(m_bodies[0],
-                    m_output_descriptions[0],
-                    m_input_descriptions[0],
-                    m_special_body_ports,
-                    outputs,
-                    inputs);
-    return true;
+    return evaluate(outputs, inputs, {});
+}
+
+bool Loop::evaluate(TensorVector& outputs,
+                    const TensorVector& inputs,
+                    const EvaluationContext& evaluation_context) const {
+    OV_OP_SCOPE(v5_Loop_evaluate);
+    const auto can_evaluate = [](const auto& ops) -> bool {
+        return std::all_of(ops.begin(), ops.end(), [](const auto& node) {
+            return is_type<op::v0::Parameter>(node) || node->has_evaluate();
+        });
+    };
+
+    if (auto body = get_function(); body && can_evaluate(body->get_ops())) {
+        reference::loop(body,
+                        m_output_descriptions[0],
+                        m_input_descriptions[0],
+                        m_special_body_ports,
+                        outputs,
+                        inputs,
+                        evaluation_context);
+        return true;
+    } else {
+        return false;
+    }
 }
 
 bool Loop::has_evaluate() const {
@@ -376,4 +410,6 @@ Loop::Loop(const op::v5::Loop& other) : SubGraphOp() {
 }
 }  // namespace v5
 }  // namespace op
+
+AttributeAdapter<op::v5::Loop::SpecialBodyPorts>::~AttributeAdapter() = default;
 }  // namespace ov

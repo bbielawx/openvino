@@ -1,10 +1,13 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "openvino/frontend/pytorch/node_context.hpp"
 
+#include "helper_ops/internal_op.hpp"
+#include "openvino/core/rt_info.hpp"
 #include "openvino/core/validation_util.hpp"
+#include "openvino/frontend/complex_type_mark.hpp"
 #include "openvino/frontend/exception.hpp"
 #include "openvino/frontend/pytorch/decoder.hpp"
 #include "openvino/op/constant.hpp"
@@ -12,12 +15,68 @@
 #include "openvino/util/log.hpp"
 #include "pt_framework_node.hpp"
 #include "translate_session.hpp"
+#include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
+namespace ov::frontend::pytorch {
 
 using namespace ov::op;
+
+namespace {
+using ViewReplacements = std::map<Output<Node>, Output<Node>>;
+
+// Maps a base value onto its replacement, including the parts of a structured base which views can be built from.
+ViewReplacements view_replacements(const Output<Node>& old_base, const Output<Node>& new_base) {
+    ViewReplacements replacements{{old_base, new_base}};
+    if (ov::is_type<SequenceMark>(old_base.get_node_shared_ptr())) {
+        const auto old_elements = old_base.get_node_shared_ptr()->input_values();
+        const auto new_elements = new_base.get_node_shared_ptr()->input_values();
+        FRONT_END_GENERAL_CHECK(old_elements.size() == new_elements.size(), "An aliased list cannot change length.");
+        for (size_t i = 0; i < old_elements.size(); ++i) {
+            replacements[old_elements[i]] = new_elements[i];
+        }
+    }
+    if (const auto old_complex = ov::as_type_ptr<ComplexTypeMark>(old_base.get_node_shared_ptr())) {
+        const auto new_complex = ov::as_type_ptr<ComplexTypeMark>(new_base.get_node_shared_ptr());
+        FRONT_END_GENERAL_CHECK(new_complex, "An alias update must preserve complex element type.");
+        replacements[old_complex->get_data()] = new_complex->get_data();
+        replacements[old_complex->get_real()] = new_complex->get_real();
+        replacements[old_complex->get_imag()] = new_complex->get_imag();
+    }
+    return replacements;
+}
+
+// Replays a view on top of a replaced base. `replacements` memoizes the walk, so passing the same map for every view
+// of one base keeps the shared upstream chain cloned only once.
+Output<Node> replay_view(const Output<Node>& view, ViewReplacements& replacements) {
+    const auto found = replacements.find(view);
+    if (found != replacements.end()) {
+        return found->second;
+    }
+    const auto node = view.get_node_shared_ptr();
+    const auto inputs = node->input_values();
+    OutputVector new_inputs;
+    new_inputs.reserve(inputs.size());
+    for (const auto& input : inputs) {
+        new_inputs.push_back(replay_view(input, replacements));
+    }
+    if (new_inputs == inputs) {
+        replacements[view] = view;
+        return view;
+    }
+    const auto updated = node->clone_with_new_inputs(new_inputs);
+    updated->set_friendly_name(node->get_friendly_name());
+    copy_runtime_info(node, updated);
+    for (size_t i = 0; i < node->get_output_size(); ++i) {
+        replacements[node->output(i)] = updated->output(i);
+    }
+    return updated->output(view.get_index());
+}
+
+Output<Node> rebase_view(const Output<Node>& view, const Output<Node>& old_base, const Output<Node>& new_base) {
+    auto replacements = view_replacements(old_base, new_base);
+    return replay_view(view, replacements);
+}
+}  // namespace
 
 OutputVector NodeContext::as_constant() const {
     auto dtype = m_decoder->get_output_type(0);
@@ -43,6 +102,10 @@ OutputVector NodeContext::as_constant() const {
     } else {
         auto c_outs = m_decoder->as_constant();
         FRONT_END_OP_CONVERSION_CHECK(c_outs.size() == 1, "Constant must have exactly one output.");
+        if (simplified_type_interpret(dtype).is<type::Complex>()) {
+            // Add complex mark to complex constant
+            c_outs = {mark_node(std::make_shared<ComplexTypeMark>(c_outs[0], c_outs[0].get_element_type()))};
+        }
         return c_outs;
     }
 }
@@ -54,70 +117,183 @@ std::shared_ptr<Node> NodeContext::mark_node(std::shared_ptr<Node> ov_node) cons
 
 void NodeContext::mutate_input(size_t index, Output<Node> ov_output) const {
     FRONT_END_GENERAL_CHECK(!input_is_none(index), "Input is none with index: ", index);
-    auto input_id = m_decoder_inputs.at(index);
-    FRONT_END_GENERAL_CHECK(m_tensor_map->count(input_id), "No tensor corresponding input: ", input_id, " exist.");
-    m_translate_session->encode_tensor_name(ov_output, input_id, {m_decoder->get_input_debug_name(index)});
+    mutate_tensor(m_decoder_inputs.at(index), ov_output, m_decoder->get_input_debug_name(index));
+}
+
+void NodeContext::mutate_input(const std::string& name, Output<Node> ov_output) const {
+    mutate_tensor(m_decoder->get_named_input(name), ov_output, name);
+}
+
+void NodeContext::mutate_tensor(size_t input_id, Output<Node> ov_output, const std::string& name) const {
+    auto tensor_it = m_tensor_map->find(input_id);
+    FRONT_END_GENERAL_CHECK(tensor_it != m_tensor_map->end(), "No tensor corresponding input: ", input_id, " exist.");
+    static const std::set<std::string> metadata_ops{"aten::unsqueeze_",
+                                                    "aten::squeeze_",
+                                                    "aten::transpose_",
+                                                    "aten::t_"};
+    const bool metadata_only = metadata_ops.count(normalize_op_type(get_op_type()));
+    const auto previous_value = metadata_only ? resolve_tensor(input_id) : tensor_it->second;
+    if (metadata_only) {
+        std::set<size_t> related_ids{input_id};
+        for (auto alias = m_translate_session->m_may_be_alias.find(input_id);
+             alias != m_translate_session->m_may_be_alias.end();
+             alias = m_translate_session->m_may_be_alias.find(alias->second.base_id)) {
+            if (!related_ids.insert(alias->second.base_id).second) {
+                break;
+            }
+        }
+        for (const auto& [alias_id, info] : m_translate_session->m_may_be_alias) {
+            if (related_ids.count(alias_id) || related_ids.count(info.base_id)) {
+                resolve_tensor(alias_id);
+                related_ids.insert(alias_id);
+            }
+        }
+    }
+    m_translate_session->encode_tensor_name(ov_output, input_id, {name});
     (*m_tensor_map)[input_id] = ov_output;
     m_mutated_tensors->insert(input_id);
 
+    if (ov::is_type<SequenceMark>(ov_output.get_node_shared_ptr())) {
+        // Mutating a list changes its contents, not the storage of its member tensors.
+        const auto alias = m_translate_session->m_may_be_alias.find(input_id);
+        if (alias != m_translate_session->m_may_be_alias.end()) {
+            alias->second.output = ov_output;
+            if (!alias->second.element_ids.empty() && normalize_op_type(get_op_type()) == "aten::append") {
+                alias->second.element_ids.push_back(m_decoder_inputs.at(1));
+            }
+        }
+        return;
+    }
+
+    if (metadata_only) {
+        const auto old_shape_view =
+            m_translate_session->get_reverseprop_op(m_decoder, ov_output, ov_output, previous_value);
+        std::set<size_t> same_tensor_ids{input_id};
+        std::vector<size_t> pending{input_id};
+        while (!pending.empty()) {
+            const auto current_id = pending.back();
+            pending.pop_back();
+            const auto current = m_translate_session->m_may_be_alias.find(current_id);
+            for (const auto& [alias_id, info] : m_translate_session->m_may_be_alias) {
+                if ((alias_id == current_id || info.base_id == current_id) &&
+                    (info.same_tensor ||
+                     (info.output == info.base_value && info.decoder->get_schema().find('!') != std::string::npos))) {
+                    const auto related = alias_id == current_id ? info.base_id : alias_id;
+                    if (same_tensor_ids.insert(related).second) {
+                        pending.push_back(related);
+                    }
+                }
+                if (current != m_translate_session->m_may_be_alias.end() &&
+                    ov::is_type<SequenceMark>(info.base_value.get_node()) && info.base_id == current->second.base_id &&
+                    info.output == current->second.output && same_tensor_ids.insert(alias_id).second) {
+                    pending.push_back(alias_id);
+                }
+            }
+        }
+        for (auto& [alias_id, info] : m_translate_session->m_may_be_alias) {
+            if (!same_tensor_ids.count(alias_id) && info.element_ids.empty() && same_tensor_ids.count(info.base_id)) {
+                info.output = rebase_view(info.output, info.base_value, old_shape_view);
+                info.base_value = ov_output;
+                (*m_tensor_map)[alias_id] = info.output;
+            }
+        }
+        for (const auto tensor_id : same_tensor_ids) {
+            (*m_tensor_map)[tensor_id] = ov_output;
+        }
+    }
+
     // Resolve aliases
-    auto back_input_id = input_id;
-    auto back_node_input = ov_output;
+    auto& back_input_id = input_id;
+    auto& back_node_input = ov_output;
     while (m_translate_session->m_may_be_alias.count(back_input_id)) {
-        // Create node to reverseprop data. While loop is needed for the cases when alias to tensor point to another
+        // Create node to aliased data. While loop is needed for the cases when alias to tensor point to another
         // alias to tensor. In that case we need to create a chain of reverseprop ops
-        size_t in_tensor;
-        std::shared_ptr<TorchDecoder> node;
-        Output<Node> node_converted_output;
-        std::tie(in_tensor, node, node_converted_output) = m_translate_session->m_may_be_alias.at(back_input_id);
-        auto reverseprop_node = m_translate_session->get_reverseprop_op(node, node_converted_output, back_node_input);
-        if (m_tensor_map->count(in_tensor)) {
-            // Tensor is not found in the scope of this body, need to get it from internal context and mark mutated
-            OPENVINO_DEBUG << "Couldn't find in the current body the initial aliased tensor: " << in_tensor
-                           << " for operation: " << node->get_op_type() << " creating new body input.";
-            get_tensor_from_model_or_create_input(in_tensor);
+        auto& alias_info = m_translate_session->m_may_be_alias.at(back_input_id);
+        const auto in_tensor = alias_info.base_id;
+        if (metadata_only && !alias_info.same_tensor && !ov::is_type<SequenceMark>(alias_info.base_value.get_node()) &&
+            (alias_info.output != alias_info.base_value ||
+             alias_info.decoder->get_schema().find('!') == std::string::npos)) {
+            alias_info.output = back_node_input;
+            break;
+        }
+        auto reverseprop_node = m_translate_session->get_reverseprop_op(alias_info.decoder,
+                                                                        alias_info.output,
+                                                                        back_node_input,
+                                                                        alias_info.base_value);
+        if (metadata_only) {
+            alias_info.output = back_node_input;
+            alias_info.base_value = reverseprop_node;
         }
         m_translate_session->encode_tensor_name(reverseprop_node, in_tensor);
         (*m_tensor_map)[in_tensor] = reverseprop_node;
         m_mutated_tensors->insert(in_tensor);
-        OPENVINO_DEBUG << "Propagated back data from tensor: " << back_input_id << " to tensor: " << in_tensor << ".\n";
+        OPENVINO_DEBUG("Propagated back data from tensor:", back_input_id, " to tensor: ", in_tensor, "\n");
         back_input_id = in_tensor;
         back_node_input = reverseprop_node;
     }
 }
 
-void NodeContext::add_tensor_to_context(size_t index, Output<Node> ov_output) const {
+void NodeContext::add_tensor_to_context(size_t index, const Output<Node>& ov_output) const {
     if (m_tensor_map->count(index)) {
-        OPENVINO_DEBUG << "[ WARNING ] Current context has tensor " << index << ". Assuming mutated output.\n";
+        // A subgraph returned a mutation of a captured tensor. Propagate it through
+        // aliases in the parent graph using the parent's view and base values.
+        mutate_tensor(index, ov_output, std::to_string(index));
+        return;
     }
     m_translate_session->encode_tensor_name(ov_output, index);
     (*m_tensor_map)[index] = ov_output;
 }
 
 Output<Node> NodeContext::get_tensor_from_model_or_create_input(size_t index) const {
-    if (m_tensor_map->find(index) != m_tensor_map->end()) {
-        return m_tensor_map->at(index);
+    auto tensor_it = m_tensor_map->find(index);
+    if (tensor_it != m_tensor_map->end()) {
+        return resolve_tensor(index);
     } else {
         // nested subgraphs case
         auto parameter = std::make_shared<v0::Parameter>(element::dynamic, PartialShape::dynamic());
         m_translate_session->encode_tensor_name(parameter->output(0), index);
         (*m_tensor_map)[index] = parameter;
         m_external_parameters->push_back(parameter);
-        OPENVINO_DEBUG << "Nested case, created: " << parameter << '\n';
+        OPENVINO_DEBUG("Nested case, created: ", parameter, "\n");
         return parameter;
     }
 }
 
 Output<Node> NodeContext::get_input_from_visible_context(size_t index) const {
-    FRONT_END_GENERAL_CHECK(index < get_input_size(), "Index ", index, " is lower then number of inputs.");
+    return get_input_from_visible_context(index, false);
+}
+
+Output<Node> NodeContext::get_input_from_visible_context(size_t index, bool resolve_sequence_constants) const {
+    FRONT_END_GENERAL_CHECK(index < get_input_size(), "Index ", index, " is lower than number of inputs.");
     auto input_tensor = get_input(static_cast<int>(index));
     auto input_node = input_tensor.get_node_shared_ptr();
-    if (std::dynamic_pointer_cast<v0::Parameter>(input_node)) {
-        // We need to look into external context for inputs that would be feed into this parameter
+    if (ov::as_type_ptr<v0::Parameter>(input_node)) {
+        // We need to look into external context for inputs that would be fed into this parameter
         size_t tensor_idx = m_translate_session->decode_tensor_name(input_node->output(0));
         if (m_ext_tensor_map.count(tensor_idx)) {
             input_tensor = m_ext_tensor_map.at(tensor_idx);
         }
+    }
+    if (resolve_sequence_constants) {
+        std::function<Output<Node>(const Output<Node>&)> resolve_constants =
+            [&](const Output<Node>& value) -> Output<Node> {
+            if (ov::is_type<v0::Parameter>(value.get_node())) {
+                const auto tensor_id = m_translate_session->decode_tensor_name(value);
+                const auto external = m_ext_tensor_map.find(tensor_id);
+                if (external != m_ext_tensor_map.end()) {
+                    return external->second;
+                }
+            }
+            if (const auto sequence = ov::as_type_ptr<SequenceMark>(value.get_node_shared_ptr())) {
+                OutputVector elements;
+                for (const auto& element : sequence->input_values()) {
+                    elements.push_back(resolve_constants(element));
+                }
+                return make_list_construct(elements);
+            }
+            return value;
+        };
+        input_tensor = resolve_constants(input_tensor);
     }
     return input_tensor;
 }
@@ -128,9 +304,13 @@ std::shared_ptr<ov::Model> NodeContext::convert_subgraph(size_t index) const {
     // Extend external context with internal tensors except Parameter nodes, because internal Parameters are created to
     // link internal context with external
     TensorMap ext_map(m_ext_tensor_map);
-    // map::insert does not update elements if their key is already in map; so if we have real tensors in outter scope
-    // we will not add Parameters we created in inner scope.
-    ext_map.insert(m_tensor_map->begin(), m_tensor_map->end());
+    for (const auto& [tensor_id, value] : *m_tensor_map) {
+        if (!ov::is_type<v0::Parameter>(value.get_node())) {
+            ext_map[tensor_id] = value;
+        } else {
+            ext_map.emplace(tensor_id, value);
+        }
+    }
 
     auto model = m_translate_session->convert_pytorch_model(subgraph_decoder, ext_map);
     // Remove unused parameters, they could be created as inputs to the parts of graph that weren't
@@ -139,12 +319,112 @@ std::shared_ptr<ov::Model> NodeContext::convert_subgraph(size_t index) const {
         auto parameter = model->get_parameters()[i];
         if (parameter->output(0).get_target_inputs().empty()) {
             // There is no consumers: safe to remove
-            OPENVINO_DEBUG << "Removing parameter " << parameter
-                           << " in converted Pytorch model, because it is never used\n";
+            OPENVINO_DEBUG("Removing parameter ", parameter, " in converted Pytorch model, because it is never used\n");
             model->remove_parameter(parameter);
         }
     }
     return model;
+}
+
+Output<Node> NodeContext::get_input(int index) const {
+    size_t index_ = static_cast<size_t>(index);
+    auto input = m_decoder_inputs.at(index);
+    if (input == 0) {
+        // Case when input can be inlined (possible only for fx decoder)
+        if (m_decoder->is_input_inlined(index_)) {
+            if (m_decoder->input_is_none(index_)) {
+                // some operations like aten.index.Tensor can have None inputs
+                auto dummy_decoder = std::make_shared<InternalOpDecoder>("torch::None", 1);
+                auto fw_node = std::make_shared<PtFrameworkNode>(dummy_decoder, OutputVector{});
+                auto attrs = fw_node->get_attrs();
+                attrs["none_value"] = "";
+                attrs[PtFrameworkNode::failed_conversion_key] =
+                    "None constant cannot be converted to OpenVINO opset and should be removed by consuming "
+                    "operation.";
+                fw_node->set_attrs(attrs);
+                return fw_node->output(0);
+            } else {
+                auto inlined_decoder = m_decoder->get_inlined_input_decoder(index_);
+                auto inlined_ctx = NodeContext(inlined_decoder,
+                                               m_ext_tensor_map,
+                                               m_tensor_map,
+                                               m_external_parameters,
+                                               m_mutated_tensors,
+                                               m_translate_session);
+                auto inlined_input = m_translate_session->convert_node(inlined_ctx);
+                FRONT_END_GENERAL_CHECK(inlined_input.size() == 1,
+                                        "Incorrect inlined input with index: ",
+                                        index,
+                                        " for operation ",
+                                        get_op_type());
+                return inlined_input[0];
+            }
+        }
+    }
+    return resolve_tensor(input);
+}
+
+Output<Node> NodeContext::resolve_tensor(size_t index) const {
+    const auto tensor_it = m_tensor_map->find(index);
+    FRONT_END_GENERAL_CHECK(tensor_it != m_tensor_map->end(), "No tensor corresponding input: ", index, " exist.");
+    const auto alias = m_translate_session->m_may_be_alias.find(index);
+    if (alias == m_translate_session->m_may_be_alias.end() || !alias->second.base_value.get_node()) {
+        return tensor_it->second;
+    }
+    // Recursive resolution may insert into the tensor map, so `tensor_it` must not be reused below.
+    auto& info = alias->second;
+    if (!info.element_ids.empty()) {
+        OutputVector elements;
+        elements.reserve(info.element_ids.size());
+        for (const auto element_id : info.element_ids) {
+            elements.push_back(resolve_tensor(element_id));
+        }
+        const auto list = info.output.get_node();
+        bool changed = elements.size() != list->get_input_size();
+        for (size_t i = 0; !changed && i < elements.size(); ++i) {
+            changed = elements[i] != list->input_value(i);
+        }
+        if (changed) {
+            info.output = make_list_construct(elements);
+            (*m_tensor_map)[index] = info.output;
+            m_translate_session->encode_tensor_name(info.output, index);
+        }
+        return m_tensor_map->at(index);
+    }
+    const auto base = resolve_tensor(info.base_id);
+    if (base != info.base_value) {
+        // Replaying a view against the current base updates sibling views and
+        // views created before an in-place write. Previously consumed values
+        // remain connected to their original OpenVINO nodes.
+        info.output = rebase_view(info.output, info.base_value, base);
+        info.base_value = base;
+        (*m_tensor_map)[index] = info.output;
+        m_translate_session->encode_tensor_name(info.output, index);
+    }
+    return m_tensor_map->at(index);
+}
+
+Output<Node> NodeContext::get_input(const std::string& name) const {
+    FRONT_END_GENERAL_CHECK(has_attribute(name), "Input with name ", name, " doesn't exist");
+    auto attr = get_attribute_as_any(name);
+    if (attr.is<Output<Node>>()) {
+        // Case when input is constant value
+        return attr.as<Output<Node>>();
+    } else if (attr.is<type::PyNone>()) {
+        // None means input is unknown type, most likely a Node
+        auto input = m_decoder->get_named_input(name);
+        FRONT_END_GENERAL_CHECK(m_tensor_map->count(input), "No tensor corresponding input: ", input, " exist.");
+        return resolve_tensor(input);
+    }
+    FRONT_END_GENERAL_CHECK(false, "Input has type which can't be converted to ov::Node.");
+}
+
+OutputVector NodeContext::inputs() const {
+    OutputVector res;
+    for (size_t i = 0; i < m_decoder_inputs.size(); i++) {
+        res.push_back(get_input(static_cast<int>(i)));
+    }
+    return res;
 }
 
 bool NodeContext::input_is_none(size_t index) const {
@@ -160,7 +440,7 @@ bool NodeContext::input_is_none(size_t index) const {
 namespace {
 std::shared_ptr<v0::Constant> get_constant_at_input(const NodeContext& ctx, size_t index, bool allow_empty = true) {
     FRONT_END_GENERAL_CHECK(!ctx.input_is_none(index), "Input with index: ", index, " is none.");
-    auto input_val = ctx.get_input_from_visible_context(index);
+    auto input_val = ctx.get_input_from_visible_context(index, true);
     if (ctx.get_input_type(index).is<type::List>()) {
         if (allow_empty && is_empty_list(input_val))
             return {};
@@ -237,7 +517,7 @@ template <>
 std::string NodeContext::const_input<std::string>(size_t index) const {
     FRONT_END_GENERAL_CHECK(!input_is_none(index), "Input with index: ", index, " is none.");
     auto input_node = get_input_from_visible_context(index).get_node_shared_ptr();
-    auto input = std::dynamic_pointer_cast<PtFrameworkNode>(input_node);
+    auto input = ov::as_type_ptr<PtFrameworkNode>(input_node);
     FRONT_END_GENERAL_CHECK(input,
                             "Input node with index ",
                             index,
@@ -266,7 +546,7 @@ Any NodeContext::get_values_from_const_input(int index) const {
     if (input_is_none(index))
         return {};
     auto input_val = get_input_from_visible_context(index);
-    if (auto input = std::dynamic_pointer_cast<PtFrameworkNode>(input_val.get_node_shared_ptr())) {
+    if (auto input = ov::as_type_ptr<PtFrameworkNode>(input_val.get_node_shared_ptr())) {
         const auto& attrs = input->get_attrs();
         if (attrs.find("none_value") != attrs.end()) {
             return {};
@@ -299,6 +579,10 @@ Any NodeContext::get_values_from_const_input(int index) const {
             return get_constant_data<int16_t>(constant);
         case element::u16:
             return get_constant_data<uint16_t>(constant);
+        case element::f16:
+            return get_constant_data<ov::float16>(constant);
+        case element::bf16:
+            return get_constant_data<ov::bfloat16>(constant);
         case element::boolean:
             return get_constant_data<bool>(constant);
         default:
@@ -310,6 +594,33 @@ Any NodeContext::get_values_from_const_input(int index) const {
     return 0;
 }
 
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+ov::Any NodeContext::apply_additional_conversion_rules(const ov::Any& data, const std::type_info& type_info) const {
+    if (data.is<Output<Node>>() && type_info != typeid(Output<Node>)) {
+        auto const_node = as_type_ptr<v0::Constant>(data.as<Output<Node>>().get_node_shared_ptr());
+        FRONT_END_GENERAL_CHECK(const_node, "Attribute must be const if requested as not a Node.");
+        if (type_info == typeid(bool)) {
+            bool res = const_node->cast_vector<bool>()[0];
+            return res;
+        } else if (type_info == typeid(int32_t)) {
+            int32_t res = const_node->cast_vector<int32_t>()[0];
+            return res;
+        } else if (type_info == typeid(int64_t)) {
+            int64_t res = const_node->cast_vector<int64_t>()[0];
+            return res;
+        } else if (type_info == typeid(double)) {
+            double res = const_node->cast_vector<double>()[0];
+            return res;
+        } else if (type_info == typeid(float)) {
+            float res = const_node->cast_vector<float>()[0];
+            return res;
+        } else {
+            FRONT_END_GENERAL_CHECK(false,
+                                    "Could not decode attribute for ",
+                                    get_name(),
+                                    " node. Provided type is not known.");
+        }
+    }
+    return data;
+}
+
+}  // namespace ov::frontend::pytorch

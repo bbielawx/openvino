@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -255,6 +255,12 @@ static UNUSED void addRectangles(unsigned char* data,
                                  std::vector<int> rectangles,
                                  std::vector<int> classes,
                                  int thickness) {
+    if (height <= 0) {
+        throw std::runtime_error("height must be greater than 0");
+    }
+    if (width <= 0) {
+        throw std::runtime_error("width must be greater than 0");
+    }
     struct Color {
         unsigned char red;
         unsigned char green;
@@ -557,8 +563,7 @@ static UNUSED void printPerformanceCountsSort(std::vector<ov::ProfilingInfo> per
                 stream << "layerType: ";
                 if (it.node_type.length() >= maxPrintLength) {
                     stream << std::setw(maxPrintLength) << std::left
-                           << it.node_type.substr(0, maxPrintLength - 3) + "..."
-                           << " ";
+                           << it.node_type.substr(0, maxPrintLength - 3) + "..." << " ";
                 } else {
                     stream << std::setw(maxPrintLength) << std::left << it.node_type << " ";
                 }

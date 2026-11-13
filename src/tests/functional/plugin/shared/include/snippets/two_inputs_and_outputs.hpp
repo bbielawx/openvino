@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -18,14 +18,13 @@ typedef std::tuple<
 > TwoInputsAndOutputsParams;
 
 class TwoInputsAndOutputs : public testing::WithParamInterface<ov::test::snippets::TwoInputsAndOutputsParams>,
-                             virtual public ov::test::SnippetsTestsCommon {
+                            virtual public SnippetsTestsCommon {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ov::test::snippets::TwoInputsAndOutputsParams> obj);
+    static std::string getTestCaseName(const testing::TestParamInfo<ov::test::snippets::TwoInputsAndOutputsParams>& obj);
 
 protected:
     void SetUp() override;
 };
-
 
 // TwoInputsAndOutputsWithReversedOutput tests the same network with reversed order of Result nodes.
 // It changes order of nodes after topological sort. The test checks the correctness of the

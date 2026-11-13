@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,7 +12,6 @@
 #include "utils/cpu_test_utils.hpp"
 #include "utils/filter_cpu_info.hpp"
 #include "utils/fusing_test_utils.hpp"
-#include <openvino/opsets/opset8.hpp>
 
 using namespace CPUTestUtils;
 namespace ov {
@@ -31,7 +30,7 @@ class DeconvolutionLayerCPUTest : public testing::WithParamInterface<DeconvLayer
                                   virtual public SubgraphBaseTest,
                                   public CpuTestWithFusing {
 public:
-static std::string getTestCaseName(testing::TestParamInfo<DeconvLayerCPUTestParamsSet> obj);
+static std::string getTestCaseName(const testing::TestParamInfo<DeconvLayerCPUTestParamsSet>& obj);
 
 void generate_inputs(const std::vector<ov::Shape>& targetInputStaticShapes) override;
 
@@ -59,7 +58,7 @@ private:
 const std::vector<fusingSpecificParams> fusingParamsSet{
         emptyFusingSpec,
 #if !defined(OPENVINO_ARCH_ARM64) && !defined(OPENVINO_ARCH_ARM)
-        fusingScaleShift
+        fusingAddPerChannel
 #endif
 };
 
@@ -80,8 +79,9 @@ const std::vector<std::vector<ptrdiff_t>> padBegins2d = {{0, 0}};
 const std::vector<std::vector<ptrdiff_t>> padEnds2d = {{0, 0}};
 const std::vector<std::vector<size_t>> dilations2d = {{1, 1}};
 
-const std::vector<std::vector<size_t>> deconvAmxKernels2d = {{3, 3}, {2, 2}};
-const std::vector<std::vector<size_t>> deconvAmxStrides2d = {{2, 2}};
+const std::vector<std::vector<size_t>> deconvBrgKernels2d = {{3, 3}, {2, 2}};
+const std::vector<std::vector<size_t>> deconvBrgKernels2d_1x1 = {{1, 1}};
+const std::vector<std::vector<size_t>> deconvBrgStrides2d = {{1, 1}};
 
 /* ============= Deconvolution params (3D) ============= */
 const std::vector<std::vector<size_t>> kernels3d = {{3, 3, 3}, {1, 1, 1}};
@@ -90,8 +90,9 @@ const std::vector<std::vector<ptrdiff_t>> padBegins3d = {{0, 0, 0}};
 const std::vector<std::vector<ptrdiff_t>> padEnds3d = {{0, 0, 0}};
 const std::vector<std::vector<size_t>> dilations3d = {{1, 1, 1}};
 
-const std::vector<std::vector<size_t>> deconvAmxKernels3d = {{3, 3, 3}, {2, 2, 2}};
-const std::vector<std::vector<size_t>> deconvAmxStrides3d = {{2, 2, 2}};
+const std::vector<std::vector<size_t>> deconvBrgKernels3d = {{3, 3, 3}, {2, 2, 2}};
+const std::vector<std::vector<size_t>> deconvBrgKernels3d_1x1 = {{1, 1, 1}};
+const std::vector<std::vector<size_t>> deconvBrgStrides3d = {{1, 1, 1}};
 
 /* ============= */
 

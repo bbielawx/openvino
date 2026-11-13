@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporationc
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,6 +11,7 @@
 #include "openvino/op/reduce_max.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/reshape.hpp"
+#include "transformations/utils/utils.hpp"
 
 #include "decompose_reduce_for_false_keepdims.hpp"
 
@@ -19,8 +20,7 @@
 #include <memory>
 #include <vector>
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 DecomposeReduceForFalseKeepDims::DecomposeReduceForFalseKeepDims() {
     // Get one MatcherPass for all modes
@@ -34,12 +34,13 @@ DecomposeReduceForFalseKeepDims::DecomposeReduceForFalseKeepDims() {
         ov::pass::pattern::has_static_shape());
 
     // register callback
-    ov::matcher_pass_callback callback = [=](ov::pass::pattern::Matcher& m) {
+    ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](ov::pass::pattern::Matcher& m) {
         const auto& pattern_map = m.get_pattern_value_map();
         auto reduce =
             as_type_ptr<op::util::ArithmeticReductionKeepDims>(pattern_map.at(reduce_pattern).get_node_shared_ptr());
-        if (!reduce)
+        if (!reduce) {
             return false;
+        }
 
         auto input = reduce->input_value(0);
         const auto input_shape = input.get_shape();
@@ -59,18 +60,19 @@ DecomposeReduceForFalseKeepDims::DecomposeReduceForFalseKeepDims() {
                 ov::op::v0::Constant::create(ov::element::i64, ov::Shape{axes_vector.size()}, axes_vector);
 
             // Add each reduce mode supported by oneDNN
-            if (ov::is_type<ov::op::v1::ReduceSum>(reduce))
+            if (ov::is_type<ov::op::v1::ReduceSum>(reduce)) {
                 input = std::make_shared<ov::op::v1::ReduceSum>(input, reduce_const, true);
-            else if (ov::is_type<ov::op::v1::ReduceMean>(reduce))
+            } else if (ov::is_type<ov::op::v1::ReduceMean>(reduce)) {
                 input = std::make_shared<ov::op::v1::ReduceMean>(input, reduce_const, true);
-            else if (ov::is_type<ov::op::v1::ReduceMin>(reduce))
+            } else if (ov::is_type<ov::op::v1::ReduceMin>(reduce)) {
                 input = std::make_shared<ov::op::v1::ReduceMin>(input, reduce_const, true);
-            else if (ov::is_type<ov::op::v1::ReduceMax>(reduce))
+            } else if (ov::is_type<ov::op::v1::ReduceMax>(reduce)) {
                 input = std::make_shared<ov::op::v1::ReduceMax>(input, reduce_const, true);
-            else if (ov::is_type<ov::op::v1::ReduceProd>(reduce))
+            } else if (ov::is_type<ov::op::v1::ReduceProd>(reduce)) {
                 input = std::make_shared<ov::op::v1::ReduceProd>(input, reduce_const, true);
-            else
+            } else {
                 return false;
+            }
 
             input.get_node_shared_ptr()->set_friendly_name(reduce->get_friendly_name());
             new_ops.push_back(input.get_node_shared_ptr());
@@ -122,5 +124,4 @@ bool DecomposeReduceForFalseKeepDims::need_transformation_for_reordered_axes(std
     return feature_axis_is_only_remaining;
 }
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

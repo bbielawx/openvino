@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -26,16 +26,19 @@ layout activation_inst::calc_output_layout(activation_node const& node, kernel_i
         activation_func::negation,
         activation_func::relu,
         activation_func::floor,
-        activation_func::clamp };
+        activation_func::clamp,
+        activation_func::sign,
+        activation_func::abs };
 
     if (input_node_layout.data_type == data_types::i8 || input_node_layout.data_type == data_types::u8 ||
         input_node_layout.data_type == data_types::i32) {
-        if (std::find(activations_int8.begin(), activations_int8.end(), func) == activations_int8.end())
+        if (std::find(activations_int8.begin(), activations_int8.end(), func) == activations_int8.end()) {
             CLDNN_ERROR_MESSAGE(desc->id, "Requested activation is not supported for integer type.");
+        }
     }
 
     if (impl_param.has_fused_primitives()) {
-        input_node_layout.data_type = impl_param.get_fused_output_layout().data_type;
+        input_node_layout.data_type = impl_param.get_output_element_type();
     }
 
     return input_node_layout;

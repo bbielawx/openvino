@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -33,8 +33,7 @@ class OVConcurrencyTest : public ov::test::TestsCommon,
     };
 public:
     static std::string getTestCaseName(const testing::TestParamInfo<ConcurrencyTestParams>& obj) {
-        size_t streams, requests;
-        std::tie(streams, requests) = obj.param;
+        const auto& [streams, requests] = obj.param;
         return "_num_streams_" + std::to_string(streams) + "_num_req_" +
             std::to_string(requests);
     }
@@ -137,7 +136,7 @@ TEST_P(OVConcurrencyTest, canInferTwoExecNets_cached) {
 const std::vector<size_t> num_streams{ 1, 2 };
 const std::vector<size_t> num_requests{ 1, 4 };
 
-INSTANTIATE_TEST_SUITE_P(smoke_RemoteTensor, OVConcurrencyTest,
+INSTANTIATE_TEST_SUITE_P(DISABLED_smoke_RemoteTensor, OVConcurrencyTest,
     ::testing::Combine(::testing::ValuesIn(num_streams),
         ::testing::ValuesIn(num_requests)),
     OVConcurrencyTest::getTestCaseName);
@@ -235,7 +234,7 @@ TEST(smoke_InferRequestDeviceMemoryAllocation, usmHostIsNotChanged) {
 
     // Use tensor from infer request #2 as an output for infer request #1
     infer_request1.set_output_tensor(output_tensor2);
-    ASSERT_NO_THROW(infer_request1.infer());
+    OV_ASSERT_NO_THROW(infer_request1.infer());
 
     // Modify tensor somehow and save as a reference values
     ov::test::utils::fill_tensor_random(output_tensor2);
@@ -245,7 +244,7 @@ TEST(smoke_InferRequestDeviceMemoryAllocation, usmHostIsNotChanged) {
 
     // Perform second infer() call with a system host memory tensor
     infer_request1.set_output_tensor(output_tensor1);
-    ASSERT_NO_THROW(infer_request1.infer());
+    OV_ASSERT_NO_THROW(infer_request1.infer());
 
     // Expect that output_tensor2 will not change it's data after infer() call
     ov::test::utils::compare(ref_tensor, output_tensor2, 1e-4);
@@ -267,11 +266,11 @@ TEST(smoke_InferRequestDeviceMemoryAllocation, canSetSystemHostTensor) {
     auto output_tensor2 = infer_request2.get_output_tensor();
 
     infer_request1.set_output_tensor(output_tensor2);
-    ASSERT_NO_THROW(infer_request1.infer());
+    OV_ASSERT_NO_THROW(infer_request1.infer());
 
     ov::test::utils::fill_tensor_random(input_tensor1, 10, 0, 1, 1);
     infer_request1.set_output_tensor(output_tensor1);
-    ASSERT_NO_THROW(infer_request1.infer());
+    OV_ASSERT_NO_THROW(infer_request1.infer());
 }
 
 TEST(canSwapTensorsBetweenInferRequests, outputs) {

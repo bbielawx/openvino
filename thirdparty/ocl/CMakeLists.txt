@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -35,6 +35,15 @@ if(NOT DEFINED USE_DYNAMIC_VCXX_RUNTIME)
 endif()
 
 #
+# Suppress warnings
+#
+if(OV_COMPILER_IS_INTEL_LLVM AND WIN32)
+    ov_add_compiler_flags("/Wno-macro-redefined")
+    ov_add_compiler_flags("/Wno-nonportable-include-path")
+    ov_add_compiler_flags("/Wno-comment")
+endif()
+
+#
 # Build OpenCL ICD loader
 #
 
@@ -42,7 +51,8 @@ add_subdirectory(icd_loader EXCLUDE_FROM_ALL)
 
 # use CL/opencl.hpp
 target_compile_definitions(OpenCL INTERFACE OV_GPU_USE_OPENCL_HPP
-                                            OV_GPU_OPENCL_HPP_HAS_UUID)
+                                            OV_GPU_OPENCL_HPP_HAS_UUID
+                                            OV_GPU_OPENCL_HPP_HAS_BUS_INFO)
 target_include_directories(OpenCL INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cl_headers>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/clhpp_headers/include>)

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,11 +10,9 @@
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/frontend/pytorch/visibility.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
+namespace ov::frontend::pytorch {
 
-class PYTORCH_API FrontEnd : public ov::frontend::FrontEnd {
+class PYTORCH_FRONTEND_API FrontEnd : public ov::frontend::FrontEnd {
 public:
     using Ptr = std::shared_ptr<FrontEnd>;
     FrontEnd();
@@ -49,7 +47,7 @@ public:
 
     /// \brief Gets name of this FrontEnd. Can be used by clients
     /// if frontend is selected automatically by FrontEndManager::load_by_model
-    /// \return Paddle frontend name.
+    /// \return PyTorch frontend name.
     std::string get_name() const override {
         return "pytorch";
     }
@@ -61,13 +59,12 @@ public:
 protected:
     bool supported_impl(const std::vector<ov::Any>& variants) const override;
     ov::frontend::InputModel::Ptr load_impl(const std::vector<ov::Any>& variants) const override;
-    std::map<std::string, CreatorFunction> get_supported_ops(const ov::frontend::InputModel::Ptr& model) const;
+    std::unordered_map<std::string, CreatorFunction> get_supported_ops(
+        const ov::frontend::InputModel::Ptr& model) const;
 
     std::map<std::string, CreatorFunction> m_op_extension_translators;
     std::vector<ConversionExtensionBase::Ptr> m_conversion_extensions;
     TelemetryExtension::Ptr m_telemetry;
 };
 
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch

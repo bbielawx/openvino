@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -29,10 +29,7 @@ std::shared_ptr<ov::op::v0::Concat> get_conj_ptr(const ov::Output<ov::Node>& nod
     return conj;
 }
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_conj_op(const NodeContext& node) {
     default_op_checks(node, 1, {"Conj"}, true);
@@ -44,7 +41,7 @@ OutputVector translate_conj_op(const NodeContext& node) {
     std::shared_ptr<Node> conj{x.get_node_shared_ptr()};
     if (complex_type_mark) {
         element::Type complex_part_type = complex_type_mark->get_complex_part_type();
-        auto x = complex_type_mark->input_value(0);
+        auto x = complex_type_mark->get_data();
         auto conj = get_conj_ptr(x);
 
         set_node_name(node.get_name(), conj);
@@ -65,7 +62,7 @@ OutputVector translate_conj_transpose_op(const NodeContext& node) {
     auto complex_type_mark = as_type_ptr<ComplexTypeMark>(x.get_node_shared_ptr());
     if (complex_type_mark) {
         element::Type complex_part_type = complex_type_mark->get_complex_part_type();
-        auto x = complex_type_mark->input_value(0);
+        auto x = complex_type_mark->get_data();
         auto conj_tensor = get_conj_ptr(x);
 
         OutputVector concat_inputs;
@@ -85,7 +82,4 @@ OutputVector translate_conj_transpose_op(const NodeContext& node) {
     return {conj_transpose};
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

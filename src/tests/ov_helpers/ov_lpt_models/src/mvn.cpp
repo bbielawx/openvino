@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,6 +7,7 @@
 #include "ov_lpt_models/common/builders.hpp"
 #include "ov_ops/type_relaxed.hpp"
 #include "common_test_utils/node_builders/fake_quantize.hpp"
+#include "openvino/op/mvn.hpp"
 
 namespace ov {
 namespace builder {
@@ -68,7 +69,6 @@ std::shared_ptr<ov::Model> MVNFunction::getReference(
     const bool& normalizeVariance,
     const ov::element::Type precisionBeforeDequantization,
     const ov::builder::subgraph::DequantizationOperations& dequantizationBefore,
-    const ov::element::Type precisionAfterOperation,
     const ov::builder::subgraph::DequantizationOperations& dequantizationAfter,
     const int opset_version) {
     const auto input = std::make_shared<ov::opset1::Parameter>(precisionBeforeDequantization, inputShape);
@@ -82,6 +82,8 @@ std::shared_ptr<ov::Model> MVNFunction::getReference(
             ov::op::v0::MVN(dequantizationOpBefore, reductionAxes, normalizeVariance),
             dequantizationAfter.empty() ? precision : ov::element::f32);
     } else if (opset_version == 6) {
+        const auto overridden_type = dequantizationAfter.empty() ? precision : ov::element::f32;
+        // Override only the data input: MVN-6 axes must stay i32/i64.
         mvn = std::make_shared<ov::op::TypeRelaxed<ov::op::v6::MVN>>(
             ov::op::v6::MVN(dequantizationOpBefore,
                             std::make_shared<ov::opset1::Constant>(ov::element::i64,
@@ -90,7 +92,8 @@ std::shared_ptr<ov::Model> MVNFunction::getReference(
                             normalizeVariance,
                             1e-9,
                             ov::op::MVNEpsMode::INSIDE_SQRT),
-            dequantizationAfter.empty() ? precision : ov::element::f32);
+            ov::element::TypeVector{overridden_type, ov::element::dynamic},
+            ov::element::TypeVector{overridden_type});
     }
     auto& rtInfo = mvn->get_rt_info();
     rtInfo["Variant::std::string"] = "mvn";

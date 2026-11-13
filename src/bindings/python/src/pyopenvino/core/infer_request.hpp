@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,6 +10,7 @@
 #include <openvino/runtime/infer_request.hpp>
 
 #include "openvino/core/except.hpp"
+#include "pyopenvino/utils/utils.hpp"
 
 namespace py = pybind11;
 
@@ -35,7 +36,7 @@ public:
         : m_request{std::move(request)},
           m_inputs{inputs},
           m_outputs{outputs},
-          m_userdata{userdata} {
+          m_userdata{Common::utils::wrap_pyobject_to_sp(std::move(userdata))} {
         m_start_time = std::make_shared<Time::time_point>(Time::time_point{});
         m_end_time = std::make_shared<Time::time_point>(Time::time_point{});
 
@@ -59,11 +60,11 @@ public:
 
     // ~InferRequestWrapper() = default;
 
-    std::vector<ov::Tensor> get_input_tensors() {
+    ov::TensorVector get_input_tensors() {
         return get_tensors_from(m_inputs);
     }
 
-    std::vector<ov::Tensor> get_output_tensors() {
+    ov::TensorVector get_output_tensors() {
         return get_tensors_from(m_outputs);
     }
 
@@ -80,14 +81,14 @@ public:
     // A flag which is set when a user defines a custom callback on InferRequest
     bool m_user_callback_defined = false;
     // Data that is passed by user from Python->C++
-    py::object m_userdata;
+    std::shared_ptr<py::object> m_userdata;
     // Times of inference's start and finish
     std::shared_ptr<Time::time_point> m_start_time;  // proposal: change to unique_ptr
     std::shared_ptr<Time::time_point> m_end_time;
 
 private:
-    inline std::vector<ov::Tensor> get_tensors_from(const std::vector<ov::Output<const ov::Node>>& v) {
-        std::vector<ov::Tensor> tensors;
+    inline ov::TensorVector get_tensors_from(const std::vector<ov::Output<const ov::Node>>& v) {
+        ov::TensorVector tensors;
         tensors.reserve(v.size());
 
         for (auto&& node : v) {

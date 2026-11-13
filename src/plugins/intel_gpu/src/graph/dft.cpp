@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,6 +9,8 @@
 #include "irdft_shape_inference.hpp"
 
 #include "json_object.h"
+#include "openvino/op/dft.hpp"
+#include "openvino/op/idft.hpp"
 
 namespace cldnn {
 GPU_DEFINE_PRIMITIVE_TYPE_ID(dft)
@@ -44,32 +46,40 @@ std::vector<layout> dft_inst::calc_output_layouts(dft_node const& /*node*/, kern
     std::vector<layout> layouts;
 
     const auto primitive = impl_param.typed_desc<dft>();
-    const auto input0_layout = impl_param.get_input_layout(0);
-    const auto input1_layout = impl_param.get_input_layout(1);
+    const auto& input0_layout = impl_param.get_input_layout(0);
+    if (impl_param.input_layouts.size() == 1) {
+        auto dt = primitive->get_output_data_type(0).value_or(input0_layout.data_type);
+        format output_format = format::adjust_to_rank(input0_layout.format, primitive->output_shape.size());
+        layouts.push_back(layout{primitive->output_shape, dt, output_format});
+        return layouts;
+    }
+
+    const auto& input1_layout = impl_param.get_input_layout(1);
 
     std::vector<ShapeType> input_shapes = {
         input0_layout.get<ShapeType>(),
         input1_layout.get<ShapeType>()
     };
 
-    if (impl_param.input_layouts.size() == 3)
+    if (impl_param.input_layouts.size() == 3) {
         input_shapes.push_back(impl_param.get_input_layout(2).get<ShapeType>());
+    }
 
     std::vector<ShapeType> output_shapes = {ShapeType()};
     std::unordered_map<size_t, ov::Tensor> const_data;
     ov::Tensor axes_tensor, signal_size_tensor;
 
-    auto& memory_deps = impl_param.memory_deps;
+    const auto& memory_deps = impl_param.memory_deps;
 
     // Consider axes and signal_size are constant case
-    if ((primitive->axes.size() > 0) &&
-        ((impl_param.input_layouts.size() == 2) || (primitive->signal_size.size() > 0))) {
-        auto axes_ptr = reinterpret_cast<uint8_t*>(const_cast<int64_t*>(primitive->axes.data()));
+    if ((!primitive->axes.empty()) &&
+        ((impl_param.input_layouts.size() == 2) || (!primitive->signal_size.empty()))) {
+        auto* axes_ptr = reinterpret_cast<uint8_t*>(const_cast<int64_t*>(primitive->axes.data()));
         axes_tensor = ov::Tensor(ov::element::i64, ov::Shape({primitive->axes.size()}), axes_ptr, {});
         const_data.emplace(1, axes_tensor);
 
-        if (primitive->signal_size.size() > 0) {
-            auto signal_size_ptr = reinterpret_cast<uint8_t*>(const_cast<int64_t*>(primitive->signal_size.data()));
+        if (!primitive->signal_size.empty()) {
+            auto* signal_size_ptr = reinterpret_cast<uint8_t*>(const_cast<int64_t*>(primitive->signal_size.data()));
             signal_size_tensor = ov::Tensor(ov::element::i64, ov::Shape({primitive->signal_size.size()}), signal_size_ptr, {});
             const_data.emplace(2, signal_size_tensor);
         }

@@ -1,14 +1,18 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "common_test_utils/ov_test_utils.hpp"
 
+#include <sstream>
+
 #include "common_test_utils/file_utils.hpp"
 #include "common_test_utils/ov_plugin_cache.hpp"
 #include "common_test_utils/test_constants.hpp"
 #include "openvino/op/tensor_iterator.hpp"
+#include "openvino/op/util/node_util.hpp"
 #include "openvino/runtime/core.hpp"
+#include "openvino/util/common_util.hpp"
 #include "openvino/util/file_util.hpp"
 #include "template/properties.hpp"
 
@@ -17,6 +21,7 @@ namespace pass {
 
 class CopyTensorNamesToRefModel : public ov::pass::ModelPass {
 public:
+    OPENVINO_MODEL_PASS_RTTI("CopyTensorNamesToRefModel");
     CopyTensorNamesToRefModel(const std::shared_ptr<ov::Model>& ref_model) : m_ref_model(ref_model) {}
     bool run_on_model(const std::shared_ptr<ov::Model>& f) override {
         const auto& orig_results = f->get_results();
@@ -59,6 +64,9 @@ void TransformationTestsF::SetUp() {
 }
 
 void TransformationTestsF::TearDown() {
+    if (test_skipped) {
+        return;
+    }
     OPENVINO_ASSERT(model != nullptr, "Test Model is not initialized.");
 
     std::shared_ptr<ov::Model> cloned_function;
@@ -73,7 +81,7 @@ void TransformationTestsF::TearDown() {
     manager.run_passes(model);
 
     if (!m_disable_rt_info_check) {
-        ASSERT_NO_THROW(check_rt_info(model));
+        OV_ASSERT_NO_THROW(check_rt_info(model));
     }
 
     if (acc_enabled) {
@@ -85,6 +93,7 @@ void TransformationTestsF::TearDown() {
         ASSERT_TRUE(res.valid) << res.message;
         comparator.disable(FunctionsComparator::CmpValues::ACCURACY);
     }
+
     auto res = comparator.compare(model, model_ref);
     ASSERT_TRUE(res.valid) << res.message;
 }
@@ -137,7 +146,33 @@ ov::TensorVector infer_on_template(const std::shared_ptr<ov::Model>& model,
     auto infer_request = compiled_model.create_infer_request();
 
     for (auto& input : inputs) {
-        infer_request.set_tensor(input.first, input.second);
+        try {
+            infer_request.set_tensor(input.first, input.second);
+        } catch (const std::exception& ex) {
+            const auto& src_param = input.first;
+            const auto& src_tensor = input.second;
+            const ov::Output<const ov::Node> src_port = src_param->output(0);
+            std::ostringstream ports_dump;
+            const auto& compiled_inputs = compiled_model.inputs();
+            for (size_t i = 0; i < compiled_inputs.size(); ++i) {
+                const auto& cp = compiled_inputs[i];
+                ports_dump << "\n  port[" << i << "] " << ov::util::make_default_tensor_name(cp)
+                           << " shape=" << cp.get_shape() << " tensor_names={"
+                           << ov::util::join(cp.get_tensor().get_names(), ",") << "}";
+            }
+            OPENVINO_THROW("infer_on_template: set_tensor failed. Source parameter: ",
+                           ov::util::make_default_tensor_name(src_port),
+                           ", tensor_names={",
+                           ov::util::join(src_port.get_tensor().get_names(), ","),
+                           "}, expected_shape=",
+                           src_port.get_shape(),
+                           ", got_tensor_shape=",
+                           src_tensor.get_shape(),
+                           ". Compiled model inputs:",
+                           ports_dump.str(),
+                           ". Original error: ",
+                           ex.what());
+        }
     }
     infer_request.infer();
 
@@ -152,7 +187,7 @@ ov::TensorVector infer_on_template(const std::shared_ptr<ov::Model>& model,
 bool is_tensor_iterator_exist(const std::shared_ptr<ov::Model>& model) {
     const auto& ops = model->get_ops();
     for (const auto& node : ops) {
-        const auto& ti = std::dynamic_pointer_cast<ov::op::v0::TensorIterator>(node);
+        const auto& ti = ov::as_type_ptr<ov::op::v0::TensorIterator>(node);
         if (ti) {
             return true;
         }

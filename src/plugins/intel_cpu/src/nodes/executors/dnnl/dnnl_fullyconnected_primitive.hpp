@@ -1,21 +1,27 @@
-// Copyright (C) 2018-2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <oneapi/dnnl/dnnl.hpp>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <vector>
 
-#include "cpu_memory.h"
+#include "config.h"
 #include "memory_desc/dnnl_memory_desc.h"
+#include "nodes/executors/dnnl/dnnl_aliases.hpp"
 #include "nodes/executors/dnnl/dnnl_shape_agnostic_data.hpp"
-#include "nodes/executors/dnnl/dnnl_utils.hpp"
 #include "nodes/executors/executor.hpp"
 #include "nodes/executors/fullyconnected_config.hpp"
+#include "nodes/executors/memory_arguments.hpp"
+#include "onednn/iml_type_mapper.h"
+#include "openvino/core/type/element_type.hpp"
+#include "thread_pool_imp.hpp"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
 class DnnlFCPrimitive {
     struct Key {
@@ -25,54 +31,59 @@ class DnnlFCPrimitive {
         DnnlMemoryDescCPtr dst;
         dnnl::primitive_attr attr;
         bool sparseWeights;
-        bool transposedWeights;
+        Config::ModelType modelType;
 
-        size_t hash() const;
+        [[nodiscard]] size_t hash() const;
         bool operator==(const Key& rhs) const;
     };
 
 public:
-    DnnlFCPrimitive(const Key& key, const dnnl::engine& engine, const std::vector<impl_desc_type>& implPriorities);
+    DnnlFCPrimitive(const Key& key,
+                    const dnnl::engine& engine,
+                    const std::shared_ptr<ThreadPool>& threadPool,
+                    const std::vector<impl_desc_type>& implPriorities);
 
     void execute(const dnnl_primitive_args& primArgs) const;
 
-    const DnnlMemoryDescPtr srcDesc() const {
+    [[nodiscard]] DnnlMemoryDescPtr srcDesc() const {
         return m_srcDesc;
     }
 
-    const DnnlMemoryDescPtr dstDesc() const {
+    [[nodiscard]] DnnlMemoryDescPtr dstDesc() const {
         return m_dstDesc;
     }
 
-    const DnnlMemoryDescPtr weightsDesc() const {
+    [[nodiscard]] DnnlMemoryDescPtr weightsDesc() const {
         return m_weiDesc;
     }
 
-    const DnnlMemoryDescPtr scratchPadDesc() const {
+    [[nodiscard]] DnnlMemoryDescPtr scratchPadDesc() const {
         return m_scratchPadDesc;
     }
 
-    impl_desc_type implType() const {
+    [[nodiscard]] impl_desc_type implType() const {
         return m_implType;
     }
 
     static DnnlShapeAgnosticDataPtr createShapeAgnosticData(const FCAttrs& attrs,
-                                                            const PostOps& postOps,
                                                             const MemoryArgs& memory,
-                                                            const ExecutorContext::CPtr context,
-                                                            const bool cacheWeights);
+                                                            const ExecutorContext::CPtr& context,
+                                                            bool cacheWeights);
 
-    static bool useWeightsDecompressionImpl(const ov::element::Type inputType, const ov::element::Type weightsType);
+    static bool useWeightsDecompressionImpl(ov::element::Type inputType,
+                                            ov::element::Type weightsType,
+                                            Config::ModelType modelType);
+
+    static DnnlMemoryDescPtr makeTransposedWeightDescriptor(const DnnlMemoryDescPtr& srcDesc,
+                                                            const DnnlMemoryDescPtr& dstDesc,
+                                                            const FCAttrs& attrs);
 
     static std::shared_ptr<DnnlFCPrimitive> create(const MemoryArgs& memory,
                                                    const FCAttrs& attrs,
-                                                   const ExecutorContext::CPtr context,
+                                                   const ExecutorContext::CPtr& context,
                                                    const DnnlShapeAgnosticDataPtr& shapeAgnosticData);
 
 private:
-    static bool useDynamicQuantizationImpl(size_t dqGroupSize, const MemoryDescPtr srcDesc, const MemoryDescPtr weightsDesc,
-                                           MemoryCPtr scalesPtr, MemoryCPtr zpPtr, bool needTranspose);
-
     dnnl::stream m_stream;
     dnnl::primitive_desc m_primDesc;
     impl_desc_type m_implType;
@@ -85,5 +96,4 @@ private:
 
 using DnnlFCPrimitivePtr = std::shared_ptr<DnnlFCPrimitive>;
 
-}  // namespace intel_cpu
-}  // namespace ov
+}  // namespace ov::intel_cpu

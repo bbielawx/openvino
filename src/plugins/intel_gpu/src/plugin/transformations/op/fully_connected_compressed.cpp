@@ -1,55 +1,112 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "intel_gpu/op/fully_connected_compressed.hpp"
 
-namespace ov {
-namespace intel_gpu {
-namespace op {
+namespace ov::intel_gpu::op {
 
 FullyConnectedCompressed::FullyConnectedCompressed(const ov::Output<Node>& A,
                                                    const ov::Output<Node>& B,
                                                    const ov::Output<Node>& bias,
-                                                   const ov::Output<Node>& decompression_scale,
-                                                   const ov::Output<Node>& decompression_zero_point,
-                                                   const ov::element::Type output_type)
-    : FullyConnected(A, B, bias, output_type) {
-    set_argument(3, decompression_scale);
-    set_argument(4, decompression_zero_point);
+                                                   const ov::Output<Node>& w_decompression_scale,
+                                                   const ov::Output<Node>& w_decompression_zero_point,
+                                                   const ov::Output<Node>& a_decompression_scale,
+                                                   const ov::Output<Node>& a_decompression_zero_point,
+                                                   const ov::Output<Node>& a_precomputed_reduction,
+                                                   const ov::element::Type output_type,
+                                                   const bool transpose_b,
+                                                   const bool transpose_b_scale,
+                                                   const bool transpose_b_zp,
+                                                   const std::optional<FcWeightsLayout>& weights_layout)
+    : FullyConnected(A, B, bias, output_type, transpose_b, weights_layout),
+      m_transpose_b_scale(transpose_b_scale),
+      m_transpose_b_zp(transpose_b_zp) {
+    set_argument(3, w_decompression_scale);
+    set_argument(4, w_decompression_zero_point);
+    set_argument(5, a_decompression_scale);
+    set_argument(6, a_decompression_zero_point);
+    set_argument(7, a_precomputed_reduction);
     validate_and_infer_types();
 }
 
 FullyConnectedCompressed::FullyConnectedCompressed(const ov::Output<Node>& A,
                                                    const ov::Output<Node>& B,
                                                    const ov::Output<Node>& bias,
-                                                   const ov::Output<Node>& decompression_scale,
-                                                   const ov::element::Type output_type)
-    : FullyConnected(A, B, bias, output_type) {
-    set_argument(3, decompression_scale);
+                                                   const ov::Output<Node>& w_decompression_scale,
+                                                   const ov::Output<Node>& w_decompression_zero_point,
+                                                   const ov::element::Type output_type,
+                                                   const bool transpose_b,
+                                                   const bool transpose_b_scale,
+                                                   const bool transpose_b_zp,
+                                                   const std::optional<FcWeightsLayout>& weights_layout)
+    : FullyConnected(A, B, bias, output_type, transpose_b, weights_layout),
+      m_transpose_b_scale(transpose_b_scale),
+      m_transpose_b_zp(transpose_b_zp) {
+    set_argument(3, w_decompression_scale);
+    set_argument(4, w_decompression_zero_point);
+    validate_and_infer_types();
+}
+
+FullyConnectedCompressed::FullyConnectedCompressed(const ov::Output<Node>& A,
+                                                   const ov::Output<Node>& B,
+                                                   const ov::Output<Node>& bias,
+                                                   const ov::Output<Node>& w_decompression_scale,
+                                                   const ov::element::Type output_type,
+                                                   const bool transpose_b,
+                                                   const bool transpose_b_scale,
+                                                   const bool transpose_b_zp,
+                                                   const std::optional<FcWeightsLayout>& weights_layout)
+    : FullyConnected(A, B, bias, output_type, transpose_b, weights_layout),
+      m_transpose_b_scale(transpose_b_scale),
+      m_transpose_b_zp(transpose_b_zp) {
+    set_argument(3, w_decompression_scale);
     validate_and_infer_types();
 }
 
 std::shared_ptr<ov::Node> FullyConnectedCompressed::clone_with_new_inputs(const ov::OutputVector& new_args) const {
     check_new_args_count(this, new_args);
 
-    if (new_args.size() == 4)
-        return std::make_shared<FullyConnectedCompressed>(new_args.at(0),
-                                                          new_args.at(1),
-                                                          new_args.at(2),
-                                                          new_args.at(3),
-                                                          m_output_type);
-    else if (new_args.size() == 5)
+    if (new_args.size() == 4) {
+        return std::make_shared<FullyConnectedCompressed>(new_args.at(0), new_args.at(1), new_args.at(2), new_args.at(3), m_output_type, m_transpose_b,
+                                                          m_transpose_b_scale,
+                                                          m_transpose_b_zp,
+                                                          m_weights_layout);
+    }
+    if (new_args.size() == 5) {
         return std::make_shared<FullyConnectedCompressed>(new_args.at(0),
                                                           new_args.at(1),
                                                           new_args.at(2),
                                                           new_args.at(3),
                                                           new_args.at(4),
-                                                          m_output_type);
-    else
-        OPENVINO_THROW("Unexpected inputs count for FullyConnectedCompressed op: ", new_args.size());
+                                                          m_output_type,
+                                                          m_transpose_b,
+                                                          m_transpose_b_scale,
+                                                          m_transpose_b_zp,
+                                                          m_weights_layout);
+    }
+    if (new_args.size() == 8) {
+        return std::make_shared<FullyConnectedCompressed>(new_args.at(0),
+                                                          new_args.at(1),
+                                                          new_args.at(2),
+                                                          new_args.at(3),
+                                                          new_args.at(4),
+                                                          new_args.at(5),
+                                                          new_args.at(6),
+                                                          new_args.at(7),
+                                                          m_output_type,
+                                                          m_transpose_b,
+                                                          m_transpose_b_scale,
+                                                          m_transpose_b_zp,
+                                                          m_weights_layout);
+    }
+    OPENVINO_THROW("Unexpected inputs count for FullyConnectedCompressed op: ", new_args.size());
 }
 
-}  // namespace op
-}  // namespace intel_gpu
-}  // namespace ov
+bool FullyConnectedCompressed::visit_attributes(ov::AttributeVisitor& visitor) {
+    FullyConnected::visit_attributes(visitor);
+    visitor.on_attribute("transpose_b_scale", m_transpose_b_scale);
+    visitor.on_attribute("transpose_b_zp", m_transpose_b_zp);
+    return true;
+}
+}  // namespace ov::intel_gpu::op

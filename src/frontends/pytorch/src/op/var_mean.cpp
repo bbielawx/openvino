@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,10 +15,7 @@
 #include "openvino/op/util/framework_node.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -98,20 +95,13 @@ OutputVector translate_var_mean_fx(const NodeContext& context) {
     }
     int32_t correction = 0;
     if (context.has_attribute("correction")) {
-        auto correction_node = context.get_attribute<Output<Node>>("correction");
-        auto const_node = as_type_ptr<v0::Constant>(correction_node.get_node_shared_ptr());
-        PYTORCH_OP_CONVERSION_CHECK(const_node, "correction must be const.");
-        correction = const_node->cast_vector<int32_t>()[0];
+        correction = context.get_attribute<int32_t>("correction");
     }
     bool keepdim = false;
     if (context.has_attribute("keepdim")) {
-        auto keepdim_node = context.get_attribute<Output<Node>>("keepdim");
-        auto const_node = as_type_ptr<v0::Constant>(keepdim_node.get_node_shared_ptr());
-        PYTORCH_OP_CONVERSION_CHECK(const_node, "keepdim must be const.");
-        keepdim = const_node->cast_vector<bool>()[0];
+        keepdim = context.get_attribute<bool>("keepdim");
     }
-    auto res = translate_var_mean_common(context, data, axes, correction, keepdim);
-    return {context.mark_node(make_list_construct(res))};
+    return translate_var_mean_common(context, data, axes, correction, keepdim);
 };
 
 OutputVector translate_var_fx(const NodeContext& context) {
@@ -124,17 +114,11 @@ OutputVector translate_var_fx(const NodeContext& context) {
     }
     int32_t correction = 0;
     if (context.has_attribute("correction")) {
-        auto correction_node = context.get_attribute<Output<Node>>("correction");
-        auto const_node = as_type_ptr<v0::Constant>(correction_node.get_node_shared_ptr());
-        PYTORCH_OP_CONVERSION_CHECK(const_node, "correction must be const.");
-        correction = const_node->cast_vector<int32_t>()[0];
+        correction = context.get_attribute<int32_t>("correction");
     }
     bool keepdim = false;
     if (context.has_attribute("keepdim")) {
-        auto keepdim_node = context.get_attribute<Output<Node>>("keepdim");
-        auto const_node = as_type_ptr<v0::Constant>(keepdim_node.get_node_shared_ptr());
-        PYTORCH_OP_CONVERSION_CHECK(const_node, "keepdim must be const.");
-        keepdim = const_node->cast_vector<bool>()[0];
+        keepdim = context.get_attribute<bool>("keepdim");
     }
     auto res = translate_var_mean_common(context, data, axes, correction, keepdim);
     return {res[0]};
@@ -155,17 +139,11 @@ OutputVector translate_std_fx(const NodeContext& context) {
     }
     int32_t correction = 0;
     if (context.has_attribute("correction")) {
-        auto correction_node = context.get_attribute<Output<Node>>("correction");
-        auto const_node = as_type_ptr<v0::Constant>(correction_node.get_node_shared_ptr());
-        PYTORCH_OP_CONVERSION_CHECK(const_node, "correction must be const.");
-        correction = const_node->cast_vector<int32_t>()[0];
+        correction = context.get_attribute<int32_t>("correction");
     }
     bool keepdim = false;
     if (context.has_attribute("keepdim")) {
-        auto keepdim_node = context.get_attribute<Output<Node>>("keepdim");
-        auto const_node = as_type_ptr<v0::Constant>(keepdim_node.get_node_shared_ptr());
-        PYTORCH_OP_CONVERSION_CHECK(const_node, "keepdim must be const.");
-        keepdim = const_node->cast_vector<bool>()[0];
+        keepdim = context.get_attribute<bool>("keepdim");
     }
     auto res = translate_var_mean_common(context, data, axes, correction, keepdim);
 
@@ -184,7 +162,4 @@ OutputVector translate_std_mean(const NodeContext& context) {
     return {context.mark_node(std::make_shared<v0::Sqrt>(var)), res[1]};
 }
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

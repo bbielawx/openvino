@@ -1,18 +1,22 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "low_precision/pad.hpp"
 
+#include <cmath>
 #include <memory>
 
 #include "itt.hpp"
 #include "openvino/util/log.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "openvino/op/util/pad_base.hpp"
-#include "openvino/opsets/opset12.hpp"
+#include "openvino/opsets/opset12_decl.hpp"
 
 #include "low_precision/network_helper.hpp"
+#include "openvino/core/graph_util.hpp"
+#include "openvino/op/broadcast.hpp"
+#include "openvino/op/pad.hpp"
 
 namespace ov {
 namespace pass {
@@ -31,7 +35,7 @@ PadTransformation::PadTransformation(const Params& params) : LayerTransformation
         if (transformation_callback(op)) {
             return false;
         }
-        return transform(*context, m);
+        return transform(m);
     };
 
     auto m = std::make_shared<ov::pass::pattern::Matcher>(matcher, matcher_name);
@@ -39,6 +43,9 @@ PadTransformation::PadTransformation(const Params& params) : LayerTransformation
 }
 
 namespace {
+    // Input port of PadBase carrying the pad value (arg_pad_value).
+    constexpr size_t padValueInputIndex = 3;
+
     bool hasPositiveIndexes(const std::shared_ptr<ov::op::util::PadBase>& pad) {
         const auto padsBegin = pad->get_pads_begin();
         const auto padsEnd = pad->get_pads_end();
@@ -48,15 +55,36 @@ namespace {
         return std::any_of(padsBegin.begin(), padsBegin.end(), pred) ||
                std::any_of(padsEnd.begin(), padsEnd.end(), pred);
     }
+
+    // Returns true when every constant Pad value is finite and fits the requested precision.
+    // Types without configured limits are checked only for finite values.
+    bool padValueIsRepresentable(const std::shared_ptr<ov::op::util::PadBase>& pad, const element::Type& precision) {
+        const auto padValue = ov::as_type_ptr<ov::opset1::Constant>(pad->get_input_node_shared_ptr(padValueInputIndex));
+        if (padValue == nullptr) {
+            return false;
+        }
+
+        const auto limits = NetworkHelper::getPrecisionLimits(precision);
+
+        const auto values = padValue->cast_vector<float>();
+
+        return std::all_of(values.begin(), values.end(), [&limits](const float value) {
+            const bool isFinite = std::isfinite(value);
+            const bool isWithinPrecisionLimits = !limits.has_value() ||
+                                                 (static_cast<double>(value) >= limits->first &&
+                                                  static_cast<double>(value) <= limits->second);
+            return isFinite && isWithinPrecisionLimits;
+        });
+    }
 } // namespace
 
-bool PadTransformation::transform(TransformationContext& context, ov::pass::pattern::Matcher& m) {
-    if (!canBeTransformed(context, m.get_match_root())) {
+bool PadTransformation::transform(ov::pass::pattern::Matcher& m) {
+    if (!canBeTransformed(m.get_match_root())) {
         return false;
     }
 
     const auto pad = ov::as_type_ptr<ov::op::util::PadBase>(NetworkHelper::separateInStandaloneBranch(m.get_match_root(), defaultPrecisions));
-    const auto padConstant = ov::as_type_ptr<ov::opset1::Constant>(pad->get_input_node_shared_ptr(3));
+    const auto padConstant = ov::as_type_ptr<ov::opset1::Constant>(pad->get_input_node_shared_ptr(padValueInputIndex));
     const auto padConstantValue = padConstant->cast_vector<float>()[0];
 
     const auto padsBegin = pad->get_pads_begin();
@@ -162,16 +190,16 @@ bool PadTransformation::transform(TransformationContext& context, ov::pass::patt
 
     // we must convert pad value in low precision
     const auto convertedZero = ov::opset1::Constant::create(dequantization.data.get_element_type(), Shape{}, { padConstantValue });
-    pad->set_argument(3, convertedZero);
+    pad->set_argument(padValueInputIndex, convertedZero);
 
-    const auto newOperation = moveDequantizationAfter(context, pad, dequantization);
+    const auto newOperation = moveDequantizationAfter(pad, dequantization);
 
-    OPENVINO_DEBUG << "LPT: done: " << newOperation;
+    OPENVINO_DEBUG("LPT: done: ", newOperation);
     return true;
 }
 
-bool PadTransformation::canBeTransformed(const TransformationContext& context, std::shared_ptr<Node> op) const {
-    if (!LayerTransformation::canBeTransformedSpatialDimension(context, op)) {
+bool PadTransformation::canBeTransformed(const std::shared_ptr<Node>& op) const {
+    if (!LayerTransformation::canBeTransformedSpatialDimension(op)) {
         return false;
     }
 
@@ -190,6 +218,11 @@ bool PadTransformation::canBeTransformed(const TransformationContext& context, s
 
     const auto dequantization = NetworkHelper::getDequantization(op, defaultPrecisions);
     if (dequantization.empty()) {
+        return false;
+    }
+
+    if (mode == op::PadMode::CONSTANT &&
+        !padValueIsRepresentable(pad, dequantization.data.get_element_type())) {
         return false;
     }
 
@@ -223,6 +256,10 @@ bool PadTransformation::canBeTransformed(const TransformationContext& context, s
                 if (padsEnd[i] != 0) {
                     endNonZeroIdx = static_cast<int>(i);
                 }
+            }
+
+            if ((beginNonZeroIdx == -1) && (endNonZeroIdx == -1)) {
+                return true;
             }
 
             if ((beginNonZeroIdx != endNonZeroIdx) && (beginNonZeroIdx != -1) && (endNonZeroIdx != -1)) {
@@ -259,7 +296,7 @@ bool PadTransformation::canBeTransformed(const TransformationContext& context, s
             return false;
         }
 
-        const auto constant = ov::as_type_ptr<ov::opset1::Constant>(pad->get_input_node_shared_ptr(3));
+        const auto constant = ov::as_type_ptr<ov::opset1::Constant>(pad->get_input_node_shared_ptr(padValueInputIndex));
         const auto constantValue = constant->cast_vector<float>()[0];
         if (constantValue != 0.f && !padAndDqByTheSameDimension(dequantization.multiplyConstant)) {
             return false;

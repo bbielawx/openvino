@@ -1,20 +1,14 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/flatten.hpp"
-
-#include "exceptions.hpp"
+#include "core/operator_set.hpp"
 #include "openvino/core/validation_util.hpp"
+#include "openvino/frontend/exception.hpp"
 #include "utils/reshape.hpp"
-
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 ov::OutputVector flatten(const ov::frontend::onnx::Node& node) {
     ov::OutputVector inputs{node.get_ov_inputs()};
     auto data = inputs.at(0);
@@ -24,14 +18,19 @@ ov::OutputVector flatten(const ov::frontend::onnx::Node& node) {
     if (data_rank.is_static()) {
         const std::int64_t data_rank_value = data_rank.get_length();
         // Accepted range is [-r, r] where r = rank(input).
-        axis =
-            ov::util::normalize_axis(node.get_description(), axis, data_rank_value, -data_rank_value, data_rank_value);
+        FRONT_END_GENERAL_CHECK(-data_rank_value <= axis && axis <= data_rank_value,
+                                node.get_description(),
+                                " axis ",
+                                axis,
+                                " out of tensor range [",
+                                -data_rank_value,
+                                ", ",
+                                data_rank_value,
+                                "]");
+        axis = ov::util::normalize(axis, data_rank_value);
     }
     return {ov::op::util::flatten(data, static_cast<int>(axis))};
 }
 
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("Flatten", OPSET_SINCE(1), ai_onnx::opset_1::flatten);
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

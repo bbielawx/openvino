@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,7 +12,6 @@
 #include "intel_gpu/graph/serialization/vector_serializer.hpp"
 #include "intel_gpu/runtime/compounds.hpp"
 #include "intel_gpu/runtime/layout.hpp"
-#include "intel_gpu/runtime/optionals.hpp"
 
 #include <algorithm>
 #include <string>
@@ -34,14 +33,15 @@ struct primitive_info;
 /// @brief Describes information of inputs.
 /// @details Contains infomation about id and output index of input primitive.
 struct input_info {
-    input_info() : pid(""), idx(0) {}
+    input_info() : idx(0) {}
     input_info(primitive_id pid) : pid(std::move(pid)), idx(0) {}
     input_info(primitive_id pid, int idx) : pid(std::move(pid)), idx(idx) {}
 
     /// @brief Copy assignment.
     input_info& operator=(const input_info& other) {
-        if (this == &other)
+        if (this == &other) {
             return *this;
+        }
         pid = other.pid;
         idx = other.idx;
         return *this;
@@ -53,16 +53,16 @@ struct input_info {
     }
 
     primitive_id pid;
-    int32_t idx;
+    int32_t idx;    // output port index of primitive
     struct cmp {
         bool operator() (const input_info a, const input_info b) {
             if (a.pid < b.pid) {
                 return true;
-            } else if (a.pid == b.pid) {
-                return a.idx < b.idx;
-            } else {
-                return false;
             }
+            if (a.pid == b.pid) {
+                return a.idx < b.idx;
+            }
+            return false;
         }
     };
 
@@ -87,7 +87,7 @@ struct input_info {
     }
 };
 
-static inline std::ostream& operator<< (std::ostream& os, input_info& info) {
+static inline std::ostream& operator<< (std::ostream& os, const input_info& info) {
     os << info.to_string();
     return os;
 }
@@ -98,7 +98,7 @@ struct prim_map_storage {
         return instance;
     }
 
-    const cldnn::primitive_type_id get_type_id(const std::string& type_string) const {
+    cldnn::primitive_type_id get_type_id(const std::string& type_string) const {
         return map.at(type_string);
     }
 
@@ -130,15 +130,26 @@ public:
           output_paddings(output_paddings),
           output_data_types(output_data_types),
           input(input),
-          num_outputs(num_outputs) {}
+          num_outputs(num_outputs) {
+        if (output_paddings.size() < num_outputs) {
+            this->output_paddings.insert(this->output_paddings.end(), num_outputs - output_paddings.size(), padding());
+        }
+        if (output_data_types.size() < num_outputs) {
+            this->output_data_types.insert(this->output_data_types.end(), num_outputs - output_data_types.size(), optional_data_type());
+        }
+    }
 
     virtual ~primitive() = default;
 
     /// @brief Returns copy of all input info on which this primitive depends - inputs, weights, biases, etc.
     std::vector<input_info> dependencies() const {
         auto result = input;
-        auto deps = get_dependencies();
-        for (auto& dep : deps) result.push_back(dep);
+
+        auto dependencies_map = get_dependencies_map();
+        for (const auto& dep : dependencies_map) {
+            result.push_back(*dep.second);
+        }
+
         return result;
     }
 
@@ -162,29 +173,37 @@ public:
     }
 
     bool compare_common_params(const primitive& rhs) const {
-        if (type != rhs.type)
+        if (type != rhs.type) {
             return false;
-
-        if (num_outputs != rhs.num_outputs)
-            return false;
-
-        if (dependencies().size() != rhs.dependencies().size())
-            return false;
-
-        if (output_data_types.size() != rhs.output_data_types.size())
-            return false;
-
-        for (size_t i = 0; i < output_data_types.size(); ++i) {
-            if (output_data_types[i].value_or(data_types::undefined) != rhs.output_data_types[i].value_or(data_types::undefined))
-                return false;
         }
 
-        if (output_paddings.size() != rhs.output_paddings.size())
+        if (num_outputs != rhs.num_outputs) {
             return false;
+        }
+
+        if (dependencies().size() != rhs.dependencies().size()) {
+            return false;
+        }
+
+        if (output_data_types.size() != rhs.output_data_types.size()) {
+            return false;
+        }
+
+        for (size_t i = 0; i < output_data_types.size(); ++i) {
+            if (output_data_types[i].value_or(data_types::dynamic) !=
+                rhs.output_data_types[i].value_or(data_types::dynamic)) {
+                return false;
+            }
+        }
+
+        if (output_paddings.size() != rhs.output_paddings.size()) {
+            return false;
+        }
 
         for (size_t i = 0; i < output_paddings.size(); ++i) {
-            if (output_paddings[i] != rhs.output_paddings[i])
+            if (output_paddings[i] != rhs.output_paddings[i]) {
                 return false;
+            }
         }
 
         return true;
@@ -201,13 +220,16 @@ public:
     const primitive_type_id type;
 
     /// @brief Primitive's id.
-    const primitive_id id;
+    primitive_id id;
 
     /// @brief Name of original ov operation.
     std::string origin_op_name;
 
     /// @brief Type name of original ov operation.
     std::string origin_op_type_name;
+
+    /// @brief Set via "gpu_shape_of_subgraph_root" rt_info; protected from fusion like shape_of.
+    bool is_shape_of_subgraph_root = false;
 
     /// @brief Requested output padding.
     std::vector<padding> output_paddings;
@@ -229,6 +251,8 @@ public:
     size_t num_outputs;
 
     virtual const std::string& get_type_info() const = 0;
+    virtual std::shared_ptr<primitive> clone() const = 0;
+
     virtual void save(BinaryOutputBuffer& ob) const {
         ob << type_string();
         ob << id;
@@ -236,7 +260,7 @@ public:
         ob << origin_op_type_name;
         ob << output_paddings;
         ob << output_data_types.size();
-        for (auto& output_data_type : output_data_types) {
+        for (const auto& output_data_type : output_data_types) {
             if (output_data_type.has_value()) {
                 ob << true;
                 ob << make_data(&output_data_type.value(), sizeof(data_types));
@@ -246,13 +270,14 @@ public:
         }
         ob << input;
         ob << num_outputs;
+        ob << is_shape_of_subgraph_root;
     }
 
     virtual void load(BinaryInputBuffer& ib) {
         std::string type_str;
         ib >> type_str;
         *const_cast<primitive_type_id*>(&type) = prim_map_storage::instance().get_type_id(type_str);
-        ib >> *const_cast<primitive_id*>(&id);
+        ib >> id;
         ib >> origin_op_name;
         ib >> origin_op_type_name;
         ib >> output_paddings;
@@ -272,26 +297,68 @@ public:
         }
         ib >> input;
         ib >> num_outputs;
+        ib >> is_shape_of_subgraph_root;
     }
 
     virtual padding get_output_padding(size_t idx) const {
         if (idx < output_paddings.size()) {
             return output_paddings[idx];
-        } else {
-            return padding();
         }
+        return padding();
     }
 
     virtual optional_data_type get_output_data_type(size_t idx) const {
         if (idx < output_data_types.size()) {
             return output_data_types[idx];
-        } else {
-            return optional_data_type();
         }
+        return optional_data_type();
+    }
+
+    /// @brief Returns mutable reference to input dependency at given index.
+    input_info& get_dependency(size_t idx) {
+        if (idx < input.size()) {
+            return input[idx];
+        }
+
+        auto dependencies_map = get_dependencies_map();
+        OPENVINO_ASSERT(dependencies_map.count(idx) > 0,
+                        "[GPU] Requested index ",
+                        std::to_string(idx),
+                        " exceeds total dependencies count (",
+                        std::to_string(input.size() + dependencies_map.size()),
+                        ") for ",
+                        id,
+                        " primitive");
+
+        // get_dependencies_map() returns `const input_info*` for general read-only access.
+        // However since the current function is non-const and the object itself is not actually const,
+        // we can safely cast away constness to return a mutable reference.
+        // This avoids duplicating the dependencies logic while preserving const correctness.
+        return *const_cast<input_info*>(dependencies_map[idx]);
+    }
+
+    /// @brief Returns const reference to input dependency at given index.
+    const input_info& get_dependency(size_t idx) const {
+        if (idx < input.size()) {
+            return input[idx];
+        }
+
+        auto dependencies_map = get_dependencies_map();
+        OPENVINO_ASSERT(dependencies_map.count(idx) > 0,
+                        "[GPU] Requested index ",
+                        std::to_string(idx),
+                        " exceeds total dependencies count (",
+                        std::to_string(input.size() + dependencies_map.size()),
+                        ") for",
+                        id,
+                        " primitive");
+
+        return *dependencies_map[idx];
     }
 
 protected:
-    virtual std::vector<input_info> get_dependencies() const { return {}; }
+    /// @brief This method returns additional dependencies those are not maintained from primitive::input.
+    virtual std::map<size_t, const input_info*> get_dependencies_map() const { return {}; }
     class condition;
     friend struct primitive_info;
 };
@@ -299,12 +366,16 @@ protected:
 /// @brief base class for all primitives implementations.
 template <class PType>
 class primitive_base : public primitive {
+public:
+    std::shared_ptr<PType> typed_clone() const { return std::make_shared<PType>(static_cast<const PType &>(*this)); }
+    std::shared_ptr<primitive> clone() const override { return typed_clone(); };
+
 protected:
     explicit primitive_base(const primitive_id& id,
                             const std::vector<input_info>& input,
-                            const std::vector<padding>& output_paddings = {padding()},
+                            const size_t num_outputs = 1,
                             const std::vector<optional_data_type> output_data_types = {optional_data_type()},
-                            const size_t num_outputs = 1)
+                            const std::vector<padding>& output_paddings = {padding()})
         : primitive(PType::type_id(), id, input, output_paddings, output_data_types, num_outputs) {}
 };
 

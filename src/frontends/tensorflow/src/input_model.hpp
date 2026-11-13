@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,9 +13,7 @@
 #include "translate_session.hpp"
 #include "variables_index.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
+namespace ov::frontend::tensorflow {
 
 class OpPlace;
 class TensorPlace;
@@ -44,6 +42,7 @@ public:
     std::vector<ov::frontend::Place::Ptr> get_inputs() const override;
     std::vector<ov::frontend::Place::Ptr> get_outputs() const override;
     ov::frontend::Place::Ptr get_place_by_tensor_name(const std::string& tensorName) const override;
+    ov::frontend::Place::Ptr get_place_by_input_index(size_t input_idx) const override;
     void override_all_outputs(const std::vector<ov::frontend::Place::Ptr>& outputs) override;
     void override_all_inputs(const std::vector<ov::frontend::Place::Ptr>& inputs) override;
     void extract_subgraph(const std::vector<ov::frontend::Place::Ptr>& inputs,
@@ -68,6 +67,4 @@ public:
     std::vector<std::string> get_input_names() const;
 };
 
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow

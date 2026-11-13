@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,22 +10,45 @@
 #include "openvino/runtime/system_conf.hpp"
 #include "openvino/runtime/threading/cpu_streams_info.hpp"
 
+#if defined(_WIN32)
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <windows.h>
+#endif
+
 namespace ov {
 namespace threading {
 
 void get_cur_stream_info(const int stream_id,
-                         const bool cpu_reservation,
-                         const std::vector<std::vector<int>> proc_type_table,
-                         const std::vector<std::vector<int>> streams_info_table,
+                         const bool cpu_pinning,
+                         const std::vector<std::vector<int>>& proc_type_table,
+                         const std::vector<std::vector<int>>& streams_info_table,
                          StreamCreateType& stream_type,
                          int& concurrency,
-                         int& core_type,
+                         std::vector<int>& core_types,
                          int& numa_node_id,
+                         int& socket_id,
                          int& max_threads_per_core) {
+    const auto append_core_type = [](std::vector<int>& proc_core_types, int proc_core_type) {
+        if (std::find(proc_core_types.begin(), proc_core_types.end(), proc_core_type) == proc_core_types.end()) {
+            proc_core_types.push_back(proc_core_type);
+        }
+    };
+    const auto get_bindable_core_type_count = [](const std::vector<std::vector<int>>& available_proc_type_table) {
+        if (available_proc_type_table.empty()) {
+            return 0;
+        }
+
+        return static_cast<int>(available_proc_type_table[0][MAIN_CORE_PROC] > 0) +
+               static_cast<int>(available_proc_type_table[0][EFFICIENT_CORE_PROC] > 0) +
+               static_cast<int>(available_proc_type_table[0][LP_EFFICIENT_CORE_PROC] > 0);
+    };
+
     int stream_total = 0;
     size_t stream_info_id = 0;
-    bool cpu_reserve = cpu_reservation;
-    bool ecore_used = false;
+    bool pinning = cpu_pinning;
+    core_types.clear();
     for (size_t i = 0; i < streams_info_table.size(); i++) {
         stream_total += std::abs(streams_info_table[i][NUMBER_OF_STREAMS]);
         if (stream_id < stream_total) {
@@ -34,16 +57,18 @@ void get_cur_stream_info(const int stream_id,
         }
     }
     concurrency = streams_info_table[stream_info_id][THREADS_PER_STREAM];
-    core_type = streams_info_table[stream_info_id][PROC_TYPE];
+    int core_type = streams_info_table[stream_info_id][PROC_TYPE];
     numa_node_id = streams_info_table[stream_info_id][STREAM_NUMA_NODE_ID];
+    socket_id = streams_info_table[stream_info_id][STREAM_SOCKET_ID];
     max_threads_per_core = 1;
     if (core_type == ALL_PROC) {
         for (size_t i = stream_info_id + 1; i < streams_info_table.size(); i++) {
             if (streams_info_table[i][NUMBER_OF_STREAMS] == 0) {
-                if (streams_info_table[i][PROC_TYPE] == EFFICIENT_CORE_PROC) {
-                    ecore_used = true;
-                } else if (streams_info_table[i][PROC_TYPE] == HYPER_THREADING_PROC) {
+                if (streams_info_table[i][PROC_TYPE] == HYPER_THREADING_PROC) {
                     max_threads_per_core = 2;
+                    append_core_type(core_types, MAIN_CORE_PROC);
+                } else {
+                    append_core_type(core_types, streams_info_table[i][PROC_TYPE]);
                 }
             } else {
                 break;
@@ -51,27 +76,32 @@ void get_cur_stream_info(const int stream_id,
         }
     } else if (core_type == HYPER_THREADING_PROC) {
         max_threads_per_core = 2;
+        append_core_type(core_types, MAIN_CORE_PROC);
     }
 
 #if defined(__APPLE__)
-    cpu_reserve = false;
-#elif defined(_WIN32)
-    if (proc_type_table.size() > 1) {
-        cpu_reserve = false;
-    }
+    pinning = false;
 #endif
-    if (cpu_reserve) {
+    if (core_type != ALL_PROC && core_types.empty()) {
+        append_core_type(core_types, core_type == HYPER_THREADING_PROC ? MAIN_CORE_PROC : core_type);
+    }
+
+    if (pinning) {
         stream_type = STREAM_WITH_OBSERVE;
     } else {
         stream_type = STREAM_WITHOUT_PARAM;
         // Pcore only or Ecore only with no cpu binding in hybrid cores machine
-        if (proc_type_table[0][EFFICIENT_CORE_PROC] > 0 && core_type != ALL_PROC) {
-            stream_type = STREAM_WITH_CORE_TYPE;
-        } else if (proc_type_table[0][EFFICIENT_CORE_PROC] > 0 && core_type == ALL_PROC &&
-                   !ecore_used) {  // Latency mode and enable hyper threading in hybrid cores machine
-            stream_type = STREAM_WITH_CORE_TYPE;
-            core_type = MAIN_CORE_PROC;
-        } else if (proc_type_table.size() > 1 && numa_node_id >= 0) {
+        if (!proc_type_table.empty() &&
+            (proc_type_table[0][EFFICIENT_CORE_PROC] > 0 || proc_type_table[0][LP_EFFICIENT_CORE_PROC] > 0)) {
+            const auto bindable_core_types = get_bindable_core_type_count(proc_type_table);
+            if (!core_types.empty() && core_types.size() < static_cast<size_t>(bindable_core_types)) {
+                stream_type = STREAM_WITH_CORE_TYPE;
+            }
+        } else if (proc_type_table.size() > 1 && numa_node_id >= 0 &&
+                   // Both commands "numactl" and "docker run --cpuset-cpus" can restrict the use of numa nodes.
+                   // Some situation of numa_node_id differs from the original numa_node_id may cause oneTBB to crash
+                   // when binding cores with numa node id. So not binding cores with numa node id in this case.
+                   numa_node_id == get_org_numa_id(numa_node_id)) {
             stream_type = STREAM_WITH_NUMA_ID;
         }
     }
@@ -84,15 +114,23 @@ void reserve_cpu_by_streams_info(const std::vector<std::vector<int>> _streams_in
                                  std::vector<std::vector<int>>& _stream_processors,
                                  const int _cpu_status) {
     std::vector<std::vector<int>> streams_table;
-    std::vector<std::vector<std::string>> stream_conditions;
+    std::vector<std::vector<std::pair<std::string, int>>> stream_conditions;
+    std::vector<std::vector<int>> threads_status;  // used to count the number of threads
     std::vector<int> stream_pos;
     std::vector<int> stream_num;
     int num_streams = 0;
     int num_conditions = 0;
     int condition_idx = 0;
     bool last_all_proc = false;
+    bool sub_stream_enable = false;
 
     for (size_t i = 0; i < _streams_info_table.size(); i++) {
+        if (i > 0 && _streams_info_table[i][NUMBER_OF_STREAMS] < 0 &&
+            _streams_info_table[i - 1][NUMBER_OF_STREAMS] > 0) {
+            stream_pos.clear();
+            num_streams = 0;
+            sub_stream_enable = true;
+        }
         if (_streams_info_table[i][NUMBER_OF_STREAMS] != 0) {
             stream_pos.push_back(num_streams);
         }
@@ -100,42 +138,45 @@ void reserve_cpu_by_streams_info(const std::vector<std::vector<int>> _streams_in
     }
     num_conditions = static_cast<int>(stream_pos.size());
     _stream_processors.assign(num_streams, std::vector<int>());
-    stream_conditions.assign(num_conditions, std::vector<std::string>());
+    stream_conditions.assign(num_conditions, std::vector<std::pair<std::string, int>>());
+    threads_status.assign(num_conditions, std::vector<int>());
     stream_num.assign(num_conditions, 0);
 
     for (size_t i = 0; i < _streams_info_table.size(); i++) {
-        std::vector<std::string> proc_types;
-        std::vector<std::string> numa_nodes;
-        std::vector<std::string> sockets;
-        if (_streams_info_table[i][NUMBER_OF_STREAMS] != 0) {
+        std::string proc_type = "";
+        std::string numa_node = "";
+        std::string socket = "";
+        if ((_streams_info_table[i][NUMBER_OF_STREAMS] > 0 && !sub_stream_enable) ||
+            (_streams_info_table[i][NUMBER_OF_STREAMS] < 0 && sub_stream_enable)) {
             streams_table.push_back(_streams_info_table[i]);
             if (_streams_info_table[i][NUMBER_OF_STREAMS] < 0) {
-                streams_table[streams_table.size() - 1][NUMBER_OF_STREAMS] = 1;
+                streams_table[streams_table.size() - 1][NUMBER_OF_STREAMS] =
+                    std::abs(_streams_info_table[i][NUMBER_OF_STREAMS]);
             }
+        } else if (_streams_info_table[i][NUMBER_OF_STREAMS] != 0) {
+            continue;
         }
         if (last_all_proc && _streams_info_table[i][NUMBER_OF_STREAMS] != 0) {
             last_all_proc = false;
             condition_idx++;
         }
         if (_streams_info_table[i][PROC_TYPE] > ALL_PROC) {
-            proc_types.push_back(std::to_string(_streams_info_table[i][PROC_TYPE]));
+            proc_type = std::to_string(_streams_info_table[i][PROC_TYPE]);
         } else {
             last_all_proc = true;
         }
         if (_streams_info_table[i][STREAM_NUMA_NODE_ID] >= 0) {
-            numa_nodes.push_back(std::to_string(_streams_info_table[i][STREAM_NUMA_NODE_ID]));
+            numa_node = std::to_string(_streams_info_table[i][STREAM_NUMA_NODE_ID]);
         }
         if (_streams_info_table[i][STREAM_SOCKET_ID] >= 0) {
-            sockets.push_back(std::to_string(_streams_info_table[i][STREAM_SOCKET_ID]));
+            socket = std::to_string(_streams_info_table[i][STREAM_SOCKET_ID]);
         }
-        for (auto t : proc_types) {
-            for (auto n : numa_nodes) {
-                for (auto s : sockets) {
-                    stream_conditions[condition_idx].push_back(t + n + s);
-                }
-            }
+        if (proc_type != "") {
+            stream_conditions[condition_idx].push_back(
+                std::make_pair(proc_type + numa_node + socket, _streams_info_table[i][THREADS_PER_STREAM]));
+            threads_status[condition_idx].push_back(0);
         }
-        if (_streams_info_table[i][PROC_TYPE] > ALL_PROC && _streams_info_table[i][NUMBER_OF_STREAMS] > 0) {
+        if (_streams_info_table[i][PROC_TYPE] > ALL_PROC && _streams_info_table[i][NUMBER_OF_STREAMS] != 0) {
             condition_idx++;
         }
     }
@@ -146,8 +187,20 @@ void reserve_cpu_by_streams_info(const std::vector<std::vector<int>> _streams_in
                                      std::to_string(_cpu_mapping_table[i][CPU_MAP_NUMA_NODE_ID]) +
                                      std::to_string(_cpu_mapping_table[i][CPU_MAP_SOCKET_ID]);
             for (size_t j = 0; j < stream_conditions.size(); j++) {
-                if (std::find(stream_conditions[j].begin(), stream_conditions[j].end(), cpu_string) !=
-                    stream_conditions[j].end()) {
+                auto iter = std::find_if(stream_conditions[j].begin(),
+                                         stream_conditions[j].end(),
+                                         [&](std::pair<std::string, int> item) {
+                                             return cpu_string == item.first;
+                                         });
+                if (iter != stream_conditions[j].end()) {
+                    // process the situation of proc_type = ALL_PROC
+                    if (stream_conditions[j].size() > 1) {
+                        size_t idx = iter - stream_conditions[j].begin();
+                        threads_status[j][idx]++;
+                        if (threads_status[j][idx] >= stream_conditions[j][idx].second) {
+                            stream_conditions[j][idx] = std::make_pair("", 0);
+                        }
+                    }
                     _stream_processors[stream_pos[j]].push_back(_cpu_mapping_table[i][CPU_MAP_PROCESSOR_ID]);
                     _cpu_mapping_table[i][CPU_MAP_USED_FLAG] = _cpu_status;
                     if (static_cast<int>(_stream_processors[stream_pos[j]].size()) ==
@@ -172,10 +225,9 @@ void reserve_cpu_by_streams_info(const std::vector<std::vector<int>> _streams_in
 void update_proc_type_table(const std::vector<std::vector<int>> _cpu_mapping_table,
                             const int _numa_nodes,
                             std::vector<std::vector<int>>& _proc_type_table) {
-    std::vector<int> all_table;
     std::map<int, int> numa_node_map;
 
-    _proc_type_table.assign((_numa_nodes == 1) ? 1 : _numa_nodes + 1, std::vector<int>({0, 0, 0, 0, -1, -1}));
+    _proc_type_table.assign((_numa_nodes == 1) ? 1 : _numa_nodes + 1, std::vector<int>({0, 0, 0, 0, 0, -1, -1}));
     if (_numa_nodes > 1) {
         for (int i = 0; i < _numa_nodes; i++) {
             _proc_type_table[i + 1][PROC_NUMA_NODE_ID] = i;
@@ -190,7 +242,8 @@ void update_proc_type_table(const std::vector<std::vector<int>> _cpu_mapping_tab
     } else {
         numa_node_map.insert(std::pair<int, int>(_proc_type_table[0][PROC_NUMA_NODE_ID], 0));
     }
-    all_table = {0, 0, 0, 0, -1, -1};
+
+    std::vector<int> all_table{0, 0, 0, 0, 0, -1, -1};
     for (size_t i = 0; i < _cpu_mapping_table.size(); i++) {
         if (_cpu_mapping_table[i][CPU_MAP_USED_FLAG] == NOT_USED && _cpu_mapping_table[i][CPU_MAP_NUMA_NODE_ID] >= 0 &&
             _cpu_mapping_table[i][CPU_MAP_CORE_TYPE] >= ALL_PROC) {
@@ -204,7 +257,7 @@ void update_proc_type_table(const std::vector<std::vector<int>> _cpu_mapping_tab
         }
     }
     if (_numa_nodes > 1) {
-        _proc_type_table[0] = all_table;
+        _proc_type_table[0] = std::move(all_table);
     }
 
     if (_proc_type_table.size() > 1) {
@@ -221,6 +274,27 @@ void update_proc_type_table(const std::vector<std::vector<int>> _cpu_mapping_tab
             _proc_type_table.erase(_proc_type_table.begin());
         }
     }
+}
+
+int get_thread_processor_group(int stream_id, int thread_index, int group_count) {
+    if (group_count <= 1) {
+        return -1;
+    }
+    // Spread an arena's worker threads across groups by slot index, offset per stream so single-thread
+    // streams still fan out. numa id is deliberately not used as a group id (Windows does not match them).
+    const int base = stream_id > 0 ? stream_id : 0;
+    const int slot = thread_index > 0 ? thread_index : 0;
+    return (base + slot) % group_count;
+}
+
+int get_num_processor_groups() {
+#if defined(_WIN32)
+    // GetActiveProcessorGroupCount() returns 0 on failure; normalize to a single group so callers can
+    // rely on the count being at least 1 (matching get_thread_processor_group's group_count <= 1 path).
+    return std::max<int>(1, static_cast<int>(GetActiveProcessorGroupCount()));
+#else
+    return 1;
+#endif
 }
 
 }  // namespace threading

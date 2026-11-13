@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,8 +7,7 @@
 #include "intel_gpu/plugin/common_utils.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 namespace {
 
@@ -26,5 +25,4 @@ void CreateBucketizeOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v3::Buck
 
 REGISTER_FACTORY_IMPL(v3, Bucketize);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

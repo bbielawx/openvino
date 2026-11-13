@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,15 +9,15 @@
 
 #include "intel_gpu/primitives/concatenation.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 static void CreateConcatOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::Concat>& op) {
     auto inputs = p.GetInputInfo(op);
     std::string layerName = layer_type_name_ID(op);
     int64_t axis = op->get_axis();
-    if (axis < 0)
+    if (axis < 0) {
         axis = axis + static_cast<int64_t>(op->get_input_partial_shape(0).rank().get_length());
+    }
 
     auto concatPrim = cldnn::concatenation(
         layerName,
@@ -30,5 +30,4 @@ static void CreateConcatOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::
 
 REGISTER_FACTORY_IMPL(v0, Concat);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

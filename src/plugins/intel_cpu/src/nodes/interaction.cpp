@@ -1,61 +1,89 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "interaction.h"
 
-#include "transformations/cpu_opset/x64/op/interaction.hpp"
-#include "common/bfloat16.hpp"
-#include "common/cpu_memcpy.h"
-#include "cpu/x64/cpu_isa_traits.hpp"
-#include "cpu/x64/jit_generator.hpp"
-#include "dnnl_extension_utils.h"
-#include "emitters/plugin/x64/jit_dnnl_emitters.hpp"
-#include "emitters/plugin/x64/jit_load_store_emitters.hpp"
-#include "memory_desc/cpu_memory_desc_utils.h"
-#include "memory_desc/dnnl_blocked_memory_desc.h"
-#include "nodes/common/cpu_convert.h"
-#include "onednn/dnnl.h"
+#include <oneapi/dnnl/dnnl_types.h>
 
-#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <oneapi/dnnl/dnnl.hpp>
+#include <oneapi/dnnl/dnnl_common.hpp>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "common/cpu_memcpy.h"
+#include "cpu_memory.h"
+#include "cpu_types.h"
+#include "dnnl_extension_utils.h"
+#include "graph_context.h"
+#include "memory_desc/cpu_memory_desc.h"
+#include "memory_desc/cpu_memory_desc_utils.h"
+#include "memory_desc/dnnl_blocked_memory_desc.h"
+#include "node.h"
+#include "onednn/iml_type_mapper.h"
+#include "openvino/core/except.hpp"
+#include "openvino/core/node.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/runtime/system_conf.hpp"
+#include "shape_inference/shape_inference_cpu.hpp"
+#ifdef CPU_DEBUG_CAPS
+#    include "utils/debug_capabilities.h"
+#endif
+
+#if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64)
+#    include <xbyak/xbyak.h>
+
+#    include <common/utils.hpp>
+
+#    include "cpu/x64/cpu_isa_traits.hpp"
+#    include "cpu/x64/jit_generator.hpp"
+#    include "emitters/plugin/x64/jit_load_store_emitters.hpp"
+#    include "openvino/core/type.hpp"
+#    include "transformations/cpu_opset/x64/op/interaction.hpp"
+#    include "utils/cpu_utils.hpp"
+#endif
+
+#if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64)
 using namespace dnnl::impl::cpu::x64;
 using namespace Xbyak;
+#endif
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
-
-#define THROW_ERROR(...) OPENVINO_THROW(getTypeStr(), " node with name '", getName(), "' ", __VA_ARGS__)
+namespace ov::intel_cpu::node {
 
 #if defined(OPENVINO_ARCH_X86_64)
 
 template <cpu_isa_t isa>
-struct jit_move_scale_kernel : public jit_uni_move_scale_kernel, public jit_generator {
+struct jit_move_scale_kernel : public jit_uni_move_scale_kernel, public jit_generator_t {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_move_scale_kernel)
 
-    explicit jit_move_scale_kernel(const jit_move_scale_compile_params& jcp) : jit_uni_move_scale_kernel(jcp), jit_generator(jit_name()) {
+    explicit jit_move_scale_kernel(const jit_move_scale_compile_params& jcp)
+        : jit_uni_move_scale_kernel(jcp),
+          jit_generator_t(jit_name()) {
         runtime_prc = jcp_.src_prc == ov::element::bf16 ? ov::element::bf16 : ov::element::f32;
-        if (jcp_.dst_prc == ov::element::i8 || jcp_.dst_prc == ov::element::u8)
+        if (jcp_.dst_prc == ov::element::i8 || jcp_.dst_prc == ov::element::u8) {
             runtime_prc = ov::element::f32;
-        vec_size = dnnl::impl::cpu::x64::cpu_isa_traits<isa>::vlen / runtime_prc.size();
+        }
+        vec_size = dnnl::impl::cpu::x64::cpu_isa_traits_t<isa>::vlen / runtime_prc.size();
     }
-    virtual ~jit_move_scale_kernel() {}
+    ~jit_move_scale_kernel() override = default;
 
     void create_ker() override {
-        jit_generator::create_kernel();
-        ker_ = (decltype(ker_))jit_ker();
+        jit_generator_t::create_kernel();
+        ker_ = jit_kernel_cast<decltype(ker_)>(jit_ker());
     }
 
 private:
-    using Vmm = typename dnnl::impl::utils::conditional3<isa == cpu_isa_t::sse41, Xmm, isa == cpu_isa_t::avx2, Ymm, Zmm>::type;
+    using Vmm =
+        typename dnnl::impl::utils::conditional3<isa == cpu_isa_t::sse41, Xmm, isa == cpu_isa_t::avx2, Ymm, Zmm>::type;
 
     void generate() override {
         this->preamble();
 
-#define GET_OFF(field) offsetof(jit_move_scale_call_args, field)
+#    define GET_OFF(field) offsetof(jit_move_scale_call_args, field)
         mov(reg_in, ptr[reg_params + GET_OFF(p_in)]);
         mov(reg_out, ptr[reg_params + GET_OFF(p_out)]);
         mov(reg_work_amount, jcp_.input_size);
@@ -95,8 +123,9 @@ private:
         this->postamble();
 
         for (const auto& emitter : emitters) {
-            if (emitter.second)
+            if (emitter.second) {
                 emitter.second->emit_data();
+            }
         }
     }
 
@@ -107,7 +136,7 @@ private:
         if (jcp_.with_scales) {
             if (!jcp_.broadcast_scales) {
                 load(vmm_scales, reg_scales, ov::element::f32, ov::element::f32, step, false);
-                add(reg_scales,  sizeof(float) * step);
+                add(reg_scales, sizeof(float) * step);
             }
             uni_vmulps(vmm_in, vmm_in, vmm_scales);
         }
@@ -119,25 +148,39 @@ private:
             add(reg_out_aux, jcp_.dst_prc.size() * step);
         }
     }
-#undef GET_OFF
+#    undef GET_OFF
 
-    inline void load(const Vmm& vmm_dst, const Xbyak::Reg64& reg_src, ov::element::Type src_prc, ov::element::Type dst_prc, const int& elt_num, bool fill) {
+    void load(const Vmm& vmm_dst,
+              const Xbyak::Reg64& reg_src,
+              ov::element::Type src_prc,
+              ov::element::Type dst_prc,
+              const int& elt_num,
+              bool fill) {
         const auto seed = load_emitter_params(src_prc, dst_prc, elt_num, fill, "float_min").hash();
         if (!emitters[seed]) {
-            emitters[seed].reset(new jit_load_emitter(this, isa, src_prc, dst_prc, elt_num, src_prc, fill, "float_min"));
+            emitters[seed] =
+                std::make_unique<jit_load_emitter>(this, isa, src_prc, dst_prc, elt_num, src_prc, fill, "float_min");
         }
 
-        emitters[seed]->emit_code({static_cast<size_t>(reg_src.getIdx()), 0}, {static_cast<size_t>(vmm_dst.getIdx())},
-                                  pool_aux_vmm_idxs, pool_aux_gpr_idxs);
+        emitters[seed]->emit_code({static_cast<size_t>(reg_src.getIdx()), 0},
+                                  {static_cast<size_t>(vmm_dst.getIdx())},
+                                  pool_aux_vmm_idxs,
+                                  pool_aux_gpr_idxs);
     }
-    inline void store(const Xbyak::Reg64& reg_dst, const Vmm& vmm_src, ov::element::Type src_prc, ov::element::Type dst_prc, const int& elt_num) {
+    void store(const Xbyak::Reg64& reg_dst,
+               const Vmm& vmm_src,
+               ov::element::Type src_prc,
+               ov::element::Type dst_prc,
+               const int& elt_num) {
         const auto seed = store_emitter_params(src_prc, dst_prc, elt_num).hash();
         if (!emitters[seed]) {
-            emitters[seed].reset(new jit_store_emitter(this, isa, src_prc, dst_prc, elt_num));
+            emitters[seed] = std::make_unique<jit_store_emitter>(this, isa, src_prc, dst_prc, elt_num);
         }
 
-        emitters[seed]->emit_code({static_cast<size_t>(vmm_src.getIdx()), 0}, {static_cast<size_t>(reg_dst.getIdx())},
-                                  pool_aux_vmm_idxs, pool_aux_gpr_idxs);
+        emitters[seed]->emit_code({static_cast<size_t>(vmm_src.getIdx())},
+                                  {static_cast<size_t>(reg_dst.getIdx())},
+                                  pool_aux_vmm_idxs,
+                                  pool_aux_gpr_idxs);
     }
 
     size_t vec_size;
@@ -155,34 +198,39 @@ private:
     Reg64 reg_work_amount = r14;
     Reg64 reg_params = abi_param1;
 
-    const std::vector<size_t> pool_aux_gpr_idxs = { static_cast<size_t>(rsi.getIdx()), static_cast<size_t>(rbp.getIdx()) };
-    const std::vector<size_t> pool_aux_vmm_idxs = { static_cast<size_t>(xmm_tmp.getIdx()) };
+    const std::vector<size_t> pool_aux_gpr_idxs = {static_cast<size_t>(rsi.getIdx()),
+                                                   static_cast<size_t>(rbp.getIdx())};
+    const std::vector<size_t> pool_aux_vmm_idxs = {static_cast<size_t>(xmm_tmp.getIdx())};
 
     std::unordered_map<size_t, std::unique_ptr<jit_emitter>> emitters;
 };
 
-#endif // OPENVINO_ARCH_X86_64
+#endif  // OPENVINO_ARCH_X86_64
 
-Interaction::Interaction(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context)
-        : Node(op, context, NgraphShapeInferFactory(op, EMPTY_PORT_MASK)) {
+Interaction::Interaction(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context)
+    : Node(op, context, NgraphShapeInferFactory(op)) {
     std::string errorMessage;
     if (!isSupportedOperation(op, errorMessage)) {
         OPENVINO_THROW_NOT_IMPLEMENTED(errorMessage);
     }
-    errorPrefix = "Interaction node with name '" + getName() + "'";
-    const auto interaction = std::dynamic_pointer_cast<const InteractionNode>(op);
+#if defined(OPENVINO_ARCH_X86_64)
+    const auto interaction = ov::as_type_ptr<const InteractionNode>(op);
     const std::vector<float>& scales = interaction->get_output_scales();
     if (!scales.empty()) {
         fqScales = scales;
-        outputDataType  = interaction->get_output_element_type(0);
+        outputDataType = interaction->get_output_element_type(0);
     }
+#else
+    OPENVINO_THROW_NOT_IMPLEMENTED("Interaction operation is supported only on X86_64");
+#endif
 }
 
 void Interaction::initSupportedPrimitiveDescriptors() {
-    if (!supportedPrimitiveDescriptors.empty())
+    if (!supportedPrimitiveDescriptors.empty()) {
         return;
+    }
     dataPrecision = getOriginalInputPrecisionAtPort(0);
-    if (dataPrecision != ov::element::f32 && dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx512_core_bf16)) {
+    if (dataPrecision.is_real() && dataPrecision != ov::element::f32 && ov::with_cpu_x86_bfloat16()) {
         dataPrecision = ov::element::bf16;
     } else {
         dataPrecision = ov::element::f32;
@@ -194,23 +242,12 @@ void Interaction::initSupportedPrimitiveDescriptors() {
     // initialize input ports
     std::vector<PortConfigurator> inPortConfigs;
     for (size_t i = 0; i < getParentEdges().size(); ++i) {
-        inPortConfigs.emplace_back(
-            LayoutType::ncsp,
-            dataPrecision,
-            getInputShapeAtPort(i),
-            false, -1);
+        inPortConfigs.emplace_back(LayoutType::ncsp, dataPrecision, getInputShapeAtPort(i), false, -1);
     }
     // initialize output port
     std::vector<PortConfigurator> outPortConfigs = {
-        PortConfigurator {
-            LayoutType::ncsp,
-            outputDataType,
-            getOutputShapeAtPort(0),
-            false,
-            -1
-        }
-    };
-    //add descriptor
+        PortConfigurator{LayoutType::ncsp, outputDataType, getOutputShapeAtPort(0), false, -1}};
+    // add descriptor
     addSupportedPrimDesc(inPortConfigs, outPortConfigs, impl_desc_type::ref_any);
 }
 
@@ -221,8 +258,7 @@ static inline void cat(uint8_t* out,
                        size_t elemSize) {
     size_t offset = 0;
     for (size_t j = 0; j < feature_sizes.size(); j++) {
-        cpu_memcpy(out + offset * elemSize, in[j] + bs * feature_sizes[j] * elemSize,
-            feature_sizes[j] * elemSize);
+        cpu_memcpy(out + offset * elemSize, in[j] + bs * feature_sizes[j] * elemSize, feature_sizes[j] * elemSize);
         offset += feature_sizes[j];
     }
 }
@@ -235,12 +271,12 @@ static inline void flat_triangle(const uint8_t* in, uint8_t* out, size_t size, s
     }
 }
 
-void Interaction::execRef(dnnl::stream strm) {
+void Interaction::execRef(const dnnl::stream& strm) {
     using namespace dnnl;
-    uint8_t* outFeaturesPtr = getDstDataAtPortAs<uint8_t>(0);
+    auto* outFeaturesPtr = getDstDataAtPortAs<uint8_t>(0);
     std::vector<const uint8_t*> inputPtrs(inputSizes);
     for (uint32_t n = 0; n < inputSizes; n++) {
-        auto inPtr = getSrcDataAtPortAs<const uint8_t>(n);
+        const auto* inPtr = getSrcDataAtPortAs<const uint8_t>(n);
         inputPtrs[n] = inPtr;
     }
     std::unordered_map<int, memory> mem_ags{{DNNL_ARG_SRC, inputMemPtr->getPrimitive()},
@@ -257,23 +293,22 @@ void Interaction::execRef(dnnl::stream strm) {
         // in1 dense feature
         // in2 flatted interaction features
         if (moveFeatureKernel) {
-            jit_move_scale_call_args featArgs;
-            featArgs.p_in = inputPtrs[0] + start * featureSize * dataPrecision.size();
-            featArgs.p_out = outFeaturesPtr + start * outputFeaturesLen * outputDataType.size();
-            featArgs.p_scales = scales;
+            jit_move_scale_call_args featArgs{inputPtrs[0] + (start * featureSize * dataPrecision.size()),
+                                              outFeaturesPtr + (start * outputFeaturesLen * outputDataType.size()),
+                                              scales};
             (*moveFeatureKernel)(&featArgs);
         }
         if (moveInteractKernel) {
-            jit_move_scale_call_args interArgs;
-            interArgs.p_in = flatMemPtr->getData();
-            interArgs.p_out = outFeaturesPtr + (start * outputFeaturesLen + featureSize) * outputDataType.size();
-            interArgs.p_scales = scales;
+            jit_move_scale_call_args interArgs{
+                flatMemPtr->getData(),
+                outFeaturesPtr + ((start * outputFeaturesLen + featureSize) * outputDataType.size()),
+                scales};
             (*moveInteractKernel)(&interArgs);
         }
     }
 }
 
-void Interaction::execute(dnnl::stream strm) {
+void Interaction::execute(const dnnl::stream& strm) {
     execRef(strm);
 }
 
@@ -303,8 +338,7 @@ void Interaction::prepareParams() {
     auto matmul_pd = matmul::primitive_desc(getEngine(), src_md, weights_md, dst_md, matmul_attr);
     prim = matmul(matmul_pd);
     featureSizes.assign(inputSizes, featureSize);
-    auto initMemoryPtr = [&](const ov::element::Type& prc, const intel_cpu::Shape& shape,
-        MemoryPtr& ptr) {
+    auto initMemoryPtr = [&](const ov::element::Type& prc, const intel_cpu::Shape& shape, MemoryPtr& ptr) {
         ptr = std::make_shared<Memory>(getEngine(), intel_cpu::DnnlBlockedMemoryDesc(prc, shape));
     };
     initMemoryPtr(dataPrecision, intel_cpu::Shape{inputSizes, featureSize}, inputMemPtr);
@@ -326,55 +360,61 @@ void Interaction::prepareParams() {
     interJcp.input_size = interactFeatureSize;
 
 #if defined(OPENVINO_ARCH_X86_64)
-    if (mayiuse(cpu_isa_t::avx512_core)) {
-        moveFeatureKernel.reset(new jit_move_scale_kernel<cpu_isa_t::avx512_core>(jcp));
-        moveInteractKernel.reset(new jit_move_scale_kernel<cpu_isa_t::avx512_core>(interJcp));
-    } else if (mayiuse(cpu_isa_t::avx2)) {
-        moveFeatureKernel.reset(new jit_move_scale_kernel<cpu_isa_t::avx2>(jcp));
-        moveInteractKernel.reset(new jit_move_scale_kernel<cpu_isa_t::avx2>(interJcp));
-    } else if (mayiuse(cpu_isa_t::sse41)) {
-        moveFeatureKernel.reset(new jit_move_scale_kernel<cpu_isa_t::sse41>(jcp));
-        moveInteractKernel.reset(new jit_move_scale_kernel<cpu_isa_t::sse41>(interJcp));
+    if (ov::with_cpu_x86_avx512_core()) {
+        moveFeatureKernel = std::make_unique<jit_move_scale_kernel<cpu_isa_t::avx512_core>>(jcp);
+        moveInteractKernel = std::make_unique<jit_move_scale_kernel<cpu_isa_t::avx512_core>>(interJcp);
+    } else if (ov::with_cpu_x86_avx2()) {
+        moveFeatureKernel = std::make_unique<jit_move_scale_kernel<cpu_isa_t::avx2>>(jcp);
+        moveInteractKernel = std::make_unique<jit_move_scale_kernel<cpu_isa_t::avx2>>(interJcp);
+    } else if (ov::with_cpu_x86_sse42()) {
+        moveFeatureKernel = std::make_unique<jit_move_scale_kernel<cpu_isa_t::sse41>>(jcp);
+        moveInteractKernel = std::make_unique<jit_move_scale_kernel<cpu_isa_t::sse41>>(interJcp);
     }
-#endif // OPENVINO_ARCH_X86_64
+#endif  // OPENVINO_ARCH_X86_64
 
     if (moveFeatureKernel && moveInteractKernel) {
         moveFeatureKernel->create_ker();
         moveInteractKernel->create_ker();
     } else {
-        THROW_ERROR("cannot create jit eltwise kernel");
+        CPU_NODE_THROW("cannot create jit eltwise kernel");
     }
 #ifdef CPU_DEBUG_CAPS
     if (prim) {
-        auto pd = prim.get_primitive_desc();
+        const auto* pd = prim.get_primitive_desc();
         DEBUG_LOG("verbose##", getName(), "##", DnnlExtensionUtils::query_pd_info(pd), "\n");
     }
 #endif
 }
 
-void Interaction::executeDynamicImpl(dnnl::stream strm) {
+void Interaction::executeDynamicImpl(const dnnl::stream& strm) {
     execute(strm);
+}
+
+bool Interaction::neverExecute() const {
+    return false;
 }
 
 bool Interaction::isExecutable() const {
     return true;
 }
 
-bool Interaction::isSupportedOperation(const std::shared_ptr<const ov::Node>& op,
-        std::string& errorMessage) noexcept {
+bool Interaction::isSupportedOperation([[maybe_unused]] const std::shared_ptr<const ov::Node>& op,
+                                       std::string& errorMessage) noexcept {
     try {
-        const auto interaction = std::dynamic_pointer_cast<const InteractionNode>(op);
+#if defined(OPENVINO_ARCH_X86_64)
+        const auto interaction = ov::as_type_ptr<const InteractionNode>(op);
         if (!interaction) {
             errorMessage = "Only Interaction operation is supported";
             return false;
         }
+#else
+        errorMessage = "Interaction operation is supported only on X86_64";
+        return false;
+#endif
     } catch (...) {
         return false;
     }
     return true;
 }
 
-
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

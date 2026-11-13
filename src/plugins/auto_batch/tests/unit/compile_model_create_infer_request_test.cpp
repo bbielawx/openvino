@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -38,10 +38,8 @@ public:
     int m_infer_request_num;
 
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<CreateInferRequestTestParams> obj) {
-        int batch_size;
-        int infer_num;
-        std::tie(batch_size, infer_num) = obj.param;
+    static std::string getTestCaseName(const testing::TestParamInfo<CreateInferRequestTestParams>& obj) {
+        const auto& [batch_size, infer_num] = obj.param;
 
         std::string res;
         res = "batch_size_" + std::to_string(batch_size);
@@ -85,7 +83,7 @@ public:
             m_compile_model_with_batch = {m_i_compile_model_with_batch, {}};
         }
 
-        ASSERT_NO_THROW(m_auto_batch_compile_model =
+        OV_ASSERT_NO_THROW(m_auto_batch_compile_model =
                             std::make_shared<MockAutoBatchCompileModel>(m_model->clone(),
                                                                         m_auto_batch_plugin,
                                                                         m_config,

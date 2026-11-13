@@ -11,6 +11,11 @@ on:
       - 'master'
       - 'releases/**'
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
     paths:
       - 'src/bindings/python/**'
       - 'samples/python/**'
@@ -20,17 +25,21 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions: read-all
+
 jobs:
   linters:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
+    if: ${{ github.repository_owner == 'openvinotoolkit' }}
     steps:
       - name: Clone OpenVINO
-        uses: actions/checkout@v4
+        uses: ababushk/checkout@dd591a6a2ac25618db4eda86e7e0d938f88cf01b # cherry_pick_retries
+        timeout-minutes: 15
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.8'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: python -m pip install -r src/bindings/python/requirements_test.txt
@@ -47,7 +56,7 @@ jobs:
           git diff > samples_diff.diff
         working-directory: samples/python
 
-      - uses: actions/upload-artifact@v4
+      - uses: ababushk/upload-artifact@ebc7d74ace101c08868aed05dba2aaf274b9a2c7 # main
         if: failure()
         with:
           name: samples_diff
@@ -65,7 +74,7 @@ jobs:
           git diff > pyopenvino_diff.diff
         working-directory: src/bindings/python/src/openvino
 
-      - uses: actions/upload-artifact@v4
+      - uses: ababushk/upload-artifact@ebc7d74ace101c08868aed05dba2aaf274b9a2c7 # main
         if: failure()
         with:
           name: pyopenvino_diff
@@ -83,7 +92,7 @@ jobs:
           git diff > wheel_diff.diff
         working-directory: src/bindings/python/wheel
 
-      - uses: actions/upload-artifact@v4
+      - uses: ababushk/upload-artifact@ebc7d74ace101c08868aed05dba2aaf274b9a2c7 # main
         if: failure()
         with:
           name: wheel_diff
@@ -100,6 +109,10 @@ jobs:
         run: python -m mypy ./src/openvino --config-file ./setup.cfg
         working-directory: src/bindings/python
 
+      # Run pyright to assert no regressions in type hinting
+      - name: Run pyright on Python API
+        run: python -m pyright --verbose
+
         # layer_tests Flake code-style
       - name: Run flake8 on python tests in openvino/tests/layer_tests
         run: |
@@ -110,5 +123,4 @@ jobs:
                 python -m flake8 "$file" --config= ./setup.cfg
               fi
             fi
-          done            
-
+          done

@@ -1,31 +1,39 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
 #include <node.h>
-#include <string>
-#include <vector>
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+#include <cstddef>
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
+
+#include "cpu_memory.h"
+#include "cpu_types.h"
+#include "graph_context.h"
+#include "memory_desc/blocked_memory_desc.h"
+#include "openvino/core/node.hpp"
+
+namespace ov::intel_cpu::node {
 
 class StridedSlice : public Node {
 public:
-    StridedSlice(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context);
+    StridedSlice(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context);
 
     static bool isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::string& errorMessage) noexcept;
     void getSupportedDescriptors() override;
     void initSupportedPrimitiveDescriptors() override;
     void createPrimitive() override;
-    void execute(dnnl::stream strm) override;
+    void execute(const dnnl::stream& strm) override;
     bool created() const override;
     bool canBeInPlace() const override {
         return false;
     }
 
+    bool neverExecute() const override;
     bool isExecutable() const override;
     bool needShapeInfer() const override;
 
@@ -47,41 +55,43 @@ public:
         VectorDims axesDims;
 
         bool equalDims = false;
-        size_t dataSize = 1lu;
+        size_t dataSize = 1LU;
         int ellipsisMaskCounter = 0;
         bool isStridedSliceOp = true;
+        bool isSliceScatterOp = false;
         int ellipsisPos1 = -1;
         bool hasConstInputs = false;
+        size_t DATA_ID = 0;
+        size_t BEGIN_ID = 1;
+        size_t END_ID = 2;
+        size_t STRIDE_ID = 3;
+        size_t AXES_ID = 4;
+        size_t UPDATES_ID = 1;
     } attrs;
 
 protected:
     bool needPrepareParams() const override;
     void prepareParams() override;
-    void executeDynamicImpl(dnnl::stream strm) override;
+    void executeDynamicImpl(const dnnl::stream& strm) override;
 
 private:
     class StridedSliceExecutor {
     public:
         StridedSliceExecutor(const StridedSliceAttributes& attrs,
                              const std::vector<MemoryCPtr>& srcMemory,
-                             const std::vector<MemoryCPtr>& dstMemory,
-                             const std::string& errorPrefix) : errorPrefix(errorPrefix) {}
-        virtual void exec(const std::vector<MemoryCPtr>& srcMemory,
-                          const std::vector<MemoryCPtr>& dstMemory) = 0;
+                             const std::vector<MemoryCPtr>& dstMemory) {}
+        virtual void exec(const std::vector<MemoryCPtr>& srcMemory, const std::vector<MemoryCPtr>& dstMemory) = 0;
         virtual ~StridedSliceExecutor() = default;
-
-    protected:
-        const std::string errorPrefix;
     };
 
     class StridedSliceCommonExecutor : public StridedSliceExecutor {
     public:
         StridedSliceCommonExecutor(const StridedSliceAttributes& attrs,
                                    const std::vector<MemoryCPtr>& srcMemory,
-                                   const std::vector<MemoryCPtr>& dstMemory,
-                                   const std::string& errorPrefix);
-        void exec(const std::vector<MemoryCPtr>& srcMemory,
-                  const std::vector<MemoryCPtr>& dstMemory) override;
+                                   const std::vector<MemoryCPtr>& dstMemory);
+        void exec(const std::vector<MemoryCPtr>& srcMemory, const std::vector<MemoryCPtr>& dstMemory) override;
+        void execSliceScatter(const std::vector<MemoryCPtr>& srcMemory, const std::vector<MemoryCPtr>& dstMemory);
+        void execStridedSlice(const std::vector<MemoryCPtr>& srcMemory, const std::vector<MemoryCPtr>& dstMemory);
 
     private:
         struct StridedSliceParams {
@@ -91,7 +101,7 @@ private:
             VectorDims dstBlockedDims;
             VectorDims srcStrides;
             VectorDims dstStrides;
-            size_t nDimsForWork = 0lu;
+            size_t nDimsForWork = 0LU;
             bool isOptimized = false;
         };
 
@@ -107,10 +117,11 @@ private:
         StridedSliceParams params;
         VectorDims srcIndices;
         VectorDims dstIndices;
-        size_t nThreads = 0lu;
-        size_t workAmount = 0lu;
-        size_t lastDstDim = 0lu;
-        size_t srcShift = 0lu;
+        size_t nThreads = 0LU;
+        size_t workAmount = 0LU;
+        size_t lastDstDim = 0LU;
+        size_t srcShift = 0LU;
+        size_t m_threads_num = 0LU;
     };
     using executorPtr = std::shared_ptr<StridedSliceExecutor>;
     executorPtr execPtr = nullptr;
@@ -118,22 +129,12 @@ private:
     bool isStrideSpecified = false;
     bool isAxesSpecified = false;
 
-    static constexpr size_t DATA_ID = 0;
-    static constexpr size_t BEGIN_ID = 1;
-    static constexpr size_t END_ID = 2;
-    static constexpr size_t STRIDE_ID = 3;
-    static constexpr size_t AXES_ID = 4;
-
-    bool isConstantInput[AXES_ID + 1] = {false};
+    bool isConstantInput[6] = {false};
     bool shapeHasDataDependency = false;
     bool hasConstAttrInputs = true;
 
     std::vector<MemoryCPtr> srcMemory;
     std::vector<MemoryCPtr> dstMemory;
-
-    std::string errorPrefix;
 };
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

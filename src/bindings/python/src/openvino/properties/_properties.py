@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import sys
 from types import BuiltinFunctionType, ModuleType
-from typing import Callable, Any, Union
+from typing import Any, Union
+from collections.abc import Callable
 
 
 class Property(str):
@@ -16,6 +17,9 @@ class Property(str):
 
     def __call__(self, *args: Any) -> Callable[..., Any]:
         if args is not None:
+            from openvino import Model
+            if args and isinstance(args[0], Model):
+                return self.prop(args[0]._Model__model)
             return self.prop(*args)
         return self.prop()
 

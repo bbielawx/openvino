@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -23,6 +23,15 @@ op::v13::ScaledDotProductAttention::ScaledDotProductAttention(const Output<Node>
                                                               const Output<Node>& scale,
                                                               bool causal)
     : ScaledDotProductAttention({query, key, value, attn_mask, scale}, causal) {}
+
+op::v13::ScaledDotProductAttention::ScaledDotProductAttention(const Output<Node>& query,
+                                                              const Output<Node>& key,
+                                                              const Output<Node>& value,
+                                                              const Output<Node>& attn_mask,
+                                                              const Output<Node>& scale,
+                                                              const Output<Node>& sink,
+                                                              bool causal)
+    : ScaledDotProductAttention({query, key, value, attn_mask, scale, sink}, causal) {}
 
 op::v13::ScaledDotProductAttention::ScaledDotProductAttention(const Output<Node>& query,
                                                               const Output<Node>& key,
@@ -64,7 +73,7 @@ void op::v13::ScaledDotProductAttention::validate_and_infer_types() {
                           "The element type of the input tensor must be a floating-point.");
 
     const auto& input_shapes = ov::util::get_node_input_partial_shapes(*this);
-    const auto& output_shapes = shape_infer(this, input_shapes);
+    const auto output_shapes = shape_infer(this, input_shapes);
     set_output_type(0, out_type, output_shapes[0]);
 }
 

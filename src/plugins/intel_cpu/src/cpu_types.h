@@ -1,21 +1,25 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include "utils/caseless.hpp"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
 using Dim = std::size_t;
 using VectorDims = std::vector<Dim>;
 
-enum class Type {
+std::string dim2str(Dim dim);
+std::string dims2str(const VectorDims& dims);
+
+enum class Type : uint8_t {
     Unknown,
     If,
     Reorder,
@@ -38,6 +42,7 @@ enum class Type {
     NonZero,
     Tile,
     ROIAlign,
+    ROIAlignRotated,
     ROIPooling,
     PSROIPooling,
     BatchToSpace,
@@ -46,6 +51,7 @@ enum class Type {
     Transpose,
     SpaceToBatch,
     SpaceToDepth,
+    SparseFillEmptyRows,
     StridedSlice,
     MemoryOutput,
     MemoryInput,
@@ -57,14 +63,19 @@ enum class Type {
     TensorIterator,
     Convert,
     ColorConvert,
+    Col2Im,
     MVN,
     NormalizeL2,
     ScatterUpdate,
     ScatterElementsUpdate,
     ScatterNDUpdate,
+    StringTensorPack,
+    StringTensorUnpack,
     Interpolate,
     Reduce,
     Broadcast,
+    EmbeddingBagPacked,
+    EmbeddingBagOffsets,
     EmbeddingSegmentsSum,
     EmbeddingBagPackedSum,
     EmbeddingBagOffsetsSum,
@@ -79,6 +90,8 @@ enum class Type {
     ShuffleChannels,
     DFT,
     RDFT,
+    STFT,
+    ISTFT,
     Math,
     CTCLoss,
     Bucketize,
@@ -101,25 +114,45 @@ enum class Type {
     ExperimentalDetectronGenerateProposalsSingleImage,
     ExtractImagePatches,
     GenerateProposals,
+    Identity,
     Inverse,
     NonMaxSuppression,
     MatrixNms,
     MulticlassNms,
     Multinomial,
     Subgraph,
+    SubModel,
     PriorBox,
     PriorBoxClustered,
     Interaction,
-    MHA,
     RandomUniform,
     Unique,
     Ngram,
     ScaledDotProductAttention,
+    PagedAttention,
+    PaKVReorder,
     RoPE,
     CausalMaskPreprocess,
+    LLMMLP,
+    QKVProjection,
+    RMS,
+    SearchSorted,
+    SegmentMax,
+    Histc,
+    LoRA,
+    GatherMatmul,
+    GatedDeltaNet,
+    PagedGatedDeltaNet,
+    SelectiveSSM,
+    PagedSelectiveSSM,
+    PagedCausalConv1D,
+    QSAIndexer,
+    SparseSDPA,
+    PagedQSAIndexer,
+    SparsePA,
 };
 
-enum class Algorithm {
+enum class Algorithm : uint8_t {
     Default,
 
     // Pooling algorithms
@@ -146,7 +179,10 @@ enum class Algorithm {
     EltwiseMultiply,
     EltwiseSubtract,
     EltwiseDivide,
+    EltwiseFloor,
+    EltwiseCeiling,
     EltwiseFloorMod,
+    EltwiseNegative,
     EltwiseMod,
     EltwiseMaximum,
     EltwiseMinimum,
@@ -185,11 +221,24 @@ enum class Algorithm {
     EltwiseRoundHalfAwayFromZero,
     EltwiseErf,
     EltwiseSoftSign,
+    EltwiseErfInv,
     EltwiseLog,
     EltwiseBitwiseAnd,
     EltwiseBitwiseNot,
     EltwiseBitwiseOr,
     EltwiseBitwiseXor,
+    EltwiseBitwiseLeftShift,
+    EltwiseBitwiseRightShift,
+
+    // FullyConnected algorithms
+    FullyConnectedCommon,
+    FullyConnectedCompressed,
+    FullyConnectedQuantized,
+    FullyConnectedQuantizedLegacy,
+
+    // GatherMatmul algorithms
+    GatherMatmulDefault,
+    GatherMatmulCompressed,
 
     // FakeQuantize algorithms
     FQCommon,
@@ -260,9 +309,12 @@ extern const ov::intel_cpu::caseless_unordered_map<std::string, Type> type_to_na
 
 Type TypeFromName(const std::string& type);
 
-std::string NameFromType(const Type type);
+std::string NameFromType(Type type);
+inline std::ostream& operator<<(std::ostream& os, const Type& type) {
+    os << NameFromType(type);
+    return os;
+}
 
-std::string algToString(const Algorithm alg);
+std::string algToString(Algorithm alg);
 
-}  // namespace intel_cpu
-}  // namespace ov
+}  // namespace ov::intel_cpu

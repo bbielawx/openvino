@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,7 +17,7 @@ namespace pass {
  */
 class TRANSFORMATIONS_API PushConstantToSubgraph : public ov::pass::ModelPass {
 public:
-    OPENVINO_RTTI("PushConstantToSubgraph", "0");
+    OPENVINO_MODEL_PASS_RTTI("PushConstantToSubgraph");
     bool run_on_model(const std::shared_ptr<Model>& model) override;
 };
 

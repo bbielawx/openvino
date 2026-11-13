@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -33,7 +33,6 @@ class ReferencePreprocessTest : public testing::TestWithParam<RefPreprocessParam
 public:
     void SetUp() override {
         SKIP_IF_CURRENT_TEST_IS_DISABLED()
-        legacy_compare = true;
         const auto& params = GetParam();
         function = params.function();
         for (const auto& inp : params.inputs) {
@@ -869,7 +868,7 @@ static RefPreprocessParams convert_color_nv12_layout_resize() {
     auto exp_out = std::vector<float> {255, 0, 0, 255,     // R channel
                                        0, 255, 0, 0,       // G channel
                                        0, 0, 255, 0};      // B channel
-    auto out_shape = Shape{1, 2, 2, 3};
+    auto out_shape = Shape{1, 3, 2, 2};
     // clang-format on
     res.inputs.emplace_back(element::u8, input_shape, input);
     res.expected.emplace_back(out_shape, element::f32, exp_out);
@@ -1175,8 +1174,8 @@ static RefPreprocessParams post_convert_color_rgb_to_bgr() {
         return f;
     };
 
-    res.inputs.emplace_back(Shape{2, 3, 1, 1}, element::f32, std::vector<float>{1, 2, 3, 4, 5, 6});
-    res.expected.emplace_back(Shape{2, 3, 1, 1}, element::f32, std::vector<float>{3, 2, 1, 6, 5, 4});
+    res.inputs.emplace_back(Shape{2, 1, 1, 3}, element::f32, std::vector<float>{1, 2, 3, 4, 5, 6});
+    res.expected.emplace_back(Shape{2, 1, 1, 3}, element::f32, std::vector<float>{3, 2, 1, 6, 5, 4});
     return res;
 }
 
@@ -1191,8 +1190,98 @@ static RefPreprocessParams post_convert_color_bgr_to_rgb() {
         return f;
     };
 
-    res.inputs.emplace_back(Shape{2, 3, 1, 1}, element::f32, std::vector<float>{1, 2, 3, 4, 5, 6});
-    res.expected.emplace_back(Shape{2, 3, 1, 1}, element::f32, std::vector<float>{3, 2, 1, 6, 5, 4});
+    res.inputs.emplace_back(Shape{2, 1, 1, 3}, element::f32, std::vector<float>{1, 2, 3, 4, 5, 6});
+    res.expected.emplace_back(Shape{2, 1, 1, 3}, element::f32, std::vector<float>{3, 2, 1, 6, 5, 4});
+    return res;
+}
+
+static RefPreprocessParams post_convert_color_rgb_to_nv12_single_plane() {
+    RefPreprocessParams res("post_convert_color_rgb_to_nv12_single_plane");
+    res.abs_threshold = 2.f;
+    res.rel_threshold = 1.f;
+    res.function = []() {
+        auto f = create_simple_function(element::f32, Shape{1, 2, 2, 3});
+        auto p = PrePostProcessor(f);
+        p.output().model().set_layout("NHWC").set_color_format(ColorFormat::RGB);
+        p.output().postprocess().convert_color(ColorFormat::NV12_SINGLE_PLANE);
+        p.build();
+        return f;
+    };
+
+    // Pure red 2x2: R=255,G=0,B=0 -> Y=82,U=90,V=240
+    res.inputs.emplace_back(Shape{1, 2, 2, 3},
+                            element::f32,
+                            std::vector<float>{255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0});
+    res.expected.emplace_back(Shape{1, 3, 2, 1}, element::f32, std::vector<float>{82, 82, 82, 82, 90, 240});
+    return res;
+}
+
+static RefPreprocessParams post_convert_color_bgr_to_nv12_single_plane() {
+    RefPreprocessParams res("post_convert_color_bgr_to_nv12_single_plane");
+    res.abs_threshold = 2.f;
+    res.rel_threshold = 1.f;
+    res.function = []() {
+        auto f = create_simple_function(element::f32, Shape{1, 2, 2, 3});
+        auto p = PrePostProcessor(f);
+        p.output().model().set_layout("NHWC").set_color_format(ColorFormat::BGR);
+        p.output().postprocess().convert_color(ColorFormat::NV12_SINGLE_PLANE);
+        p.build();
+        return f;
+    };
+
+    // Pure blue via BGR: B=255,G=0,R=0 -> Y=41,U=240,V=110
+    res.inputs.emplace_back(Shape{1, 2, 2, 3},
+                            element::f32,
+                            std::vector<float>{255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0});
+    res.expected.emplace_back(Shape{1, 3, 2, 1}, element::f32, std::vector<float>{41, 41, 41, 41, 240, 110});
+    return res;
+}
+
+static RefPreprocessParams post_convert_color_rgb_to_nv12_two_planes() {
+    RefPreprocessParams res("post_convert_color_rgb_to_nv12_two_planes");
+    res.abs_threshold = 2.f;
+    res.rel_threshold = 1.f;
+    res.function = []() {
+        auto f = create_simple_function(element::f32, Shape{1, 2, 2, 3});
+        auto p = PrePostProcessor(f);
+        p.output().model().set_layout("NHWC").set_color_format(ColorFormat::RGB);
+        p.output().postprocess().convert_color(ColorFormat::NV12_TWO_PLANES);
+        p.build();
+        return f;
+    };
+
+    // Pure red 2x2: R=255,G=0,B=0 -> Y=82,U=90,V=240
+    res.inputs.emplace_back(Shape{1, 2, 2, 3},
+                            element::f32,
+                            std::vector<float>{255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0});
+    // Y plane: [1, 2, 2, 1]
+    res.expected.emplace_back(Shape{1, 2, 2, 1}, element::f32, std::vector<float>{82, 82, 82, 82});
+    // UV plane: [1, 1, 1, 2]
+    res.expected.emplace_back(Shape{1, 1, 1, 2}, element::f32, std::vector<float>{90, 240});
+    return res;
+}
+
+static RefPreprocessParams post_convert_color_bgr_to_nv12_two_planes() {
+    RefPreprocessParams res("post_convert_color_bgr_to_nv12_two_planes");
+    res.abs_threshold = 2.f;
+    res.rel_threshold = 1.f;
+    res.function = []() {
+        auto f = create_simple_function(element::f32, Shape{1, 2, 2, 3});
+        auto p = PrePostProcessor(f);
+        p.output().model().set_layout("NHWC").set_color_format(ColorFormat::BGR);
+        p.output().postprocess().convert_color(ColorFormat::NV12_TWO_PLANES);
+        p.build();
+        return f;
+    };
+
+    // Pure blue via BGR: B=255,G=0,R=0 -> Y=41,U=240,V=110
+    res.inputs.emplace_back(Shape{1, 2, 2, 3},
+                            element::f32,
+                            std::vector<float>{255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0});
+    // Y plane: [1, 2, 2, 1]
+    res.expected.emplace_back(Shape{1, 2, 2, 1}, element::f32, std::vector<float>{41, 41, 41, 41});
+    // UV plane: [1, 1, 1, 2]
+    res.expected.emplace_back(Shape{1, 1, 1, 2}, element::f32, std::vector<float>{240, 110});
     return res;
 }
 
@@ -1230,8 +1319,8 @@ static RefPreprocessParams rgb_to_bgr() {
         return f;
     };
 
-    res.inputs.emplace_back(Shape{2, 3, 1, 1}, element::f32, std::vector<float>{1, 2, 3, 4, 5, 6});
-    res.expected.emplace_back(Shape{2, 3, 1, 1}, element::f32, std::vector<float>{3, 2, 1, 6, 5, 4});
+    res.inputs.emplace_back(Shape{2, 1, 1, 3}, element::f32, std::vector<float>{1, 2, 3, 4, 5, 6});
+    res.expected.emplace_back(Shape{2, 1, 1, 3}, element::f32, std::vector<float>{3, 2, 1, 6, 5, 4});
     return res;
 }
 
@@ -1246,8 +1335,8 @@ static RefPreprocessParams bgr_to_rgb() {
         return f;
     };
 
-    res.inputs.emplace_back(Shape{2, 3, 1, 1}, element::f32, std::vector<float>{1, 2, 3, 4, 5, 6});
-    res.expected.emplace_back(Shape{2, 3, 1, 1}, element::f32, std::vector<float>{3, 2, 1, 6, 5, 4});
+    res.inputs.emplace_back(Shape{2, 1, 1, 3}, element::f32, std::vector<float>{1, 2, 3, 4, 5, 6});
+    res.expected.emplace_back(Shape{2, 1, 1, 3}, element::f32, std::vector<float>{3, 2, 1, 6, 5, 4});
     return res;
 }
 
@@ -1421,6 +1510,10 @@ std::vector<RefPreprocessParams> allPreprocessTests() {
                                             post_convert_layout_by_dims_multi(),
                                             post_convert_color_rgb_to_bgr(),
                                             post_convert_color_bgr_to_rgb(),
+                                            post_convert_color_rgb_to_nv12_single_plane(),
+                                            post_convert_color_bgr_to_nv12_single_plane(),
+                                            post_convert_color_rgb_to_nv12_two_planes(),
+                                            post_convert_color_bgr_to_nv12_two_planes(),
                                             pre_and_post_processing(),
                                             rgb_to_bgr(),
                                             bgr_to_rgb(),

@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -21,7 +21,7 @@ struct experimental_detectron_prior_grid_generator_impl
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::experimental_detectron_prior_grid_generator_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<experimental_detectron_prior_grid_generator_impl>(*this);
+        return make_deep_copy<experimental_detectron_prior_grid_generator_impl, kernel_params_t>(*this);
     }
 
     static kernel_params_t get_kernel_params(const kernel_impl_params& impl_param) {
@@ -31,8 +31,8 @@ struct experimental_detectron_prior_grid_generator_impl
         params.flatten = primitive->flatten;
         params.layer_height = primitive->h ? primitive->h : primitive->featmap_height;
         params.layer_width = primitive->w ? primitive->w : primitive->featmap_width;
-        params.step_x = primitive->stride_x ? primitive->stride_x : static_cast<float>(primitive->image_width) / params.layer_width;
-        params.step_y = primitive->stride_y ? primitive->stride_y : static_cast<float>(primitive->image_height) / params.layer_height;
+        params.step_x = (primitive->stride_x != 0.0f) ? primitive->stride_x : static_cast<float>(primitive->image_width) / params.layer_width;
+        params.step_y = (primitive->stride_y != 0.0f) ? primitive->stride_y : static_cast<float>(primitive->image_height) / params.layer_height;
 
         return params;
     }

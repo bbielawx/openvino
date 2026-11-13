@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -19,12 +19,13 @@ constexpr size_t cSimpleMemCopyOpDivider = 4UL;
 constexpr size_t c3DTransposeBufHeight = 4UL;
 
 size_t GetDivisor(const size_t input_size) {
-    std::vector<size_t> v = {/*32,*/ 16, 8, 4, /*2,*/ 1};
-    auto is_divided = [input_size](size_t i) {
-        return input_size % i == 0;
-    };
-    auto result = std::find_if(begin(v), end(v), is_divided);
-    return *result;
+    for (size_t d : {16, 8, 4, 2}) {
+        if (input_size % d == 0) {
+            return d;
+        }
+    }
+
+    return 1; // Fallback: Any integer divides evenly by 1
 }
 
 bool IsSimpleMemCopyOperation(const permute_params& params) {
@@ -63,11 +64,16 @@ size_t GetTileWidth(const permute_params& params) {
         min_divisor = std::min(min_divisor, cSimpleMemCopyOpDivider);
     }
 
-    // i64 only supports tile size 4
+    // i64 uses a smaller tile to reduce register/SLM pressure, but only if
+    // the resulting subgroup size is supported by the platform (Xe2+ lacks SIMD8).
     if ((input_type == Datatype::INT64) || (output_type == Datatype::INT64)) {
-        min_divisor = min_divisor / 2;
+        size_t halved = min_divisor >= 4 ? min_divisor / 2 : min_divisor;
+        const auto& supported = params.engineInfo.supportedSimdSizes;
+        if (std::any_of(supported.begin(), supported.end(), [halved](size_t s) { return s == halved; }) || supported.empty()) {
+            min_divisor = halved;
+        }
     }
-    if (input_type == Datatype::F16) {
+    if (input_type == Datatype::F16 || input_type == Datatype::BF16) {
         min_divisor = min_divisor * 2;
     }
     if (input_type == Datatype::INT8 || input_type == Datatype::UINT8) {
@@ -77,7 +83,7 @@ size_t GetTileWidth(const permute_params& params) {
     if (params.inputs[0].X().v == 1) {
         return std::min(params.inputs[0].Y().v, min_divisor);
     }
-    return std::min(params.inputs[0].X().v, min_divisor);
+    return std::min(GetDivisor(params.inputs[0].X().v), min_divisor);
 }
 
 size_t GetTileSize(const permute_params& params) {
@@ -89,12 +95,14 @@ size_t GetTileSize(const permute_params& params) {
 ParamsKey PermuteKernel_f_y_axes::GetSupportedKey() const {
     ParamsKey k;
     k.EnableInputDataType(Datatype::F16);
+    k.EnableInputDataType(Datatype::BF16);
     k.EnableInputDataType(Datatype::F32);
     k.EnableInputDataType(Datatype::INT8);
     k.EnableInputDataType(Datatype::UINT8);
     k.EnableInputDataType(Datatype::INT32);
     k.EnableInputDataType(Datatype::INT64);
     k.EnableOutputDataType(Datatype::F16);
+    k.EnableOutputDataType(Datatype::BF16);
     k.EnableOutputDataType(Datatype::F32);
     k.EnableOutputDataType(Datatype::INT8);
     k.EnableOutputDataType(Datatype::UINT8);
@@ -129,9 +137,9 @@ JitConstants PermuteKernel_f_y_axes::GetJitConstants(const permute_params& param
     }
 
     const size_t tile_width = GetTileWidth(params);
-    const size_t vector_size = std::min(tile_width, static_cast<size_t>(4));
     const size_t tile_size = GetTileSize(params);
-    const size_t j_times = tile_size / vector_size;
+    const size_t vector_size = IsSimpleMemCopyOperation(params) ? std::min(tile_width, static_cast<size_t>(4)): std::min(tile_size, static_cast<size_t>(4));
+    const size_t j_times = IsSimpleMemCopyOperation(params) ? tile_width / vector_size : tile_size / vector_size;
     const size_t feature_block_size = GetFeatureBlockSize(params);
     jit.AddConstant(MakeJitConstant("BLOCK_SIZE", tile_width));
     jit.AddConstant(MakeJitConstant("VEC_SIZE", vector_size));
@@ -145,10 +153,15 @@ JitConstants PermuteKernel_f_y_axes::GetJitConstants(const permute_params& param
         jit.AddConstant(MakeJitConstant("SUB_GROUP_SIZE", subgroup_size));
     }
 
+    jit.Merge(MakeTypeJitConstants(params.inputs[0].GetDType(), "ACCUMULATOR"));
+
     if (!params.fused_ops.empty()) {
-        const std::vector<std::string> original_output_order = {"b_idx", "f_idx", "y_idx", "x_idx"};
+        const std::vector<std::string> original_output_order = {"b_idx", "f_out_idx", "y_out_idx", "x_idx"};
         const FusedOpsConfiguration conf_scalar = {"", original_output_order, "res", params.inputs[0].GetDType(), 1};
-        const FusedOpsConfiguration conf_vec = {"_VEC", original_output_order, "res", params.inputs[0].GetDType(), vector_size};
+        Tensor::DataChannelName channel = (IsSimpleMemCopyOperation(params) || Is3DTranspose(params)) ? Tensor::DataChannelName::X \
+                                          : Tensor::DataChannelName::Y;
+        const FusedOpsConfiguration conf_vec = {"_VEC", original_output_order, "res", params.inputs[0].GetDType(), vector_size, LoadType::LT_UNALIGNED, \
+                                                BoundaryCheck::ENABLED, IndexType::TENSOR_COORD, channel};
         jit.Merge(MakeFusedOpsJitConstants(params, {conf_scalar, conf_vec}));
     }
     return jit;
@@ -192,36 +205,39 @@ CommonDispatchData PermuteKernel_f_y_axes::SetDefault(const permute_params& para
 
 bool PermuteKernel_f_y_axes::Validate(const Params& p) const {
     if (!Parent::Validate(p)) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     const auto is_swapping_f_with_y = [](const std::vector<uint16_t>& order) {
         // Target transform: Swap feature with y
-        // OV order:    0 2 1 3 => bfyx -> byfx
+        // IE order:    0 2 1 3 => bfyx -> byfx
         // cldnn order: 0 3 2 1 => bfxy -> byxf
         if (order.size() != 4) {
             return false;
         }
-        if (order[0] != 0 || order[1] != 3 || order[2] != 2 || order[3] != 1) {
-            return false;
-        }
-        return true;
+        return order[0] == 0 && order[1] == 3 && order[2] == 2 && order[3] == 1;
     };
 
     const auto& params = dynamic_cast<const permute_params&>(p);
     const auto& in = params.inputs[0];
     const auto in_layout = in.GetLayout();
+    const auto& out = params.outputs[0];
+    const auto& out_layout = out.GetLayout();
 
     const auto feature_div = GetDivisor(in.Feature().v);
     const auto y_div = GetDivisor(in.Y().v);
     if (feature_div == 1 || y_div == 1) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
     if (in.X().v > 1 && GetDivisor(in.X().v) == 1) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
     if (!is_swapping_f_with_y(params.order)) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
+
+    if (in_layout != out_layout) {
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     // Accept only supported blocked layouts and SIMD sizes.
@@ -229,9 +245,9 @@ bool PermuteKernel_f_y_axes::Validate(const Params& p) const {
         const auto feature_block_size = GetFeatureBlockSize(params);
         const auto tile_size = GetTileSize(params);
         const auto subgroup_size = Is3DTranspose(params) ? feature_block_size : tile_size;
-        if (!(IsSIMDSizeSupported(params.engineInfo, subgroup_size) &&
-              (in_layout == DataLayout::b_fs_yx_fsv32 || in_layout == DataLayout::b_fs_yx_fsv16))) {
-            return false;
+        if (!IsSIMDSizeSupported(params.engineInfo, subgroup_size) ||
+              (in_layout != DataLayout::b_fs_yx_fsv32 && in_layout != DataLayout::b_fs_yx_fsv16)) {
+            DO_NOT_USE_THIS_KERNEL(p.layerID);
         }
     }
 
@@ -241,5 +257,4 @@ bool PermuteKernel_f_y_axes::Validate(const Params& p) const {
 KernelsPriority PermuteKernel_f_y_axes::GetKernelsPriority(const Params& /*params*/) const {
     return FORCE_PRIORITY_3;
 }
-
 }  // namespace kernel_selector

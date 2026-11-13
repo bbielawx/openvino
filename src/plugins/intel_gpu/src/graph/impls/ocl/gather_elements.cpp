@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -19,24 +19,27 @@ static inline kernel_selector::gather_elements_axis convert_axis(int64_t axis, s
         case 0: return kernel_selector::gather_elements_axis::BATCH;
         case 1: return kernel_selector::gather_elements_axis::FEATURE;
         case 2:
-            if (rank == 6)
+            if (rank == 6) {
                 return kernel_selector::gather_elements_axis::W;
-            else if (rank == 5)
+            } else if (rank == 5) {
                 return kernel_selector::gather_elements_axis::Z;
-            else
+            } else {
                 return kernel_selector::gather_elements_axis::Y;
+            }
         case 3:
-            if (rank == 6)
+            if (rank == 6) {
                 return kernel_selector::gather_elements_axis::Z;
-            else if (rank == 5)
+            } else if (rank == 5) {
                 return kernel_selector::gather_elements_axis::Y;
-            else
+            } else {
                 return kernel_selector::gather_elements_axis::X;
+            }
         case 4:
-            if (rank == 6)
+            if (rank == 6) {
                 return kernel_selector::gather_elements_axis::Y;
-            else
+            } else {
                 return kernel_selector::gather_elements_axis::X;
+            }
         case 5: return kernel_selector::gather_elements_axis::X;
         default: OPENVINO_THROW("Incorrect gather_elements axis.");
     }
@@ -51,12 +54,12 @@ struct gather_elements_impl : typed_primitive_impl_ocl<gather_elements> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::gather_elements_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<gather_elements_impl>(*this);
+        return make_deep_copy<gather_elements_impl, kernel_params_t>(*this);
     }
 
     void load(BinaryInputBuffer& ib) override {
         parent::load(ib);
-        if (is_dynamic()) {
+        if (is_dynamic() && !_kernel_data.kernelName.empty()) {
             auto& kernel_selector = kernel_selector_t::Instance();
             auto kernel_impl = kernel_selector.GetImplementation(_kernel_data.kernelName);
             kernel_impl->GetUpdateDispatchDataFunc(_kernel_data);
@@ -75,8 +78,13 @@ struct gather_elements_impl : typed_primitive_impl_ocl<gather_elements> {
     }
 
     void update_dispatch_data(const kernel_impl_params& impl_param) override {
-       auto kernel_params = get_kernel_params(impl_param, true);
-       (_kernel_data.update_dispatch_data_func)(kernel_params, _kernel_data);
+        // If model loaded from cache, params are not initialized, so we create a new object and reuse it in the future
+        if (_kernel_data.params == nullptr) {
+            _kernel_data.params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true));
+        }
+
+        update_shapes(*_kernel_data.params, impl_param);
+        (_kernel_data.update_dispatch_data_func)(*_kernel_data.params, _kernel_data);
     }
 };
 
@@ -93,6 +101,8 @@ attach_gather_elements_impl::attach_gather_elements_impl() {
 
     auto formats = {
         format::bfyx,
+        format::b_fs_yx_fsv16,
+        format::b_fs_zyx_fsv16,
         format::bfzyx,
         format::bfwzyx
     };

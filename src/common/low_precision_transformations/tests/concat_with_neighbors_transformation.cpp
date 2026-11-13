@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -27,6 +27,8 @@
 #include "ov_lpt_models/concat.hpp"
 #include "ov_lpt_models/common/fake_quantize_on_data.hpp"
 #include "simple_low_precision_transformer.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/convolution.hpp"
 
 using namespace testing;
 using namespace ov;
@@ -52,7 +54,6 @@ public:
     ov::builder::subgraph::FakeQuantizeOnData fakeQuantize3;
     ov::element::Type precisionBeforeOp;
     ov::builder::subgraph::DequantizationOperations dequantizationBefore;
-    ov::element::Type precisionAfterOp;
     ov::builder::subgraph::DequantizationOperations dequantizationAfter1;
     ov::builder::subgraph::DequantizationOperations dequantizationAfter2;
 };
@@ -129,7 +130,6 @@ public:
             testValues.result.fakeQuantize3,
             testValues.result.precisionBeforeOp,
             testValues.result.dequantizationBefore,
-            testValues.result.precisionAfterOp,
             testValues.result.dequantizationAfter1,
             testValues.result.dequantizationAfter2,
             testValues.neighborType,
@@ -184,7 +184,6 @@ const std::vector<ConcatTransformationTestValues> testValues = {
             { 256ul, ov::Shape({}), {0.f}, {2.55f}, {0.f}, {255.f} },
             ov::element::u8,
             {{}, {}, {}},
-            ov::element::u8,
             { ov::element::f32, {}, {{ 0.01f, 0.01f, 0.01f, 0.005f, 0.005f, 0.005f }} },
             { ov::element::f32, {}, {{ 0.005f, 0.005f, 0.005f, 0.00333f, 0.00333f, 0.00333f }} }
         },
@@ -206,7 +205,6 @@ const std::vector<ConcatTransformationTestValues> testValues = {
             { 256ul, ov::Shape({}), {0.f}, {2.55f}, {0.f}, {255.f} },
             ov::element::u8,
             {{}, {}, {}},
-            ov::element::u8,
             { ov::element::f32, {}, {{ 0.01f, 0.01f, 0.01f, 0.005f, 0.005f, 0.005f }} },
             { ov::element::f32, {}, {{ 0.005f, 0.005f, 0.005f, 0.00333f, 0.00333f, 0.00333f }} }
         },
@@ -228,7 +226,6 @@ const std::vector<ConcatTransformationTestValues> testValues = {
             { 256ul, ov::Shape({}), {1.275f}, {2.55f}, {0.f}, {255.f} },
             ov::element::u8,
             {{}, {}, {}},
-            ov::element::u8,
             { ov::element::f32, {{ 0.f, 0.f, 0.f, -255.f, -255.f, -255.f }}, {{ 0.01f, 0.01f, 0.01f, 0.005f, 0.005f, 0.005f }} },
             { ov::element::f32, { -255.f }, { 0.005f } }
         },
@@ -250,7 +247,6 @@ const std::vector<ConcatTransformationTestValues> testValues = {
             { 256ul, ov::Shape({}), {-1.28f / 3.f}, {1.27f / 3.f}, {-128.f}, {127.f} },
             ov::element::i8,
             {{}, {}, {}},
-            ov::element::i8,
             { ov::element::f32, {}, {{ 0.01f, 0.01f, 0.01f, 0.005f, 0.005f, 0.005f }} },
             { ov::element::f32, {}, {{ 0.005f, 0.005f, 0.005f, 0.00333f, 0.00333f, 0.00333f }} }
         },
@@ -272,7 +268,6 @@ const std::vector<ConcatTransformationTestValues> testValues = {
             { 256ul, ov::Shape({}), {-1.28f / 3.f}, {1.27f / 3.f}, {-128.f}, {127.f} },
             ov::element::i8,
             {{}, {}, {}},
-            ov::element::i8,
             { ov::element::f32, {}, {{ 0.01f, 0.01f, 0.01f, 0.005f, 0.005f, 0.005f }} },
             { ov::element::f32, {}, {{ 0.005f, 0.005f, 0.005f, 0.00333f, 0.00333f, 0.00333f }} }
         },
@@ -294,7 +289,6 @@ const std::vector<ConcatTransformationTestValues> testValues = {
             { 256ul, ov::Shape({}), {-1.28f}, {1.27f}, {-128.f}, {127.f} },
             ov::element::i8,
             {{}, {}, {}},
-            ov::element::i8,
             { ov::element::f32, {{ -128.f, -128.f, -128.f, 0.f, 0.f, 0.f }}, { 0.01f } },
             { ov::element::f32, {}, { 0.01f } }
         },
@@ -316,7 +310,6 @@ const std::vector<ConcatTransformationTestValues> testValues = {
             { 256ul, ov::Shape({}), {-1.28f}, {1.27f}, {-128.f}, {127.f} },
             ov::element::f32,
             {{}, {}, {}},
-            ov::element::f32,
             { {}, {{ -128.f, -128.f, -128.f, 0.f, 0.f, 0.f }}, { 0.01f } },
             { {}, {}, { 0.01f } }
         },
@@ -339,7 +332,6 @@ const std::vector<ConcatTransformationTestValues> testValues = {
             {},
             ov::element::u8,
             {{}, {}, {}},
-            ov::element::u8,
             {
                 {},
                 {{ 128.f, 128.f, 128.f, 128.f, 128.f, 128.f }, ov::element::f32, { 1, 6, 1, 1 }, false},

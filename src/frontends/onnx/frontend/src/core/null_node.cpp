@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,18 +8,14 @@
 
 #include "openvino/core/node.hpp"
 
-namespace ov {
-namespace frontend {
-namespace onnx {
+namespace ov::frontend::onnx {
 std::shared_ptr<ov::Node> NullNode::clone_with_new_inputs(const ov::OutputVector& /* new_args */) const {
     return std::make_shared<NullNode>();
 }
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::onnx
 
 bool ov::op::util::is_null(const ov::Node* node) {
-    return dynamic_cast<const ov::frontend::onnx::NullNode*>(node) != nullptr;
+    return ov::as_type<const ov::frontend::onnx::NullNode>(node) != nullptr;
 }
 
 bool ov::op::util::is_null(const std::shared_ptr<ov::Node>& node) {

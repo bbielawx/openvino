@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,7 +17,7 @@ class FullyConnectedKernelBase : public WeightBiasKernelBase {
 public:
     using WeightBiasKernelBase::WeightBiasKernelBase;
     using FusedOpDesc = fused_operation_desc;
-    virtual ~FullyConnectedKernelBase() {}
+    ~FullyConnectedKernelBase() override = default;
 
     struct DispatchData : public CommonDispatchData {
         uint32_t unit_byte_size = 0;
@@ -34,6 +34,7 @@ public:
         uint32_t rg_count = 0;
 
         bool use_slm = false;
+        uint32_t outer_n = 0;
 
         // Gemm style params
         uint32_t tile_m = 0;

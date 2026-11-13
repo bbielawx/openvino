@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,8 +20,6 @@ struct arg_max_min_params : public base_params {
     uint32_t topK = 1;
     uint32_t outputs_num = 1;
     bool values_first = false;
-    bool has_second_output = false;
-    bool use_multiple_outputs = false;
     bool stable = false;
 
     ParamsKey GetParamsKey() const override {
@@ -38,7 +36,7 @@ struct arg_max_min_params : public base_params {
 class ArgMaxMinKernelBase : public KernelBaseOpenCL {
 public:
     using KernelBaseOpenCL::KernelBaseOpenCL;
-    virtual ~ArgMaxMinKernelBase() {}
+    ~ArgMaxMinKernelBase() override = default;
 
     struct DispatchData : public CommonDispatchData {
     };

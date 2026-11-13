@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import re
@@ -11,7 +11,7 @@ import tensorflow as tf
 from openvino.frontend import OpConversionFailure
 
 from common import constants
-from common.tf_layer_test_class import save_to_pb
+from common.utils.tf_utils import save_to_pb
 
 
 @tf.function(
@@ -83,7 +83,7 @@ class TestUnsupportedOps(unittest.TestCase):
         model = create_if_net(self.tmp_dir)
 
         with self.assertRaisesRegex(OpConversionFailure,
-                                    ".*Internal error, no translator found for operation\(s\): WriteFile.*"):
+                                    ".*No conversion rule found for operations: WriteFile.*"):
             convert_model(model)
 
     @pytest.mark.nightly
@@ -94,5 +94,5 @@ class TestUnsupportedOps(unittest.TestCase):
         model = create_part_call_net(self.tmp_dir)
 
         with self.assertRaisesRegex(OpConversionFailure,
-                                    '.*Internal error, no translator found for operation\(s\): WriteFile.*'):
+                                    '.*No conversion rule found for operations: WriteFile.*'):
             convert_model(model)

@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
@@ -10,7 +10,7 @@ class TestPad(PytorchLayerTest):
     def _prepare_input(self, ndim=4, dtype="float32"):
         import numpy as np
         input_5d_shape = [1, 3, 14, 14, 18]
-        return (np.random.randn(*input_5d_shape[:ndim]).astype(dtype),)
+        return (self.random.randn(*input_5d_shape[:ndim], dtype=dtype),)
 
     def create_model(self, pads, mode, value=None):
         import torch
@@ -26,9 +26,8 @@ class TestPad(PytorchLayerTest):
             def forward(self, x):
                 return F.pad(x, self.pads, mode=self.mode, value=self.value)
 
-        ref_net = None
 
-        return aten_pad(pads, mode, value), ref_net, "aten::pad"
+        return aten_pad(pads, mode, value), "aten::pad"
 
     @pytest.mark.parametrize("pads,mode,value,dtype", [
         ((1, 2, 3, 4), "reflect", None, "float32"),
@@ -110,11 +109,32 @@ class TestPad(PytorchLayerTest):
                    kwargs_to_prepare_input={"ndim": 2, "dtype": dtype}, trace_model=True)
 
 
+class TestPadDynamicWindow(PytorchLayerTest):
+    def _prepare_input(self):
+        return (self.random.randn(1, 3, 7, 7),)
+
+    def create_model(self):
+        import torch
+
+        class PadDynamicWindow(torch.nn.Module):
+            def forward(self, x):
+                window = x.shape[-1]
+                pad = (window - x.shape[-1] % window) % window
+                return torch.nn.functional.pad(x, (0, pad))
+
+        return PadDynamicWindow(), "aten::pad"
+
+    @pytest.mark.precommit
+    @pytest.mark.nightly
+    def test_pad_dynamic_window(self, ie_device, precision, ir_version):
+        self._test(*self.create_model(), ie_device, precision, ir_version, trace_model=True)
+
+
 class TestPadListPaddingings(PytorchLayerTest):
     def _prepare_input(self, ndim=4, pad_w=0, pad_h=0, dtype="float32"):
         import numpy as np
         input_5d_shape = [1, 3, 14, 14, 18]
-        return (np.random.randn(*input_5d_shape[:ndim]).astype(dtype), np.array(pad_w, dtype=np.int32), np.array(pad_h, dtype=np.int32))
+        return (self.random.randn(*input_5d_shape[:ndim], dtype=dtype), np.array(pad_w, dtype=np.int32), np.array(pad_h, dtype=np.int32))
 
     def create_model(self, mode, value=None):
         import torch
@@ -129,9 +149,8 @@ class TestPadListPaddingings(PytorchLayerTest):
             def forward(self, x, pad_w: int, pad_h: int):
                 return F.pad(x, [pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2], value=self.value)
 
-        ref_net = None
 
-        return aten_pad(mode, value), ref_net, "aten::pad"
+        return aten_pad(mode, value), "aten::pad"
 
     @pytest.mark.parametrize("pad_w,pad_h,mode,value,dtype", [
         (2, 0, "reflect", None, "float32"),
@@ -206,7 +225,7 @@ class TestReflectionPad(PytorchLayerTest):
     def _prepare_input(self, ndim=4, dtype="float32"):
         import numpy as np
         input_5d_shape = [1, 3, 14, 14, 18]
-        return (np.random.randn(*input_5d_shape[:ndim]).astype(dtype),)
+        return (self.random.randn(*input_5d_shape[:ndim], dtype=dtype),)
 
     def create_model(self, pads):
         import torch
@@ -229,7 +248,7 @@ class TestReflectionPad(PytorchLayerTest):
                 return self.pad(x)
 
         # it will be a reflection_pad in export, but not in TS
-        return aten_pad(pads), None, "aten::pad"
+        return aten_pad(pads), "aten::pad"
 
     @pytest.mark.parametrize("dtype", ["float32", "float64", "int32"])
     @pytest.mark.parametrize("pads", [
@@ -241,6 +260,5 @@ class TestReflectionPad(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_reflection_padnd(self, pads, dtype, ie_device, precision, ir_version):
         ndim = len(pads) // 2 + 2
-        print(ndim)
         self._test(*self.create_model(pads), ie_device, precision, ir_version,
                    kwargs_to_prepare_input={"ndim": ndim, "dtype": dtype})

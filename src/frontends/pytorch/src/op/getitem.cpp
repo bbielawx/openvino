@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,10 +9,7 @@
 #include "pt_framework_node.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -23,10 +20,9 @@ OutputVector translate_getitem(const NodeContext& context) {
     PYTORCH_OP_CONVERSION_CHECK(!idx_type.is<type::Str>(),
                                 "String index in aten::__getitem__ means dict input, this is not supported.");
     if (ov::as_type_ptr<ov::op::util::FrameworkNode>(input.get_node_shared_ptr())) {
-        PYTORCH_OP_CONVERSION_CHECK(!cast_fw_node(input.get_node_shared_ptr(), "aten::split"),
-                                    "special case for aten::__getitem__");
-        PYTORCH_OP_CONVERSION_CHECK(!cast_fw_node(input.get_node_shared_ptr(), "aten::chunk"),
-                                    "special case for aten::__getitem__");
+        PYTORCH_OP_CONVERSION_CHECK(
+            !cast_fw_node(input.get_node_shared_ptr(), {"aten::split", "aten::chunk", "aten::unsafe_chunk"}),
+            "special case for aten::__getitem__");
         const auto&& list_elems = get_list_as_outputs(input);
         auto getitem_idx = context.const_input<int64_t>(1);
         if (getitem_idx < 0) {
@@ -49,7 +45,4 @@ OutputVector translate_getitem(const NodeContext& context) {
     return {context.mark_node(std::make_shared<v8::Gather>(input, getitem_idx, zero))};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

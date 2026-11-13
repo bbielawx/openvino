@@ -1,21 +1,43 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <gtest/gtest.h>
 
 #include "common_test_utils/ov_test_utils.hpp"
-#include "openvino/opsets/opset10.hpp"
-#include "openvino/opsets/opset2.hpp"
+#include "openvino/op/add.hpp"
+#include "openvino/op/broadcast.hpp"
+#include "openvino/op/convert.hpp"
+#include "openvino/op/divide.hpp"
+#include "openvino/op/exp.hpp"
+#include "openvino/op/fake_quantize.hpp"
+#include "openvino/op/greater.hpp"
+#include "openvino/op/less.hpp"
+#include "openvino/op/matmul.hpp"
+#include "openvino/op/maximum.hpp"
+#include "openvino/op/multiply.hpp"
+#include "openvino/op/power.hpp"
+#include "openvino/op/random_uniform.hpp"
+#include "openvino/op/range.hpp"
+#include "openvino/op/reduce_mean.hpp"
+#include "openvino/op/reduce_sum.hpp"
+#include "openvino/op/reshape.hpp"
+#include "openvino/op/sqrt.hpp"
+#include "openvino/op/tile.hpp"
+#include "openvino/op/unsqueeze.hpp"
+#include "openvino/opsets/opset10_decl.hpp"
+#include "openvino/opsets/opset2_decl.hpp"
 #include "openvino/pass/manager.hpp"
+#include "transformations/convert_precision.hpp"
 #include "transformations/fp16_compression/mark_subgraphs_to_keep_in_mixed_precision.hpp"
-#include "transformations/rt_info/disable_fp16_compression.hpp"
+#include "transformations/rt_info/disable_precision_conversion.hpp"
 
 using namespace testing;
 using namespace ov;
 using namespace std;
 using namespace ov::opset10;
 
+namespace v0 = ov::op::v0;
 TEST(TransformationTests, keep_precission_sensitive_fp32_1) {
     shared_ptr<Model> model, model_ref;
     pass::Manager manager;
@@ -31,7 +53,7 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_1) {
         auto mul_1 = make_shared<Multiply>(reduce_sum_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -50,13 +72,13 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_1) {
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
         // marking nodes to be kept in fp32 for mixed precision
-        disable_fp16_compression(exp_1);
-        disable_fp16_compression(reduce_sum_1);
-        disable_fp16_compression(mul_1);
-        disable_fp16_compression(factor_const);
-        disable_fp16_compression(factor_const_decompressed);
+        disable_conversion(exp_1, element::f16);
+        disable_conversion(reduce_sum_1, element::f16);
+        disable_conversion(mul_1, element::f16);
+        disable_conversion(factor_const, element::f16);
+        disable_conversion(factor_const_decompressed, element::f16);
 
-        model_ref = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model_ref = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
     }
 
     const FunctionsComparator func_comparator =
@@ -83,7 +105,7 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_with_reducemean) {
         auto mul_1 = make_shared<Multiply>(reduce_sum_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -102,13 +124,13 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_with_reducemean) {
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
         // marking nodes to be kept in fp32 for mixed precision
-        disable_fp16_compression(exp_1);
-        disable_fp16_compression(reduce_mean_1);
-        disable_fp16_compression(mul_1);
-        disable_fp16_compression(factor_const);
-        disable_fp16_compression(factor_const_decompressed);
+        disable_conversion(exp_1, element::f16);
+        disable_conversion(reduce_mean_1, element::f16);
+        disable_conversion(mul_1, element::f16);
+        disable_conversion(factor_const, element::f16);
+        disable_conversion(factor_const_decompressed, element::f16);
 
-        model_ref = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model_ref = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
     }
 
     const FunctionsComparator func_comparator =
@@ -136,7 +158,7 @@ TEST(TransformationTests, MarkSugraphsToKeepInMixedPrecision_reducesum_without_e
     auto mul_1 = make_shared<Multiply>(reduce_sum_1, factor_const_decompressed);
     auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-    model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+    model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
     model_ref = model->clone();
 
     manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
@@ -170,7 +192,7 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_2) {
         auto mul_1 = make_shared<Multiply>(reduce_sum_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -192,14 +214,14 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_2) {
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
         // marking nodes to be kept in fp32 for mixed precision
-        disable_fp16_compression(exp_1);
-        disable_fp16_compression(reduce_sum_1);
-        disable_fp16_compression(mul_1);
-        disable_fp16_compression(unsqueeze_1);
-        disable_fp16_compression(factor_const);
-        disable_fp16_compression(factor_const_decompressed);
+        disable_conversion(exp_1, ov::element::f16);
+        disable_conversion(reduce_sum_1, ov::element::f16);
+        disable_conversion(mul_1, ov::element::f16);
+        disable_conversion(unsqueeze_1, ov::element::f16);
+        disable_conversion(factor_const, ov::element::f16);
+        disable_conversion(factor_const_decompressed, ov::element::f16);
 
-        model_ref = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model_ref = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
     }
 
     const FunctionsComparator func_comparator =
@@ -230,7 +252,7 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_3) {
         auto mul_1 = make_shared<Multiply>(add_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -252,15 +274,15 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_3) {
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
         // marking nodes to be kept in fp32 for mixed precision
-        disable_fp16_compression(exp_1);
-        disable_fp16_compression(reduce_sum_1);
-        disable_fp16_compression(mul_1);
-        disable_fp16_compression(add_1);
-        disable_fp16_compression(addition_const);
-        disable_fp16_compression(factor_const);
-        disable_fp16_compression(factor_const_decompressed);
+        disable_conversion(exp_1, ov::element::f16);
+        disable_conversion(reduce_sum_1, ov::element::f16);
+        disable_conversion(mul_1, ov::element::f16);
+        disable_conversion(add_1, ov::element::f16);
+        disable_conversion(addition_const, ov::element::f16);
+        disable_conversion(factor_const, ov::element::f16);
+        disable_conversion(factor_const_decompressed, ov::element::f16);
 
-        model_ref = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model_ref = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
     }
 
     const FunctionsComparator func_comparator =
@@ -321,7 +343,7 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_7) {
         auto div_1 = make_shared<Divide>(reduce_sum_4, add_1);
         auto matmul_1 = make_shared<MatMul>(div_1, input_4, false, true);
 
-        model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2, input_3, input_4});
+        model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2, input_3, input_4});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -373,36 +395,36 @@ TEST(TransformationTests, keep_precission_sensitive_fp32_7) {
         auto matmul_1 = make_shared<MatMul>(div_1, input_4, false, true);
 
         // marking nodes to be kept in fp32 for mixed precision
-        disable_fp16_compression(mul_1);
-        disable_fp16_compression(mul_2);
-        disable_fp16_compression(mul_3);
-        disable_fp16_compression(mul_4);
-        disable_fp16_compression(mul_5);
-        disable_fp16_compression(unsqueeze_1);
-        disable_fp16_compression(unsqueeze_2);
-        disable_fp16_compression(unsqueeze_3);
-        disable_fp16_compression(reduce_sum_1);
-        disable_fp16_compression(reduce_sum_2);
-        disable_fp16_compression(reduce_sum_3);
-        disable_fp16_compression(reduce_sum_4);
-        disable_fp16_compression(exp_1);
-        disable_fp16_compression(exp_2);
-        disable_fp16_compression(tile);
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(add_1);
-        disable_fp16_compression(broadcast);
-        disable_fp16_compression(div_1);
+        disable_conversion(mul_1, ov::element::f16);
+        disable_conversion(mul_2, ov::element::f16);
+        disable_conversion(mul_3, ov::element::f16);
+        disable_conversion(mul_4, ov::element::f16);
+        disable_conversion(mul_5, ov::element::f16);
+        disable_conversion(unsqueeze_1, ov::element::f16);
+        disable_conversion(unsqueeze_2, ov::element::f16);
+        disable_conversion(unsqueeze_3, ov::element::f16);
+        disable_conversion(reduce_sum_1, ov::element::f16);
+        disable_conversion(reduce_sum_2, ov::element::f16);
+        disable_conversion(reduce_sum_3, ov::element::f16);
+        disable_conversion(reduce_sum_4, ov::element::f16);
+        disable_conversion(exp_1, ov::element::f16);
+        disable_conversion(exp_2, ov::element::f16);
+        disable_conversion(tile, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(add_1, ov::element::f16);
+        disable_conversion(broadcast, ov::element::f16);
+        disable_conversion(div_1, ov::element::f16);
 
-        disable_fp16_compression(factor_1);
-        disable_fp16_compression(factor_2);
+        disable_conversion(factor_1, ov::element::f16);
+        disable_conversion(factor_2, ov::element::f16);
 
-        disable_fp16_compression(broadcast_to_shape);
-        disable_fp16_compression(tile_shape);
-        disable_fp16_compression(const_unsqueeze_1);
-        disable_fp16_compression(const_unsqueeze_2);
-        disable_fp16_compression(const_unsqueeze_3);
+        disable_conversion(broadcast_to_shape, ov::element::f16);
+        disable_conversion(tile_shape, ov::element::f16);
+        disable_conversion(const_unsqueeze_1, ov::element::f16);
+        disable_conversion(const_unsqueeze_2, ov::element::f16);
+        disable_conversion(const_unsqueeze_3, ov::element::f16);
 
-        model_ref = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2, input_3, input_4});
+        model_ref = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2, input_3, input_4});
     }
 
     const FunctionsComparator func_comparator =
@@ -425,7 +447,7 @@ TEST(TransformationTests, DivisionByZeroMinimalPattern) {
         auto eps_const = Constant::create(element::f32, Shape{1}, {eps_value});
         auto add = std::make_shared<Add>(input_2, eps_const);
         auto divide = std::make_shared<Divide>(input_1, add);
-        model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input_1, input_2});
+        model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -437,11 +459,11 @@ TEST(TransformationTests, DivisionByZeroMinimalPattern) {
         auto eps_const = Constant::create(element::f32, Shape{1}, {eps_value});
         auto add = std::make_shared<Add>(input_2, eps_const);
         auto divide = std::make_shared<Divide>(input_1, add);
-        disable_fp16_compression(divide);
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(add);
+        disable_conversion(divide, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(add, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input_1, input_2});
+        model_ref = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input_1, input_2});
     }
 
     const FunctionsComparator func_comparator =
@@ -466,7 +488,7 @@ TEST(TransformationTests, DivisionByZeroEpsWithConvert) {
 
         auto add = std::make_shared<Add>(input_2, convert_eps);
         auto divide = std::make_shared<Divide>(input_1, add);
-        model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input_1, input_2});
+        model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -479,12 +501,12 @@ TEST(TransformationTests, DivisionByZeroEpsWithConvert) {
         auto convert_eps = std::make_shared<Convert>(eps_const, element::f32);
         auto add = std::make_shared<Add>(input_2, convert_eps);
         auto divide = std::make_shared<Divide>(input_1, add);
-        disable_fp16_compression(divide);
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(convert_eps);
-        disable_fp16_compression(add);
+        disable_conversion(divide, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(convert_eps, ov::element::f16);
+        disable_conversion(add, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input_1, input_2});
+        model_ref = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input_1, input_2});
     }
 
     const FunctionsComparator func_comparator =
@@ -509,7 +531,7 @@ TEST(TransformationTests, PowWithNegativeExponent) {
         auto pow = std::make_shared<Power>(add, pow_exp_const);
         auto mul = std::make_shared<Multiply>(input_1, pow);
 
-        model = std::make_shared<Model>(NodeVector{mul}, ParameterVector{input_1, input_2});
+        model = std::make_shared<Model>(OutputVector{mul}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -525,13 +547,13 @@ TEST(TransformationTests, PowWithNegativeExponent) {
         auto mul = std::make_shared<Multiply>(input_1, pow);
 
         // marking nodes to be kept in fp32 for mixed precision
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(add);
-        disable_fp16_compression(pow_exp_const);
-        disable_fp16_compression(pow);
-        disable_fp16_compression(mul);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(add, ov::element::f16);
+        disable_conversion(pow_exp_const, ov::element::f16);
+        disable_conversion(pow, ov::element::f16);
+        disable_conversion(mul, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{mul}, ParameterVector{input_1, input_2});
+        model_ref = std::make_shared<Model>(OutputVector{mul}, ParameterVector{input_1, input_2});
     }
     const FunctionsComparator func_comparator =
         FunctionsComparator::with_default().enable(FunctionsComparator::RUNTIME_KEYS);
@@ -555,7 +577,7 @@ TEST(TransformationTests, PowWithPositiveExponent) {
     auto pow = std::make_shared<Power>(add, pow_exp_const);
     auto mul = std::make_shared<Multiply>(input_1, pow);
 
-    model = std::make_shared<Model>(NodeVector{mul}, ParameterVector{input_1, input_2});
+    model = std::make_shared<Model>(OutputVector{mul}, ParameterVector{input_1, input_2});
     model_ref = model->clone();
 
     manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
@@ -581,7 +603,7 @@ TEST(TransformationTests, DivisionByZeroMinimalPatternUnchanged) {
     auto add = std::make_shared<Add>(input_2, eps_const);
     auto divide = std::make_shared<Divide>(input_1, add);
 
-    model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input_1, input_2});
+    model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input_1, input_2});
     model_ref = model->clone();
 
     manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
@@ -611,7 +633,7 @@ TEST(TransformationTests, DivisionByZeroInL2NormWithSqrtAndWithMax) {
         auto sqrt = std::make_shared<Sqrt>(max);
         auto divide = std::make_shared<Divide>(input, sqrt);
 
-        model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -629,15 +651,15 @@ TEST(TransformationTests, DivisionByZeroInL2NormWithSqrtAndWithMax) {
         auto divide = std::make_shared<Divide>(input, sqrt);
 
         // marking nodes to be kept in fp32 for mixed precision
-        disable_fp16_compression(exp);
-        disable_fp16_compression(pow);
-        disable_fp16_compression(reduce_sum);
-        disable_fp16_compression(max);
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(sqrt);
-        disable_fp16_compression(divide);
+        disable_conversion(exp, ov::element::f16);
+        disable_conversion(pow, ov::element::f16);
+        disable_conversion(reduce_sum, ov::element::f16);
+        disable_conversion(max, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(sqrt, ov::element::f16);
+        disable_conversion(divide, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model_ref = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
     }
     const FunctionsComparator func_comparator =
         FunctionsComparator::with_default().enable(FunctionsComparator::RUNTIME_KEYS);
@@ -664,7 +686,7 @@ TEST(TransformationTests, DivisionByZeroMaxAndEpsWithConvert) {
         auto sqrt = std::make_shared<Sqrt>(max);
         auto divide = std::make_shared<Divide>(input, sqrt);
 
-        model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -683,16 +705,16 @@ TEST(TransformationTests, DivisionByZeroMaxAndEpsWithConvert) {
         auto divide = std::make_shared<Divide>(input, sqrt);
 
         // marking nodes to be kept in fp32 for mixed precision
-        disable_fp16_compression(exp);
-        disable_fp16_compression(pow);
-        disable_fp16_compression(reduce_sum);
-        disable_fp16_compression(max);
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(convert_eps);
-        disable_fp16_compression(sqrt);
-        disable_fp16_compression(divide);
+        disable_conversion(exp, ov::element::f16);
+        disable_conversion(pow, ov::element::f16);
+        disable_conversion(reduce_sum, ov::element::f16);
+        disable_conversion(max, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(convert_eps, ov::element::f16);
+        disable_conversion(sqrt, ov::element::f16);
+        disable_conversion(divide, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model_ref = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
     }
     const FunctionsComparator func_comparator =
         FunctionsComparator::with_default().enable(FunctionsComparator::RUNTIME_KEYS);
@@ -718,7 +740,7 @@ TEST(TransformationTests, DivisionByZeroInL2NormWithSqrtAndWithAdd) {
         auto sqrt = std::make_shared<Sqrt>(add);
         auto divide = std::make_shared<Divide>(input, sqrt);
 
-        model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -736,15 +758,15 @@ TEST(TransformationTests, DivisionByZeroInL2NormWithSqrtAndWithAdd) {
         auto divide = std::make_shared<Divide>(input, sqrt);
 
         // marking nodes to be kept in fp32 for mixed precision
-        disable_fp16_compression(exp);
-        disable_fp16_compression(pow);
-        disable_fp16_compression(sqrt);
-        disable_fp16_compression(reduce_sum);
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(add);
-        disable_fp16_compression(divide);
+        disable_conversion(exp, ov::element::f16);
+        disable_conversion(pow, ov::element::f16);
+        disable_conversion(sqrt, ov::element::f16);
+        disable_conversion(reduce_sum, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(add, ov::element::f16);
+        disable_conversion(divide, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model_ref = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
     }
     const FunctionsComparator func_comparator =
         FunctionsComparator::with_default().enable(FunctionsComparator::RUNTIME_KEYS);
@@ -770,7 +792,7 @@ TEST(TransformationTests, MarkReduceOpExpToKeepInMixedPrecision_with_reducesum) 
         auto mul_1 = make_shared<Multiply>(reduce_sum_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -788,12 +810,12 @@ TEST(TransformationTests, MarkReduceOpExpToKeepInMixedPrecision_with_reducesum) 
         auto mul_1 = make_shared<Multiply>(reduce_sum_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model_ref = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
-        disable_fp16_compression(exp_1);
-        disable_fp16_compression(mul_1);
-        disable_fp16_compression(reduce_sum_1);
-        disable_fp16_compression(factor_const_decompressed);
-        disable_fp16_compression(factor_const);
+        model_ref = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
+        disable_conversion(exp_1, ov::element::f16);
+        disable_conversion(mul_1, ov::element::f16);
+        disable_conversion(reduce_sum_1, ov::element::f16);
+        disable_conversion(factor_const_decompressed, ov::element::f16);
+        disable_conversion(factor_const, ov::element::f16);
     }
 
     const FunctionsComparator func_comparator =
@@ -820,7 +842,7 @@ TEST(TransformationTests, MarkReduceOpExpToKeepInMixedPrecision_with_reducemean)
         auto mul_1 = make_shared<Multiply>(reduce_mean_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -838,12 +860,12 @@ TEST(TransformationTests, MarkReduceOpExpToKeepInMixedPrecision_with_reducemean)
         auto mul_1 = make_shared<Multiply>(reduce_mean_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model_ref = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
-        disable_fp16_compression(exp_1);
-        disable_fp16_compression(mul_1);
-        disable_fp16_compression(reduce_mean_1);
-        disable_fp16_compression(factor_const_decompressed);
-        disable_fp16_compression(factor_const);
+        model_ref = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
+        disable_conversion(exp_1, ov::element::f16);
+        disable_conversion(mul_1, ov::element::f16);
+        disable_conversion(reduce_mean_1, ov::element::f16);
+        disable_conversion(factor_const_decompressed, ov::element::f16);
+        disable_conversion(factor_const, ov::element::f16);
     }
 
     const FunctionsComparator func_comparator =
@@ -869,7 +891,7 @@ TEST(TransformationTests, MarkReduceOpExpToKeepInMixedPrecision_reducesum_withou
     auto mul_1 = make_shared<Multiply>(reduce_sum_1, factor_const_decompressed);
     auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-    model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+    model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
     model_ref = model->clone();
 
     manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
@@ -902,7 +924,7 @@ TEST(TransformationTests, MarkReduceOpExpToKeepInMixedPrecision_reducesum_exp_th
         auto mul_1 = make_shared<Multiply>(reduce_sum_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+        model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
 
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
@@ -923,13 +945,13 @@ TEST(TransformationTests, MarkReduceOpExpToKeepInMixedPrecision_reducesum_exp_th
         auto mul_1 = make_shared<Multiply>(reduce_sum_1, factor_const_decompressed);
         auto matmul_1 = make_shared<MatMul>(mul_1, input_2);
 
-        model_ref = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
-        disable_fp16_compression(exp_1);
-        disable_fp16_compression(mul_1);
-        disable_fp16_compression(reduce_sum_1);
-        disable_fp16_compression(factor_const_decompressed);
-        disable_fp16_compression(factor_const);
-        disable_fp16_compression(unsqueeze_1);
+        model_ref = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
+        disable_conversion(exp_1, ov::element::f16);
+        disable_conversion(mul_1, ov::element::f16);
+        disable_conversion(reduce_sum_1, ov::element::f16);
+        disable_conversion(factor_const_decompressed, ov::element::f16);
+        disable_conversion(factor_const, ov::element::f16);
+        disable_conversion(unsqueeze_1, ov::element::f16);
     }
 
     const FunctionsComparator func_comparator =
@@ -953,7 +975,7 @@ TEST(TransformationTests, MarkDivWithEps) {
         auto add = std::make_shared<Add>(input_2, eps_const);
         auto divide = std::make_shared<Divide>(input_1, add);
 
-        model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input_1, input_2});
+        model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input_1, input_2});
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
     }
@@ -964,11 +986,11 @@ TEST(TransformationTests, MarkDivWithEps) {
         auto eps_const = Constant::create(element::f32, Shape{1}, {eps_value});
         auto add = std::make_shared<Add>(input_2, eps_const);
         auto divide = std::make_shared<Divide>(input_1, add);
-        disable_fp16_compression(divide);
-        disable_fp16_compression(add);
-        disable_fp16_compression(eps_const);
+        disable_conversion(divide, ov::element::f16);
+        disable_conversion(add, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input_1, input_2});
+        model_ref = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input_1, input_2});
     }
     const auto fc = FunctionsComparator::with_default()
                         .enable(FunctionsComparator::PRECISIONS)
@@ -995,7 +1017,7 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_PowWithNegativeEx
         auto pow = std::make_shared<Power>(add, pow_exp_const);
         auto mul = std::make_shared<Multiply>(input_1, pow);
 
-        model = std::make_shared<Model>(NodeVector{mul}, ParameterVector{input_1, input_2});
+        model = std::make_shared<Model>(OutputVector{mul}, ParameterVector{input_1, input_2});
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
     }
@@ -1008,13 +1030,13 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_PowWithNegativeEx
         auto pow_exp_const = Constant::create(element::f32, Shape{1}, {-1.77});
         auto pow = std::make_shared<Power>(add, pow_exp_const);
         auto mul = std::make_shared<Multiply>(input_1, pow);
-        disable_fp16_compression(mul);
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(add);
-        disable_fp16_compression(pow_exp_const);
-        disable_fp16_compression(pow);
+        disable_conversion(mul, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(add, ov::element::f16);
+        disable_conversion(pow_exp_const, ov::element::f16);
+        disable_conversion(pow, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{mul}, ParameterVector{input_1, input_2});
+        model_ref = std::make_shared<Model>(OutputVector{mul}, ParameterVector{input_1, input_2});
     }
     const auto fc = FunctionsComparator::with_default()
                         .enable(FunctionsComparator::PRECISIONS)
@@ -1041,7 +1063,7 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_PowWithPositiveEx
     auto pow = std::make_shared<Power>(add, pow_exp_const);
     auto mul = std::make_shared<Multiply>(input_1, pow);
 
-    model = std::make_shared<Model>(NodeVector{mul}, ParameterVector{input_1, input_2});
+    model = std::make_shared<Model>(OutputVector{mul}, ParameterVector{input_1, input_2});
     model_ref = model->clone();
 
     manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
@@ -1070,7 +1092,7 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_MinimalPatternUnc
     auto add = std::make_shared<Add>(input_2, eps_const);
     auto divide = std::make_shared<Divide>(input_1, add);
 
-    model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input_1, input_2});
+    model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input_1, input_2});
     model_ref = model->clone();
 
     manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
@@ -1084,6 +1106,81 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_MinimalPatternUnc
     FunctionsComparator::Result result = fc(model_ref, model);
     ASSERT_TRUE(result.valid) << result.message;
     result = fc(model, model_ref);
+    ASSERT_TRUE(result.valid) << result.message;
+}
+
+TEST(TransformationTests, MarkFloatingPointRange) {
+    shared_ptr<Model> model, model_ref;
+    pass::Manager manager;
+    {
+        auto begin = Constant::create(element::i64, Shape{}, {0});
+        auto step = Constant::create(element::i64, Shape{}, {1});
+
+        auto end = make_shared<Parameter>(element::i64, Shape{});
+
+        auto range_1 = make_shared<op::v4::Range>(begin, end, step, element::f32);
+        auto range_2 = make_shared<op::v4::Range>(begin, end, step, element::f32);
+
+        auto convert_1 = make_shared<Convert>(range_1, element::i64);
+        auto convert_2 = make_shared<Convert>(convert_1, element::f32);
+
+        auto unsqueeze_const = Constant::create(element::i64, Shape{2}, {-1, 1});
+        auto unsqueeze = make_shared<Unsqueeze>(range_2, unsqueeze_const);
+
+        auto greater = make_shared<Greater>(convert_2, unsqueeze);
+        auto convert = make_shared<Convert>(greater, element::f32);
+
+        auto multiply_const = Constant::create(element::f32, Shape{}, {1.f});
+        auto multiply = make_shared<Multiply>(convert, multiply_const);
+
+        model = make_shared<Model>(OutputVector{convert}, ParameterVector{end});
+
+        manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
+        manager.run_passes(model);
+    }
+
+    {
+        auto begin = Constant::create(element::i64, Shape{}, {0});
+        auto step = Constant::create(element::i64, Shape{}, {1});
+
+        auto end = make_shared<Parameter>(element::i64, Shape{});
+
+        auto range_1 = make_shared<op::v4::Range>(begin, end, step, element::f32);
+        auto range_2 = make_shared<op::v4::Range>(begin, end, step, element::f32);
+
+        auto convert_1 = make_shared<Convert>(range_1, element::i64);
+        auto convert_2 = make_shared<Convert>(convert_1, element::f32);
+
+        auto unsqueeze_const = Constant::create(element::i64, Shape{2}, {-1, 1});
+        auto unsqueeze = make_shared<Unsqueeze>(range_2, unsqueeze_const);
+
+        auto greater = make_shared<Greater>(convert_2, unsqueeze);
+        auto convert = make_shared<Convert>(greater, element::f32);
+
+        auto multiply_const = Constant::create(element::f32, Shape{}, {1.f});
+        auto multiply = make_shared<Multiply>(convert, multiply_const);
+
+        // marking nodes to be kept in fp32 for mixed precision
+        disable_conversion(begin, ov::element::f16);
+        disable_conversion(end, ov::element::f16);
+        disable_conversion(step, ov::element::f16);
+        disable_conversion(range_1, ov::element::f16);
+        disable_conversion(range_2, ov::element::f16);
+        disable_conversion(convert_1, ov::element::f16);
+        disable_conversion(convert_2, ov::element::f16);
+        disable_conversion(unsqueeze, ov::element::f16);
+        disable_conversion(greater, ov::element::f16);
+        disable_conversion(convert, ov::element::f16);
+
+        model_ref = make_shared<Model>(OutputVector{convert}, ParameterVector{end});
+    }
+
+    const FunctionsComparator func_comparator =
+        FunctionsComparator::with_default().enable(FunctionsComparator::RUNTIME_KEYS);
+    // need to compare twice to ensure that no extra nodes are marked
+    FunctionsComparator::Result result = func_comparator(model_ref, model);
+    ASSERT_TRUE(result.valid) << result.message;
+    result = func_comparator(model, model_ref);
     ASSERT_TRUE(result.valid) << result.message;
 }
 
@@ -1102,7 +1199,7 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_InL2NormWithSqrtA
         auto sqrt = std::make_shared<Sqrt>(max);
         auto divide = std::make_shared<Divide>(input, sqrt);
 
-        model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
     }
@@ -1117,16 +1214,16 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_InL2NormWithSqrtA
         auto max = std::make_shared<Maximum>(reduce_sum, eps_const);
         auto sqrt = std::make_shared<Sqrt>(max);
         auto divide = std::make_shared<Divide>(input, sqrt);
-        disable_fp16_compression(divide);
+        disable_conversion(divide, ov::element::f16);
 
-        disable_fp16_compression(exp);
-        disable_fp16_compression(pow);
-        disable_fp16_compression(reduce_sum);
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(max);
-        disable_fp16_compression(sqrt);
+        disable_conversion(exp, ov::element::f16);
+        disable_conversion(pow, ov::element::f16);
+        disable_conversion(reduce_sum, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(max, ov::element::f16);
+        disable_conversion(sqrt, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model_ref = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
     }
     const auto fc = FunctionsComparator::with_default()
                         .enable(FunctionsComparator::PRECISIONS)
@@ -1154,7 +1251,7 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_InL2NormWithSqrtA
         auto sqrt = std::make_shared<Sqrt>(add);
         auto divide = std::make_shared<Divide>(input, sqrt);
 
-        model = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
         manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
         manager.run_passes(model);
     }
@@ -1169,16 +1266,16 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_InL2NormWithSqrtA
         auto add = std::make_shared<Add>(reduce_sum, eps_const);
         auto sqrt = std::make_shared<Sqrt>(add);
         auto divide = std::make_shared<Divide>(input, sqrt);
-        disable_fp16_compression(divide);
+        disable_conversion(divide, ov::element::f16);
 
-        disable_fp16_compression(exp);
-        disable_fp16_compression(pow);
-        disable_fp16_compression(reduce_sum);
-        disable_fp16_compression(eps_const);
-        disable_fp16_compression(add);
-        disable_fp16_compression(sqrt);
+        disable_conversion(exp, ov::element::f16);
+        disable_conversion(pow, ov::element::f16);
+        disable_conversion(reduce_sum, ov::element::f16);
+        disable_conversion(eps_const, ov::element::f16);
+        disable_conversion(add, ov::element::f16);
+        disable_conversion(sqrt, ov::element::f16);
 
-        model_ref = std::make_shared<Model>(NodeVector{divide}, ParameterVector{input});
+        model_ref = std::make_shared<Model>(OutputVector{divide}, ParameterVector{input});
     }
     const auto fc = FunctionsComparator::with_default()
                         .enable(FunctionsComparator::PRECISIONS)
@@ -1212,7 +1309,7 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_disable_for_quant
     auto fq_2 = make_shared<opset10::FakeQuantize>(reduce_sum_1, in_low, in_high, out_low, out_high, 256);
     auto matmul_1 = make_shared<opset10::MatMul>(fq_2, input_2);
 
-    model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+    model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
     model_ref = model->clone();
 
     manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
@@ -1253,7 +1350,7 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_disable_for_quant
     auto fq_2 = make_shared<opset10::FakeQuantize>(reduce_sum_1, in_low, in_high, out_low, out_high, 256);
     auto matmul_1 = make_shared<opset10::MatMul>(fq_2, input_2);
 
-    model = make_shared<Model>(NodeVector{matmul_1}, ParameterVector{input_1, input_2});
+    model = make_shared<Model>(OutputVector{matmul_1}, ParameterVector{input_1, input_2});
     model_ref = model->clone();
 
     manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
@@ -1268,4 +1365,23 @@ TEST(TransformationTests, MarkDivWithEpsToKeepInMixedPrecision_disable_for_quant
     ASSERT_TRUE(result.valid) << result.message;
     result = fc(model, model_ref);
     ASSERT_TRUE(result.valid) << result.message;
+}
+
+TEST_F(TransformationTestsF, MarkRandomUniformAsPrecisionSensitive) {
+    auto param = std::make_shared<v0::Parameter>(ov::element::i32, ov::PartialShape{2});
+    auto random_uniform = std::make_shared<ov::op::v8::RandomUniform>(param,
+                                                                      v0::Constant::create(element::f32, {}, {0}),
+                                                                      v0::Constant::create(element::f32, {}, {1}),
+                                                                      element::f32);
+    auto less = std::make_shared<ov::op::v1::Less>(random_uniform, v0::Constant::create(element::f32, {1, 1}, {0.5}));
+    auto res = std::make_shared<v0::Result>(less);
+
+    model = std::make_shared<ov::Model>(OutputVector{res}, ParameterVector{param});
+
+    precisions_map fp_convert_precision_map = {{ov::element::f32, ov::element::f16}};
+
+    type_to_fuse_map empty_fuse_map;
+
+    model_ref = model->clone();
+    manager.register_pass<ov::pass::ConvertPrecision>(fp_convert_precision_map, empty_fuse_map, true, false, true);
 }

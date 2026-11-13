@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,7 +7,6 @@
 #include <memory>
 
 #include "itt.hpp"
-#include "openvino/opsets/opset9.hpp"
 
 using namespace std;
 using namespace ov;

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,10 +13,7 @@ using namespace std;
 using namespace ov;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 std::shared_ptr<v8::Slice> compute_complex_shape(const ov::Output<ov::Node>& input, element::Type out_type) {
     auto shapeof = make_shared<v3::ShapeOf>(input, out_type);
@@ -42,7 +39,7 @@ OutputVector translate_shape_op(const NodeContext& node) {
 
         auto complex_type_mark = as_type_ptr<ComplexTypeMark>(input.get_node_shared_ptr());
         if (complex_type_mark) {
-            auto slice = compute_complex_shape(complex_type_mark->input_value(0), out_type);
+            auto slice = compute_complex_shape(complex_type_mark->get_data(), out_type);
             set_node_name(node_name, slice);
             return {slice};
         } else {
@@ -58,7 +55,7 @@ OutputVector translate_shape_op(const NodeContext& node) {
 
         auto complex_type_mark = as_type_ptr<ComplexTypeMark>(input.get_node_shared_ptr());
         if (complex_type_mark) {
-            auto slice = compute_complex_shape(complex_type_mark->input_value(input_ind), out_type);
+            auto slice = compute_complex_shape(complex_type_mark->get_data(), out_type);
             slice->set_friendly_name(node_name + "_" + to_string(input_ind));
             auto shapeof_output = slice->output(0);
             set_out_name({node_name + ":" + to_string(input_ind)}, shapeof_output);
@@ -75,7 +72,4 @@ OutputVector translate_shape_op(const NodeContext& node) {
     return outputs;
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

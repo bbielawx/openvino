@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,6 +9,7 @@
 #include <string>
 
 #include "gather_shape_inference.hpp"
+#include "openvino/op/gather.hpp"
 
 namespace cldnn {
 GPU_DEFINE_PRIMITIVE_TYPE_ID(gather)
@@ -22,8 +23,9 @@ layout gather_inst::calc_output_layout(gather_node const& node, kernel_impl_para
         dims_converted.push_back(static_cast<tensor::value_type>(dim));
     }
     // extend shape to 4d
-    for (size_t i = dims_converted.size(); i < 4; i++)
+    for (size_t i = dims_converted.size(); i < 4; i++) {
         dims_converted.push_back(1);
+    }
 
     format output_format = input_layout.format;
     if (dims_converted.size() == 5) {
@@ -47,6 +49,7 @@ layout gather_inst::calc_output_layout(gather_node const& node, kernel_impl_para
         switch (input_layout.format) {
         case format::bfyx:
         case format::bfzyx:
+        case format::bfwzyx:
         case format::b_fs_zyx_fsv16:
         case format::b_fs_zyx_fsv32:
             output_format = format::get_default_format(dims_converted.size());
@@ -60,7 +63,7 @@ layout gather_inst::calc_output_layout(gather_node const& node, kernel_impl_para
         output_type = impl_param.typed_desc<gather>()->decompressed_type;
     }
     if (impl_param.has_fused_primitives()) {
-        output_type = impl_param.get_fused_output_layout().data_type;
+        output_type = impl_param.get_output_element_type();
     }
 
     return layout{output_type,
@@ -80,7 +83,7 @@ std::vector<layout> gather_inst::calc_output_layouts(gather_node const& /*node*/
         output_type = impl_param.typed_desc<gather>()->decompressed_type;
     }
     if (impl_param.has_fused_primitives()) {
-        output_type = impl_param.get_fused_output_layout().data_type;
+        output_type = impl_param.get_output_element_type();
     }
 
     ov::op::v8::Gather op;
@@ -137,16 +140,28 @@ void gather_inst::on_execute() {
 }
 
 void gather_inst::update_output_memory() {
-    if (!can_be_optimized())
+    if (!can_be_optimized()) {
         return;
-    if (static_cast<bool>(_outputs[0]) && _network.get_engine().is_the_same_buffer(output_memory(), input_memory()))
-        return;
+    }
 
-    if (_node != nullptr)
-        build_deps();
+    build_deps();
+
+    if (input_memory_ptr() == nullptr) {
+        return;
+    }
+
+    if (static_cast<bool>(_outputs[0]) && _network.get_engine().is_the_same_buffer(output_memory(), input_memory())) {
+        return;
+    }
 
     GPU_DEBUG_TRACE_DETAIL << id() << " : update_output_memory with mem of input " << get_node().get_dependency(0).id()
                            << " : " << input_memory_ptr()->buffer_ptr() << std::endl;
+    // Can_be_optimized nodes are allocating from memory_pool too. In this case,
+    // we need release the legacy output memory from memory pool explicitly.
+    if (static_cast<bool>(_outputs[0]) &&
+        get_node().get_program().get_config().get_enable_memory_pool()) {
+        _network.get_memory_pool().release_memory(_outputs[0].get(), get_node().get_unique_id(), get_node().id(), _network.get_id());
+    }
     _outputs[0] = input_memory_ptr();
     _mem_allocated = false;
 }

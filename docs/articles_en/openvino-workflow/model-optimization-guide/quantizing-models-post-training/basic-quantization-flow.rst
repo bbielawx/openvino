@@ -1,5 +1,3 @@
-.. {#basic_quantization_flow}
-
 Basic Quantization Flow
 =======================
 
@@ -7,7 +5,7 @@ Basic Quantization Flow
 Introduction
 ####################
 
-The basic quantization flow is the simplest way to apply 8-bit quantization to the model. It is available for models in the following frameworks: OpenVINO, PyTorch, TensorFlow 2.x, and ONNX. The basic quantization flow is based on the following steps:
+The basic quantization flow is the simplest way to apply 8-bit quantization to the model. It is available for models in the following frameworks: OpenVINO, PyTorch, and ONNX. The basic quantization flow is based on the following steps:
 
 * Set up an environment and install dependencies.
 * Prepare a representative **calibration dataset** that is used to estimate quantization parameters of the activations within the model, for example, of 300 samples.
@@ -39,14 +37,14 @@ The transformation function is a function that takes a sample from the dataset a
 
    .. tab-item:: OpenVINO
       :sync: openvino
-      
+
       .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_openvino.py
          :language: python
          :fragment: [dataset]
 
    .. tab-item:: PyTorch
       :sync: pytorch
-      
+
       .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_torch.py
          :language: python
          :fragment: [dataset]
@@ -58,10 +56,10 @@ The transformation function is a function that takes a sample from the dataset a
          :language: python
          :fragment: [dataset]
 
-   .. tab-item:: TensorFlow
-      :sync: tensorflow
+   .. tab-item:: TorchFX
+      :sync: torch_fx
 
-      .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_tensorflow.py
+      .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_torch_fx.py
          :language: python
          :fragment: [dataset]
 
@@ -78,14 +76,14 @@ See the `example section <#examples-of-how-to-apply-nncf-post-training-quantizat
 
    .. tab-item:: OpenVINO
       :sync: openvino
-      
+
       .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_openvino.py
          :language: python
          :fragment: [quantization]
 
    .. tab-item:: PyTorch
       :sync: pytorch
-      
+
       .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_torch.py
          :language: python
          :fragment: [quantization]
@@ -97,29 +95,28 @@ See the `example section <#examples-of-how-to-apply-nncf-post-training-quantizat
          :language: python
          :fragment: [quantization]
 
-   .. tab-item:: TensorFlow
-      :sync: tensorflow
+   .. tab-item:: TorchFX
+      :sync: torch_fx
 
-      .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_tensorflow.py
+      .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_torch_fx.py
          :language: python
          :fragment: [quantization]
-         
 
 After that the model can be converted into the OpenVINO Intermediate Representation (IR) if needed, compiled and run with OpenVINO.
-If you have not already installed OpenVINO developer tools, install it with ``pip install openvino-dev``.
+If you have not already installed OpenVINO developer tools, install it with ``pip install openvino``.
 
 .. tab-set::
 
    .. tab-item:: OpenVINO
       :sync: openvino
-      
+
       .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_openvino.py
          :language: python
          :fragment:  [inference]
 
    .. tab-item:: PyTorch
       :sync: pytorch
-      
+
       .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_torch.py
          :language: python
          :fragment:  [inference]
@@ -131,13 +128,17 @@ If you have not already installed OpenVINO developer tools, install it with ``pi
          :language: python
          :fragment:  [inference]
 
-   .. tab-item:: TensorFlow
-      :sync: tensorflow
+TorchFX models can utilize OpenVINO optimizations using `torch.compile(..., backend="openvino") <https://docs.openvino.ai/2026/openvino-workflow/torch-compile.html>`__ functionality:
 
-      .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_tensorflow.py
+.. tab-set::
+
+   .. tab-item:: TorchFX
+      :sync: torch_fx
+
+      .. doxygensnippet:: docs/optimization_guide/nncf/ptq/code/ptq_torch_fx.py
          :language: python
          :fragment:  [inference]
-         
+
 Tune quantization parameters
 ############################
 
@@ -220,5 +221,4 @@ Examples of how to apply NNCF post-training quantization:
 * `Post-Training Quantization of MobileNet v2 PyTorch Model <https://github.com/openvinotoolkit/nncf/blob/develop/examples/post_training_quantization/torch/mobilenet_v2>`__
 * `Post-Training Quantization of SSD PyTorch Model <https://github.com/openvinotoolkit/nncf/blob/develop/examples/post_training_quantization/torch/ssd300_vgg16>`__
 * `Post-Training Quantization of MobileNet v2 ONNX Model <https://github.com/openvinotoolkit/nncf/blob/develop/examples/post_training_quantization/onnx/mobilenet_v2>`__
-* `Post-Training Quantization of MobileNet v2 TensorFlow Model <https://github.com/openvinotoolkit/nncf/blob/develop/examples/post_training_quantization/tensorflow/mobilenet_v2>`__
 

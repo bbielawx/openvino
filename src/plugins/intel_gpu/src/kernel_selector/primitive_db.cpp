@@ -1,9 +1,9 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "primitive_db.h"
-#include <assert.h>
+#include <cassert>
 #include <algorithm>
 #include <vector>
 #include <utility>
@@ -22,7 +22,7 @@ primitive_db::primitive_db()
     : primitives({
 #include "ks_primitive_db.inc"
       }),
-      batch_header_str({
+      batch_headers({
 #include "ks_primitive_db_batch_headers.inc"
       }) {
 }
@@ -30,7 +30,8 @@ primitive_db::primitive_db()
 std::vector<code> primitive_db::get(const primitive_id& id) const {
 #ifndef NDEBUG
     {
-        std::ifstream kernel_file{id + ".cl", std::ios::in | std::ios::binary};
+        std::string filename = id + ".cl";
+        std::ifstream kernel_file{filename, std::ios::in | std::ios::binary};
         if (kernel_file.is_open()) {
             code ret;
             auto beg = kernel_file.tellg();

@@ -1,9 +1,5 @@
-.. {#openvino_docs_performance_benchmarks_faq}
-
 Performance Information F.A.Q.
 ==============================
-
-
 
 
 .. meta::
@@ -19,7 +15,7 @@ Performance Information F.A.Q.
 
 .. dropdown:: Where can I find the models used in the performance benchmarks?
 
-   All models used are included in the GitHub repository of :doc:`Open Model Zoo <../../documentation/legacy-features/model-zoo>`.
+   All models used are published on `Hugging Face <https://huggingface.co/OpenVINO>`__.
 
 .. dropdown:: Will there be any new models added to the list used for benchmarking?
 
@@ -29,10 +25,12 @@ Performance Information F.A.Q.
 
 .. dropdown:: How can I run the benchmark results on my own?
 
-   All of the performance benchmarks are generated using the
+   All of the performance benchmarks on traditional network models are generated using the
    open-source tool within the Intel® Distribution of OpenVINO™ toolkit
-   called :doc:`benchmark_app <../../learn-openvino/openvino-samples/benchmark-tool>`.
-   This tool is available for Python and C++ apps.
+   called :doc:`benchmark_app <../../get-started/learn-openvino/openvino-samples/benchmark-tool>`.
+
+   For diffusers (Stable-Diffusion) and foundational models (aka LLMs) please use the OpenVINO GenAI
+   opensource repo `OpenVINO GenAI tools/llm_bench <https://github.com/openvinotoolkit/openvino.genai/tree/master/tools/llm_bench>`__
 
    For a simple instruction on testing performance, see the :doc:`Getting Performance Numbers Guide <getting-performance-numbers>`.
 
@@ -49,38 +47,70 @@ Performance Information F.A.Q.
         - Public Network
         - Task
         - Input Size
-      * - `chatGLM2-6B <https://huggingface.co/THUDM/chatglm2-6b/tree/main>`__
-        - THUDM
-        - Transformer
+      * - `DeepSeek-R1-Distill-Llama-8B <https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-8B>`__
+        - DeepSeek, HF
+        - Auto regressive language
+        - 128K
+      * - `Gemma-3n-e4b-it <https://huggingface.co/google/gemma-3n-E4B-it>`__
+        - Hugginface
+        - Multimodal, instruction tuned for low-resource use cases.
         - 32K
-      * - `Llama-2-7b-chat <https://ai.meta.com/llama/>`__
+      * - `Gemma-4-e2b-it <https://huggingface.co/google/gemma-4-E2B-it>`__
+        - Hugginface
+        - Multimodal, instruction tuned for low-resource use cases.
+        - 128K
+      * - `Gemma-4-26b-a4b <https://huggingface.co/google/gemma-4-26B-A4B-it>`__
+        - Hugginface
+        - Multimodal MoE, instruction tuned with fast response time.
+        - 256K
+      * - `GPT-OSS-20B <https://huggingface.co/openai/gpt-oss-20b>`__
+        - Hugginface
+        - Reasoning, agentic and developer use cases.
+        - 128K
+      * - `Kokoro-82m <https://huggingface.co/hexgrad/Kokoro-82M>`__
+        - Hexgrad
+        - Lightweight text-to-speech open-weight model. Multi-lingual, including accents.
+        - 128K
+      * - `Llama-3.2-3B-Instruct <https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct>`__
         - Meta AI
         - Auto regressive language
-        - 4096
-      * - `Mistral-7b <https://huggingface.co/mistralai/Mistral-7B-v0.1>`__
+        - 128K
+      * - `MiniCPM-v-2_6 <https://huggingface.co/openbmb/MiniCPM-V-2_6>`__
+        - OpenBMB
+        - Multimodal, image-text to text
+        - 32K
+      * - `Mistral-7B-Instruct-V0.3 <https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3>`__
         - Mistral AI
         - Auto regressive language
+        - 32K
+      * - `Phi4-mini-Instruct <https://huggingface.co/microsoft/Phi-4-mini-instruct>`__
+        - Hugginface
+        - Auto regressive language
         - 4096
-      * - `Stable-Diffusion-V2-1 <https://huggingface.co/stabilityai/stable-diffusion-2-1>`__
+      * - `Qwen-3.5-9B <https://huggingface.co/Qwen/Qwen3.5-9B>`__
+        - Huggingface
+        - Multimodal, Gated Delta Networks, Sparse MoE
+        - 256K
+      * - `Qwen-3.6-27B <https://huggingface.co/Qwen/Qwen3.6-27B>`__
+        - Huggingface
+        - Causal Language with Vision Encoder
+        - 256K (up to 1M)
+      * - `Stable-Diffusion-V1-5 <https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5>`__
         - Hugginface
         - Latent Diffusion Model
         - 77
+      * - `LTX-VIDEO <https://huggingface.co/Lightricks/LTX-Video>`__
+        - Hugginface
+        - DiT based video generation. Diffusion Transformer.
+        - up to 300
       * - `bert-base-cased <https://github.com/PaddlePaddle/PaddleNLP/tree/v2.1.1>`__
         - BERT
         - question / answer
         - 128
-      * - `bert-large-uncased-whole-word-masking-squad-int8-0001 <https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/intel/bert-large-uncased-whole-word-masking-squad-int8-0001>`__
-        - BERT-large
-        - question / answer
-        - 384
-      * - `efficientdet-d0 <https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/public/efficientdet-d0-tf>`__
-        - Efficientdet
-        - classification
-        - 512x512
-      * - `mask_rcnn_resnet50_atrous_coco <https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/public/mask_rcnn_resnet50_atrous_coco>`__
-        - Mask R-CNN ResNet 50 Atrous
+      * - `Detectron-V2 <https://huggingface.co/kalinkov/Detectron2_FasterRCNN_R50_FPN_InsectDetection/tree/main>`__
+        - Detectron-V2
         - object instance segmentation
-        - 800x1365
+        - 800x800
       * - `mobilenet-v2 <https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/public/mobilenet-v2-pytorch>`__
         - Mobilenet V2 PyTorch
         - classification
@@ -89,34 +119,25 @@ Performance Information F.A.Q.
         - ResNet-50_v1_ILSVRC-2012
         - classification
         - 224x224
-      * - `ssd-mobilenet-v1-coco <https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/public/ssd_mobilenet_v1_coco>`__
-        - ssd-mobilenet-V1-coco onnx model
-        - object detection
-        - 300x300
       * - `ssd-resnet34-1200-onnx <https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/public/ssd-resnet34-1200-onnx>`__
         - ssd-resnet34 onnx model
         - object detection
         - 1200x1200
-      * - `unet-camvid-onnx-0001 <https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/intel/unet-camvid-onnx-0001>`__
-        - U-Net
-        - semantic segmentation
-        - 368x480
-      * - `yolo-v3-tiny <https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/public/yolo-v3-tiny-tf>`__
-        - YOLO v3 Tiny
+      * - `yolov11 <https://github.com/ultralytics/ultralytics>`__
+        - Yolov11
         - object detection
-        - 416x416
-      * - `yolov8n <https://https://github.com/ultralytics/ultralytics>`__
-        - Yolov8nano
-        -  object detection
-        - 608x608
-
+        - 640x640
+      * - `yolov26n <https://huggingface.co/openvision/yolo26-n>`__
+        - Yolov26 Nano
+        - object detection
+        - 640x640
 
 .. dropdown:: Where can I purchase the specific hardware used in the benchmarking?
 
    Intel partners with vendors all over the world. For a list of Hardware Manufacturers, see the
    `Intel® AI: In Production Partners & Solutions Catalog <https://www.intel.com/content/www/us/en/internet-of-things/ai-in-production/partners-solutions-catalog.html>`__.
-   Before purchasing any hardware, you can test and run models remotely, using
-   `Intel® DevCloud for the Edge <http://devcloud.intel.com/edge/>`__.
+   For more details, see the :doc:`Supported Devices <../../documentation/compatibility-and-support/supported-devices>` article.
+
 
 .. dropdown:: How can I optimize my models for better performance or accuracy?
 
@@ -126,8 +147,7 @@ Performance Information F.A.Q.
 
 .. dropdown:: Why are INT8 optimized models used for benchmarking on CPUs with no VNNI support?
 
-   The benefit of low-precision optimization using the OpenVINO™
-   toolkit model optimizer extends beyond processors supporting VNNI
+   The benefit of low-precision optimization extends beyond processors supporting VNNI
    through Intel® DL Boost. The reduced bit width of INT8 compared to FP32
    allows Intel® CPU to process the data faster. Therefore, it offers
    better throughput on any converted model, regardless of the
@@ -136,14 +156,6 @@ Performance Information F.A.Q.
    and a selection of Intel® CPU architectures, including AVX-2 with Intel®
    Core™ i7-8700T, and AVX-512 (VNNI) with Intel® Xeon® 5218T and Intel®
    Xeon® 8270, refer to the :doc:`Model Accuracy for INT8 and FP32 Precision <model-accuracy-int8-fp32>`
-
-.. dropdown:: Where can I search for OpenVINO™ performance results based on HW-platforms?
-
-   The website format has changed in order to support more common
-   approach of searching for the performance results of a given neural
-   network model on different HW-platforms. As opposed to reviewing
-   performance of a given HW-platform when working with different neural
-   network models.
 
 .. dropdown:: How is Latency measured?
 
@@ -167,6 +179,6 @@ Performance Information F.A.Q.
 
 .. container:: benchmark-banner
 
-   Results may vary. For more information, see
-   :doc:`Platforms, Configurations, Methodology <../performance-benchmarks>`.
-   See :doc:`Legal Information <../additional-resources/legal-information>`.
+   Results may vary. For more information, see:
+   :doc:`Platforms, Configurations, Methodology <../performance-benchmarks>`,
+   :doc:`Legal Information <../additional-resources/terms-of-use>`.

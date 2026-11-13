@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,9 +20,9 @@ typedef std::tuple<
 
 class PrecisionPropagationConvertion :
     public testing::WithParamInterface<PrecisionPropagationParams>,
-    virtual public ov::test::SnippetsTestsCommon {
+    virtual public SnippetsTestsCommon {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<PrecisionPropagationParams> obj);
+    static std::string getTestCaseName(const testing::TestParamInfo<PrecisionPropagationParams>& obj);
 
 protected:
     void SetUp() override;

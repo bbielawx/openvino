@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -31,9 +31,12 @@ void AutoCompiledModel::set_property(const ov::AnyMap& properties) {
 }
 
 std::shared_ptr<const ov::Model> AutoCompiledModel::get_runtime_model() const {
-    OPENVINO_ASSERT(m_context->m_hw_compiled_model);
-    auto model = m_context->m_hw_compiled_model->get_runtime_model();
-    set_model_shared_object(const_cast<ov::Model&>(*model), m_context->m_hw_compiled_model._so);
+    const auto hw_compiled_model = m_context->m_dynamic_device_selection
+                                       ? m_scheduler->get_dynamic_query_model().second
+                                       : m_context->m_hw_compiled_model;
+    OPENVINO_ASSERT(hw_compiled_model);
+    auto model = hw_compiled_model->get_runtime_model();
+    set_model_shared_object(const_cast<ov::Model&>(*model), hw_compiled_model._so);
     return model;
 }
 
@@ -63,7 +66,7 @@ ov::Any AutoCompiledModel::get_property(const std::string& name) const {
         supported_properties.reserve(ro_properties.size() + rw_properties.size());
         supported_properties.insert(supported_properties.end(), ro_properties.begin(), ro_properties.end());
         supported_properties.insert(supported_properties.end(), rw_properties.begin(), rw_properties.end());
-        return decltype(ov::supported_properties)::value_type(supported_properties);
+        return decltype(ov::supported_properties)::value_type(std::move(supported_properties));
     } else if (name == ov::enable_profiling) {
         return m_context->m_need_perf_counters;
     } else if (name == ov::hint::performance_mode) {
@@ -72,6 +75,10 @@ ov::Any AutoCompiledModel::get_property(const std::string& name) const {
         // device priority does not support change on-the-fly
         return decltype(ov::device::priorities)::value_type(m_context->m_str_devices);
     } else if (name == ov::device::properties) {
+        if (m_context->m_dynamic_device_selection) {
+            const auto query = m_scheduler->get_dynamic_query_model();
+            return get_device_supported_properties(query.first, query.second);
+        }
         ov::AnyMap all_devices = {};
         {
             std::lock_guard<std::mutex> lock(m_context->m_fallback_mutex);
@@ -90,6 +97,10 @@ ov::Any AutoCompiledModel::get_property(const std::string& name) const {
         auto value = m_context->m_model_priority;
         return value ? ((value > 1) ? ov::hint::Priority::LOW : ov::hint::Priority::MEDIUM) : ov::hint::Priority::HIGH;
     } else if (name == ov::optimal_number_of_infer_requests) {
+        if (m_context->m_dynamic_device_selection) {
+            // inference is serialized in dynamic mode, so more than one request cannot run at a time
+            return decltype(ov::optimal_number_of_infer_requests)::value_type{1u};
+        }
         const unsigned int default_num_for_tput = 4u;
         const unsigned int default_num_for_latency = 1u;
         unsigned int real = 0;
@@ -97,9 +108,11 @@ ov::Any AutoCompiledModel::get_property(const std::string& name) const {
             real = m_scheduler->m_compile_context[ACTUALDEVICE].
                 m_compiled_model->get_property(name).as<unsigned int>();
         } else {
-            std::unique_lock<std::mutex> lock(m_context->m_mutex);
-            auto device_info = m_scheduler->m_compile_context[ACTUALDEVICE].m_device_info;
-            lock.unlock();
+            DeviceInformation device_info;
+            {
+                std::lock_guard<std::mutex> lock(m_context->m_mutex);
+                device_info = m_scheduler->m_compile_context[ACTUALDEVICE].m_device_info;
+            }
             unsigned int optimal_batch_size = 0;
             unsigned int requests = 0;
             bool tput_enabled_in_plugin = false;
@@ -202,6 +215,12 @@ ov::Any AutoCompiledModel::get_property(const std::string& name) const {
         }
         return decltype(ov::optimal_number_of_infer_requests)::value_type {real};
     } else if (name == ov::execution_devices) {
+        if (m_context->m_dynamic_device_selection) {
+            const auto active_device = m_scheduler->get_dynamic_active_device();
+            if (!active_device.empty()) {
+                return decltype(ov::execution_devices)::value_type{active_device};
+            }
+        }
         ov::Any execution_devices;
         auto get_execution_devices = [&execution_devices](std::string exe_devices_string) {
             std::vector<std::string> exe_devices = {};
@@ -225,6 +244,11 @@ ov::Any AutoCompiledModel::get_property(const std::string& name) const {
         }
         return execution_devices;
     } else if (name == ov::model_name) {
+        if (m_context->m_dynamic_device_selection) {
+            const auto query = m_scheduler->get_dynamic_query_model();
+            OPENVINO_ASSERT(query.second);
+            return query.second->get_property(name);
+        }
         std::lock_guard<std::mutex> lock(m_context->m_mutex);
         {
             if (m_scheduler->m_compile_context[CPU].m_is_enabled && m_scheduler->m_compile_context[CPU].m_is_already)
@@ -232,6 +256,16 @@ ov::Any AutoCompiledModel::get_property(const std::string& name) const {
             return m_scheduler->m_compile_context[ACTUALDEVICE].m_compiled_model->get_property(name);
         }
     } else if (name == ov::loaded_from_cache) {
+        if (m_context->m_dynamic_device_selection) {
+            const auto query = m_scheduler->get_dynamic_query_model();
+            try {
+                OPENVINO_ASSERT(query.second);
+                return query.second->get_property(name).as<bool>();
+            } catch (const ov::Exception&) {
+                LOG_DEBUG_TAG("get_property loaded_from_cache from %s failed", query.first.c_str());
+                return false;
+            }
+        }
         std::lock_guard<std::mutex> lock(m_context->m_fallback_mutex);
         std::string device_name;
         try {

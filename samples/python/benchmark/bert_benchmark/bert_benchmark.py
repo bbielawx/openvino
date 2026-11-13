@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Copyright (C) 2022 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import logging as log
@@ -9,9 +9,8 @@ import sys
 import tempfile
 from time import perf_counter
 
-import datasets
 import openvino as ov
-from openvino.runtime import get_version
+import datasets
 from transformers import AutoTokenizer
 from transformers.onnx import export
 from transformers.onnx.features import FeaturesManager
@@ -20,7 +19,7 @@ from transformers.onnx.features import FeaturesManager
 def main():
     log.basicConfig(format='[ %(levelname)s ] %(message)s', level=log.INFO, stream=sys.stdout)
     log.info('OpenVINO:')
-    log.info(f"{'Build ':.<39} {get_version()}")
+    log.info(f"{'Build ':.<39} {ov.__version__}")
     model_name = 'bert-base-uncased'
     # Download the model
     transformers_model = FeaturesManager.get_model_from_feature('default', model_name)
@@ -45,7 +44,7 @@ def main():
         log.error("Can't set dynamic shape")
         raise
     # Optimize for throughput. Best throughput can be reached by
-    # running multiple openvino.runtime.InferRequest instances asyncronously
+    # running multiple openvino.InferRequest instances asyncronously
     tput = {'PERFORMANCE_HINT': 'THROUGHPUT'}
     # Pick a device by replacing CPU, for example MULTI:CPU(4),GPU(8).
     # It is possible to set CUMULATIVE_THROUGHPUT as PERFORMANCE_HINT for AUTO device

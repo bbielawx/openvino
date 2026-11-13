@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -16,7 +16,7 @@ namespace kernel_selector {
 class ConvolutionKernelBase : public WeightBiasKernelBase {
 public:
     using WeightBiasKernelBase::WeightBiasKernelBase;
-    virtual ~ConvolutionKernelBase() {}
+    ~ConvolutionKernelBase() override = default;
 
     struct DispatchData : public CommonDispatchData {
         struct CLDNNStyle {
@@ -36,8 +36,23 @@ public:
             size_t globalWorkSizeDZ;
         };
 
+        struct BlockParams {
+            size_t output_block_width;
+            size_t output_block_height;
+            size_t output_block_depth;
+
+            size_t output_block_features;
+
+            size_t input_block_width;
+            size_t input_block_height;
+            size_t input_block_depth;
+
+            size_t feature_slm_split;
+        };
+
         CLDNNStyle cldnnStyle;
         GEMMStyle gemmStyle;
+        BlockParams blockParams;
     };
 
     std::string GetAutoTuneOptions(int autoTuneIndex) const;
@@ -62,7 +77,7 @@ protected:
 
     Datatype GetPackedType(Datatype dt, size_t pack_size = 4) const;
     Datatype GetPackedInputType(const convolution_params& params) const;
-    Datatype GetPackedOutputType(const convolution_params& params) const;
+    Datatype GetPackedOutputType(const convolution_params& params, size_t pack_size = 4) const;
     Datatype GetActivationType(const convolution_params& params) const;
     Datatype GetAccumulatorType(const convolution_params& params) const;
     void GetUpdateDispatchDataFunc(KernelData& kd) const override;

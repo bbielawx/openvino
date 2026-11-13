@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -22,10 +22,7 @@ using namespace ov;
 using namespace ov::op;
 using namespace xla;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 namespace {
 vector<int64_t> get_const_vector(const NodeContext& node, const Output<Node>& input, const string& input_name) {
@@ -111,7 +108,7 @@ OutputVector translate_xla_conv_v2_op(const NodeContext& node) {
                              is_all_one,
                              "[TensorFlow Frontend] internal error: convolutional kernel with holes is not supported");
 
-    ConvolutionDimensionNumbers dimension_numbers;
+    ConvolutionDimensionNumbers dimension_numbers{};
     TENSORFLOW_OP_VALIDATION(
         node,
         dimension_numbers.ParseFromArray(dimension_numbers_message.data(),
@@ -226,7 +223,4 @@ OutputVector translate_xla_conv_v2_op(const NodeContext& node) {
     return {conv};
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

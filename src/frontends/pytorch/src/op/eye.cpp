@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,10 +9,7 @@
 #include "openvino/op/convert.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -45,7 +42,18 @@ OutputVector translate_eye(const NodeContext& context) {
     return {context.mark_node(std::make_shared<v0::Convert>(eye, dtype))};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+OutputVector translate_eye_fx(const NodeContext& context) {
+    num_inputs_check(context, 1, 2);
+    auto x = get_input_as_i32(context, 0);
+    auto y = context.input_is_none(1) ? x : get_input_as_i32(context, 1);
+    // aten::eye support only main diagonal
+    auto diagonal = context.mark_node(v0::Constant::create(element::i32, Shape{}, {0}));
+    auto dtype = element::f32;
+    if (context.has_attribute("dtype")) {
+        dtype = context.get_attribute<element::Type>("dtype");
+    }
+    auto eye = context.mark_node(std::make_shared<v9::Eye>(x, y, diagonal, dtype));
+    return {context.mark_node(std::make_shared<v0::Convert>(eye, dtype))};
+};
+
+}  // namespace ov::frontend::pytorch::op

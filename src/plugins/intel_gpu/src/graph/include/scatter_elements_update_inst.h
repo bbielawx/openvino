@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,6 +9,18 @@
 
 namespace cldnn {
 
+template <>
+struct typed_program_node<scatter_elements_update> : public typed_program_node_base<scatter_elements_update> {
+private:
+    using parent = typed_program_node_base<scatter_elements_update>;
+
+public:
+    using parent::parent;
+    program_node& input(std::size_t i = 0) const { return get_dependency(i); }
+
+    std::vector<size_t> get_shape_infer_dependencies() const override { return {}; }
+};
+
 using scatter_elements_update_node = typed_program_node<scatter_elements_update>;
 
 template <>
@@ -17,10 +29,14 @@ class typed_primitive_inst<scatter_elements_update> : public typed_primitive_ins
     using parent::parent;
 
 public:
+    template<typename ShapeType>
+    static std::vector<layout> calc_output_layouts(scatter_elements_update_node const& /*node*/, const kernel_impl_params& impl_param) {
+        return forward_input0_shape<ShapeType>(impl_param);
+    }
+
     static layout calc_output_layout(scatter_elements_update_node const& node, kernel_impl_params const& impl_param);
     static std::string to_string(scatter_elements_update_node const& node);
 
-public:
     typed_primitive_inst(network& network, scatter_elements_update_node const& desc);
     void update_output_memory() override;
 

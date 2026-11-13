@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,14 +11,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <functional>
 #include <iterator>
 #include <map>
 #include <set>
 #include <unordered_map>
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
 /**
  * @brief Provides caseless comparison for STL algorithms
@@ -60,9 +60,9 @@ public:
 template <class T>
 class CaselessHash : public std::hash<T> {
 public:
-    size_t operator()(const T& __val) const noexcept {
+    size_t operator()(const T& _val) const noexcept {
         T lc;
-        std::transform(std::begin(__val), std::end(__val), std::back_inserter(lc), [](typename T::value_type ch) {
+        std::transform(std::begin(_val), std::end(_val), std::back_inserter(lc), [](typename T::value_type ch) {
             return std::tolower(ch);
         });
         return std::hash<T>()(lc);
@@ -72,5 +72,4 @@ public:
 template <class Key, class Value>
 using caseless_unordered_map = std::unordered_map<Key, Value, CaselessHash<Key>, CaselessEq<Key>>;
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

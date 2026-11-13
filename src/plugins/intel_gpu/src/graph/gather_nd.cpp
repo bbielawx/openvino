@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -42,7 +42,7 @@ layout gather_nd_inst::calc_output_layout(gather_nd_node const& node, kernel_imp
 
     if (op->batch_merged_output) {
         // calculate batch_size by batch_dims
-        int batch_size = 1;
+        tensor::value_type batch_size = 1;
         for (uint8_t x = 0; x < batch_dims; x++) {
             batch_size *= output_sizes[x];
         }
@@ -65,7 +65,7 @@ layout gather_nd_inst::calc_output_layout(gather_nd_node const& node, kernel_imp
     auto padding = op->output_paddings[0];
 
     if (impl_param.has_fused_primitives()) {
-        input_layout_origin.data_type = impl_param.get_fused_output_layout().data_type;
+        input_layout_origin.data_type = impl_param.get_output_element_type();
     }
 
     return layout(input_layout_origin.data_type, output_format, output_sizes_tensor, padding);
@@ -81,7 +81,7 @@ std::vector<layout> gather_nd_inst::calc_output_layouts(gather_nd_node const& /*
 
     auto output_type = input_layout.data_type;
     if (impl_param.has_fused_primitives()) {
-        output_type = impl_param.get_fused_output_layout().data_type;
+        output_type = impl_param.get_output_element_type();
     }
 
     std::vector<ShapeType> output_shapes;

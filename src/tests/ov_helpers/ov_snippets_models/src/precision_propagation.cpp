@@ -1,10 +1,12 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "precision_propagation.hpp"
 #include <assert.h>
-#include "openvino/opsets/opset1.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
+#include "openvino/op/maximum.hpp"
+#include "snippets/op/result.hpp"
 
 namespace ov {
 namespace test {
@@ -21,10 +23,11 @@ std::shared_ptr<ov::Model> PrecisionPropagationAddFunction::get(
     const std::pair<element::Type, element::Type>& convertion_before_op2_2,
     const element::Type& convertion_after_op2,
     const element::Type& convertion_before_result) {
-    const auto create_convert = [](std::shared_ptr<Node> parent, const element::Type convertion_type) -> std::shared_ptr<Node> {
-        return convertion_type == element::undefined
-            ? std::dynamic_pointer_cast<Node>(parent)
-            : std::make_shared<ov::snippets::op::ConvertSaturation>(parent, convertion_type);
+    const auto create_convert = [](std::shared_ptr<Node> parent,
+                                   const element::Type convertion_type) -> std::shared_ptr<Node> {
+        return convertion_type == element::dynamic
+                   ? std::dynamic_pointer_cast<Node>(parent)
+                   : std::make_shared<ov::snippets::op::ConvertSaturation>(parent, convertion_type);
     };
 
     const auto make_branch = [&create_convert](
@@ -48,10 +51,9 @@ std::shared_ptr<ov::Model> PrecisionPropagationAddFunction::get(
 
     parent = create_convert(parent, convertion_before_op2_1);
 
-    const auto maximum_in2_type = convertion_before_op2_2.second == element::undefined ?
-        constant_precision :
-        convertion_before_op2_2.second;
-    if ((convertion_before_op2_2.first == element::undefined) &&
+    const auto maximum_in2_type =
+        convertion_before_op2_2.second == element::dynamic ? constant_precision : convertion_before_op2_2.second;
+    if ((convertion_before_op2_2.first == element::dynamic) &&
         (parent->get_output_element_type(0) != maximum_in2_type)) {
         parent = std::make_shared<ov::snippets::op::ConvertSaturation>(parent, maximum_in2_type);
     }
@@ -67,14 +69,13 @@ std::shared_ptr<ov::Model> PrecisionPropagationAddFunction::get(
 
     parent = create_convert(parent, convertion_before_result);
 
-    const auto result = std::make_shared<ov::opset1::Result>(parent);
+    const auto result = std::make_shared<ov::snippets::op::Result>(parent);
     auto& result_out_tensor = result->get_output_tensor(0);
     result_out_tensor.set_names({ "result_tensor" });
     result->set_friendly_name("result");
 
-    const ov::ResultVector results{ result };
     const ov::ParameterVector parameters{ branch1.first, branch2.first };
-    const auto model = std::make_shared<ov::Model>(results, parameters, "SnippetsPrecisionPropagation");
+    const auto model = std::make_shared<ov::Model>(ov::ResultVector{result}, parameters, "SnippetsPrecisionPropagation");
     return model;
 }
 

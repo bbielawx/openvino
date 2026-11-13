@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,17 +10,16 @@
 
 #include "intel_gpu/primitives/gather_nd.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 static void CreateGatherNDOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v5::GatherND>& op) {
     validate_inputs_count(op, {2});
     auto inputs = p.GetInputInfo(op);
     std::string layerName = layer_type_name_ID(op);
 
-    auto input_rank = static_cast<const uint8_t>(op->get_input_partial_shape(0).size());
-    auto indices_rank = static_cast<const uint8_t>(op->get_input_partial_shape(1).size());
-    auto batch_dims = static_cast<const uint8_t>(op->get_batch_dims());
+    auto input_rank = static_cast<uint8_t>(op->get_input_partial_shape(0).size());
+    auto indices_rank = static_cast<uint8_t>(op->get_input_partial_shape(1).size());
+    auto batch_dims = static_cast<uint8_t>(op->get_batch_dims());
 
     auto primitive = cldnn::gather_nd(layerName,
                                       inputs[0],
@@ -39,9 +38,9 @@ static void CreateGatherNDOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v8
     auto inputs = p.GetInputInfo(op);
     std::string layerName = layer_type_name_ID(op);
 
-    auto input_rank = static_cast<const uint8_t>(op->get_input_partial_shape(0).size());
-    auto indices_rank = static_cast<const uint8_t>(op->get_input_partial_shape(1).size());
-    auto batch_dims = static_cast<const uint8_t>(op->get_batch_dims());
+    auto input_rank = static_cast<uint8_t>(op->get_input_partial_shape(0).size());
+    auto indices_rank = static_cast<uint8_t>(op->get_input_partial_shape(1).size());
+    auto batch_dims = static_cast<uint8_t>(op->get_batch_dims());
 
     auto primitive = cldnn::gather_nd(layerName,
                                       inputs[0],
@@ -56,5 +55,4 @@ static void CreateGatherNDOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v8
 
 REGISTER_FACTORY_IMPL(v8, GatherND);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

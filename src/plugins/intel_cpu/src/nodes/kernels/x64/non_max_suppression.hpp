@@ -1,23 +1,31 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
 #include "jit_kernel_base.hpp"
+#include "openvino/core/visibility.hpp"
 
 #if defined(OPENVINO_ARCH_X86_64)
-#include "emitters/plugin/x64/jit_load_store_emitters.hpp"
-#include "cpu/x64/injectors/jit_uni_eltwise_injector.hpp"
-#endif // OPENVINO_ARCH_X86_64
+#    include <xbyak/xbyak.h>
 
-namespace ov {
-namespace intel_cpu {
+#    include <common/utils.hpp>
+#    include <cpu/x64/cpu_isa_traits.hpp>
+#    include <cpu/x64/jit_generator.hpp>
 
-enum class NMSBoxEncodeType {
-    CORNER,
-    CENTER
-};
+#    include "cpu/x64/injectors/jit_uni_eltwise_injector.hpp"
+#    include "emitters/plugin/x64/jit_load_store_emitters.hpp"
+#endif  // OPENVINO_ARCH_X86_64
+
+namespace ov::intel_cpu {
+
+enum class NMSBoxEncodeType : uint8_t { CORNER, CENTER };
 
 #if defined(OPENVINO_ARCH_X86_64)
 
@@ -40,7 +48,6 @@ struct NmsCallArgs {
     void* score;
 };
 
-
 template <dnnl::impl::cpu::x64::cpu_isa_t isa>
 class NonMaxSuppression : public JitKernel<NmsCompileParams, NmsCallArgs> {
 public:
@@ -51,10 +58,12 @@ public:
     void generate() override;
 
 private:
-    using Vmm = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core, Xbyak::Zmm,
-                                                         isa == dnnl::impl::cpu::x64::avx2,        Xbyak::Ymm,
-                                                                                                   Xbyak::Xmm>::type;
-    uint32_t vlen = dnnl::impl::cpu::x64::cpu_isa_traits<isa>::vlen;
+    using Vmm = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core,
+                                                         Xbyak::Zmm,
+                                                         isa == dnnl::impl::cpu::x64::avx2,
+                                                         Xbyak::Ymm,
+                                                         Xbyak::Xmm>::type;
+    uint32_t vlen = dnnl::impl::cpu::x64::cpu_isa_traits_t<isa>::vlen;
     const int vector_step = vlen / sizeof(float);
     const int scalar_step = 1;
 
@@ -112,7 +121,7 @@ private:
     Xbyak::Opmask k_mask = Xbyak::Opmask(7);
     Xbyak::Opmask k_mask_one = Xbyak::Opmask(6);
 
-    std::shared_ptr<dnnl::impl::cpu::x64::jit_uni_eltwise_injector_f32<isa>> exp_injector;
+    std::shared_ptr<dnnl::impl::cpu::x64::jit_uni_eltwise_injector_t<isa>> exp_injector;
 
     inline void hard_nms();
 
@@ -130,7 +139,7 @@ private:
 
     inline void horizontal_mul();
 
-    inline void prepare_table() {
+    void prepare_table() {
         auto broadcast_d = [&](int val) {
             for (size_t d = 0; d < vlen / sizeof(int); ++d) {
                 dd(val);
@@ -139,14 +148,13 @@ private:
 
         align(64);
         L(l_table_constant);
-        broadcast_d(0x3f000000);   // 0.5f
+        broadcast_d(0x3f000000);  // 0.5f
         dw(0x0001);
     }
 };
 
-}   // namespace kernel
+}  // namespace kernel
 
-#endif // OPENVINO_ARCH_X86_64
+#endif  // OPENVINO_ARCH_X86_64
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

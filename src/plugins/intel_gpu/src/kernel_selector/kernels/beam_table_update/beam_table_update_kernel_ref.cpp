@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -79,22 +79,24 @@ ParamsKey BeamTableUpdateKernelRef::GetSupportedKey() const {
 
 bool BeamTableUpdateKernelRef::Validate(const Params& params) const {
     if (params.GetType() != KernelType::BEAM_TABLE_UPDATE) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(params.layerID);
     }
 
     const auto& kernel_params = dynamic_cast<const beam_table_update_params&>(params);
     if (kernel_params.inputs.size() != 2) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(params.layerID);
     }
     if (kernel_params.outputs.size() != 1) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(params.layerID);
     }
 
     return true;
 }
 
 JitConstants BeamTableUpdateKernelRef::GetJitConstants(const beam_table_update_params& kernel_params) const {
-    return MakeBaseParamsJitConstants(kernel_params);
+    JitConstants jit = MakeBaseParamsJitConstants(kernel_params);
+    jit.AddConstant({MakeJitConstant("INDIRECT_AXIS", kernel_params.indirect_axis)});
+    return jit;
 }
 
 CommonDispatchData BeamTableUpdateKernelRef::SetDefault(const beam_table_update_params& kernel_params) {
@@ -102,8 +104,13 @@ CommonDispatchData BeamTableUpdateKernelRef::SetDefault(const beam_table_update_
 
     auto output = kernel_params.outputs[0];
     if (!output.is_dynamic()) {
-        dispatch_data.gws = {output.Batch().v, Align(output.LogicalSize() / output.Batch().v, 16), 1};
-        dispatch_data.lws = {1, 16, 1};
+        if (kernel_params.indirect_axis == 0) {
+            dispatch_data.gws = {output.Batch().v, Align(output.LogicalSize() / output.Batch().v, 16), 1};
+            dispatch_data.lws = {1, 16, 1};
+        } else {
+            dispatch_data.gws = {Align(output.LogicalSize() / output.Feature().v, 16), output.Feature().v, 1};
+            dispatch_data.lws = {16, 1, 1};
+        }
     }
 
     return dispatch_data;

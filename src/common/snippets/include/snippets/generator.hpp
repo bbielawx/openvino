@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,33 +8,35 @@
  */
 #pragma once
 
-#include "snippets_isa.hpp"
+#include <memory>
+#include <vector>
 
+#include "openvino/core/node.hpp"
+#include "openvino/core/node_output.hpp"
+#include "snippets/emitter.hpp"
+#include "snippets/kernel_executor_table.hpp"
 #include "snippets/lowered/linear_ir.hpp"
-#include "snippets/shape_types.hpp"
 #include "target_machine.hpp"
 
-namespace ov {
-namespace snippets {
-
+namespace ov::snippets {
 
 class Generator;
 /**
  * @interface LoweringResult
  * @brief Holds all relevant information produced during lowering
  * @param compiled_snippet pointer to interface class that encapsulates compiled binary code
- * @param buffer_scratchpad_size the amount of additional memory required by the binary code to execute.
  * Must be allocated and freed by the backend.
  */
 class LoweringResult {
     friend class Generator;
     // Some emitters rely on other precompiled kernels.
-    // We need to keep the pointers to such emitters alive, so the kernels or nodes would still be accessible at runtime.
-    std::vector<std::shared_ptr<Emitter>> m_saved_emitters{};
+    // We need to keep the pointers to such emitters alive, so the kernels or nodes would still be accessible at
+    // runtime.
+    std::vector<std::shared_ptr<Emitter>> m_saved_emitters;
 
 public:
-    std::shared_ptr<CompiledSnippet> compiled_snippet = nullptr;
-    size_t buffer_scratchpad_size = 0;
+    CompiledSnippetPtr compiled_snippet = nullptr;
+    KernelExecutorTablePtr kernel_executor_table = nullptr;
 };
 
 /**
@@ -47,20 +49,18 @@ public:
     Schedule() = default;
     /**
      * @brief Create schedule out of specific parameters
-     * @param domain work domain for kernel execution
      * @param lr lowering result produced during code generation
      */
-    Schedule(std::vector<size_t>&& domain, LoweringResult&& lr) : parallel_exec_domain(domain), lowering_result(lr) {}
-    Schedule(std::vector<size_t> domain, LoweringResult&& lr) : parallel_exec_domain(std::move(domain)), lowering_result(lr) {}
+    explicit Schedule(LoweringResult&& lr) : lowering_result(lr) {}
     /**
      * @brief Returns callable instanse of code pointer
      */
-    template<typename K> K get_callable() const {
+    template <typename K>
+    K get_callable() const {
         return reinterpret_cast<K>(const_cast<unsigned char*>(lowering_result.compiled_snippet->get_code()));
     }
 
-    VectorDims parallel_exec_domain {};
-    LoweringResult lowering_result {};
+    LoweringResult lowering_result{};
 };
 
 /**
@@ -68,28 +68,23 @@ public:
  * @brief Target independent code generator interface
  * @ingroup snippets
  */
-class Generator {
+class Generator : public std::enable_shared_from_this<Generator> {
 public:
     /**
      * @brief Default constructor
      */
-    Generator(const std::shared_ptr<TargetMachine>& t) : target(t) {}
+    explicit Generator(const std::shared_ptr<TargetMachine>& t) : target(t) {}
     /**
      * @brief Default destructor
      */
     virtual ~Generator() = default;
     /**
-    * @interface GeneratorConfig
-    * @brief Allows to tweak the lowering process.
-    */
-    /**
      * @brief generates executable code
      * @param linear_ir lowered IR for code generation
-     * @param result variable to hande the result, only compiled_snippet and m_saved_emitters field will be modified
      * @param compile_params compile-time parameters used for code generation
-     * @return void
+     * @return variable to handle the result
      */
-    void generate(lowered::LinearIR& linear_ir, LoweringResult& result, const void* compile_params = nullptr) const;
+    LoweringResult generate(const lowered::LinearIRPtr& linear_ir, const void* compile_params = nullptr) const;
 
     /**
      * @brief gets target machine
@@ -108,18 +103,19 @@ public:
 
 protected:
     /**
-    * @brief gets register type by specific plugin op type
-    * @return register type
-    */
+     * @brief gets register type by specific plugin op type
+     * @return register type
+     */
     virtual RegType get_specific_op_out_reg_type(const ov::Output<Node>& out) const;
     /**
-    * @brief returns true if an emitter can use precompiled kernel.
-    * @return bool
-    */
-    virtual bool uses_precompiled_kernel(const std::shared_ptr<Emitter>& emitter) const { return false; }
+     * @brief returns true if an emitter can use precompiled kernel.
+     * @return bool
+     */
+    virtual bool uses_precompiled_kernel([[maybe_unused]] const std::shared_ptr<Emitter>& emitter) const {
+        return false;
+    }
 
     std::shared_ptr<TargetMachine> target;
 };
 
-} // namespace snippets
-} // namespace ov
+}  // namespace ov::snippets

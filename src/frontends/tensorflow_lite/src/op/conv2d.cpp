@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,13 +8,10 @@
 
 using namespace std;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow_lite {
-namespace op {
+namespace ov::frontend::tensorflow_lite::op {
 
 OutputVector conv2d(const ov::frontend::tensorflow_lite::NodeContext& node) {
-    auto decoder = get_conv_decoder_map<tflite::Conv2DOptions>("Conv2D", node);
+    const auto& decoder = node.get_decoder();
     FRONT_END_GENERAL_CHECK(node.get_input_size() >= 2,
                             "Unexpected number of input in node of type=",
                             node.get_op_type(),
@@ -28,7 +25,4 @@ OutputVector conv2d(const ov::frontend::tensorflow_lite::NodeContext& node) {
     return output;
 }
 
-}  // namespace op
-}  // namespace tensorflow_lite
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow_lite::op

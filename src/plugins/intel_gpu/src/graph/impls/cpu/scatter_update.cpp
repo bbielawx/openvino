@@ -1,12 +1,11 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "impls/cpu/cpu_impl_helpers.hpp"
 #include "register.hpp"
 #include "scatter_update_inst.h"
-#include "implementation_map.hpp"
-
-#include "intel_gpu/runtime/error_handler.hpp"
+#include "registry/implementation_map.hpp"
 
 #include "openvino/op/scatter_update.hpp"
 
@@ -24,7 +23,7 @@ struct scatter_update_impl : public typed_primitive_impl<scatter_update> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::cpu::scatter_update_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<scatter_update_impl>(*this);
+        return std::make_unique<scatter_update_impl>(*this);
     }
 
     scatter_update_impl() : parent("scatter_update_cpu_impl") {}
@@ -53,15 +52,13 @@ struct scatter_update_impl : public typed_primitive_impl<scatter_update> {
         OV_ITT_SCOPED_TASK(ov::intel_gpu::itt::domains::intel_gpu_plugin, "scatter_update::execute_impl");
         auto& stream = instance.get_network().get_stream();
 
-        const bool pass_through_events = (stream.get_queue_type() == QueueTypes::out_of_order) && instance.get_node().is_in_shape_of_subgraph();
+        const bool pass_through_events = (stream.get_queue_type() == QueueTypes::out_of_order) && instance.all_dependencies_cpu_impl();
 
         if (!pass_through_events) {
-            for (auto e : events) {
-                e->wait();
-            }
+            stream.wait_for_events(events);
         }
 
-        auto params = instance.get_impl_params();
+        const auto* params = instance.get_impl_params();
 
         ov::TensorVector input_host_tensors;
         ov::TensorVector output_host_tensors;
@@ -69,15 +66,17 @@ struct scatter_update_impl : public typed_primitive_impl<scatter_update> {
         auto axis_tensor = ov::Tensor(ov::element::i64, ov::Shape{1}, static_cast<void*>(&axis));
 
         std::vector<memory::ptr> input_mem_ptrs;
-        for (size_t i = 0; i < instance.dependencies().size(); i++)
+        for (size_t i = 0; i < instance.dependencies().size(); i++) {
             input_mem_ptrs.push_back(instance.dep_memory_ptr(i));
+        }
 
         auto output_mem_ptr = instance.output_memory_ptr();
 
-        cldnn::mem_lock<uint8_t, mem_lock_type::read> output_lock(output_mem_ptr, stream);
+        cldnn::mem_lock<uint8_t, mem_lock_type::read_write> output_lock(output_mem_ptr, stream);
 
-        for (size_t i = 0; i < input_mem_ptrs.size(); i++)
+        for (size_t i = 0; i < input_mem_ptrs.size(); i++) {
             input_host_tensors.push_back(make_tensor(params->input_layouts[i], input_mem_ptrs[i]->lock(stream, mem_lock_type::read)));
+        }
 
         input_host_tensors.push_back(axis_tensor);
 
@@ -90,27 +89,24 @@ struct scatter_update_impl : public typed_primitive_impl<scatter_update> {
         OPENVINO_ASSERT(op->evaluate(output_host_tensors, input_host_tensors),
                         "[GPU] Couldn't execute scatter_update primitive with id ", instance.id());
 
-        for (size_t i = 0; i < input_mem_ptrs.size(); i++)
+        for (size_t i = 0; i < input_mem_ptrs.size(); i++) {
             input_mem_ptrs[i]->unlock(stream);
-
-        if (pass_through_events) {
-            if (events.size() > 1) {
-                return stream.group_events(events);
-            } else if (events.size() == 1) {
-                return events[0];
-            }
         }
 
-        return stream.create_user_event(true);
+        if (pass_through_events) {
+            return stream.group_events(events);
+        }
+
+        return make_output_event(stream, instance.is_output());
     }
 
     void init_kernels(const kernels_cache& , const kernel_impl_params&) override {}
 
-    void update_dispatch_data(const kernel_impl_params& impl_param) override {}
+    void update(primitive_inst& inst, const kernel_impl_params& impl_param) override {}
 
 public:
     static std::unique_ptr<primitive_impl> create(const scatter_update_node& arg, const kernel_impl_params& impl_param) {
-        return make_unique<scatter_update_impl>();
+        return std::make_unique<scatter_update_impl>();
     }
 };
 

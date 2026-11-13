@@ -1,18 +1,17 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/com.microsoft/pad.hpp"
+#include "openvino/op/pad.hpp"
 
 #include "core/null_node.hpp"
+#include "core/operator_set.hpp"
 #include "exceptions.hpp"
 #include "openvino/op/constant.hpp"
-#include "openvino/op/pad.hpp"
 #include "openvino/op/squeeze.hpp"
 #include "openvino/op/util/op_types.hpp"
 #include "utils/reshape.hpp"
 #include "utils/split.hpp"
-
 namespace {
 ov::op::PadMode get_pad_mode(std::string mode) {
     ov::op::PadMode pad_mode;
@@ -33,12 +32,7 @@ ov::op::PadMode get_pad_mode(std::string mode) {
 
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace custom {
-namespace set_1 {
+namespace ov::frontend::onnx::com_microsoft::opset_1 {
 ov::OutputVector pad(const ov::frontend::onnx::Node& node) {
     const auto inputs = node.get_ov_inputs();
     const auto& data = inputs[0];
@@ -62,7 +56,7 @@ ov::OutputVector pad(const ov::frontend::onnx::Node& node) {
         std::vector<std::int64_t> pads_vector =
             ov::as_type_ptr<v0::Constant>(pads.get_node_shared_ptr())->get_vector<std::int64_t>();
 
-        std::size_t const half_size = pads_vector.size() / 2;
+        const std::size_t half_size = pads_vector.size() / 2;
         std::vector<std::int64_t> padding_begin_values(pads_vector.begin(), pads_vector.begin() + half_size);
         std::vector<std::int64_t> padding_end_values(pads_vector.begin() + half_size, pads_vector.end());
 
@@ -80,9 +74,7 @@ ov::OutputVector pad(const ov::frontend::onnx::Node& node) {
 
     return {std::make_shared<v12::Pad>(data, padding_begin, padding_end, values, pad_mode)};
 }
-}  // namespace set_1
-}  // namespace custom
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+
+ONNX_OP("Pad", OPSET_SINCE(1), com_microsoft::opset_1::pad, MICROSOFT_DOMAIN);
+
+}  // namespace ov::frontend::onnx::com_microsoft::opset_1

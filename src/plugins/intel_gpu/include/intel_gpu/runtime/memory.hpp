@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,6 +8,7 @@
 #include "memory_caps.hpp"
 #include "event.hpp"
 #include "engine_configuration.hpp"
+#include "compounds.hpp"
 
 #include <type_traits>
 
@@ -31,6 +32,8 @@ public:
     explicit MemoryTracker(engine* engine, void* buffer_ptr, size_t buffer_size, allocation_type alloc_type);
     ~MemoryTracker();
 
+    size_t size() const { return m_buffer_size; }
+
 private:
     engine* m_engine;
     void* m_buffer_ptr;
@@ -46,14 +49,20 @@ struct memory {
     virtual ~memory() = default;
     virtual void* lock(const stream& stream, mem_lock_type type = mem_lock_type::read_write) = 0;
     virtual void unlock(const stream& stream) = 0;
-    virtual event::ptr fill(stream& stream, unsigned char pattern) = 0;
-    virtual event::ptr fill(stream& stream) = 0;
+    virtual event::ptr fill(stream& stream, unsigned char pattern, const std::vector<event::ptr>& dep_events = {}, bool blocking = true) = 0;
+    virtual event::ptr fill(stream& stream, const std::vector<event::ptr>& dep_events = {}, bool blocking = true) {
+        return fill(stream, 0, dep_events, blocking);
+    }
     // only supports gpu_usm
     virtual void* buffer_ptr() const { return nullptr; }
 
     size_t size() const { return _bytes_count; }
     size_t count() const { return _layout.count(); }
-    virtual shared_mem_params get_internal_params() const = 0;
+    /// @brief Return internal params for specified runtime type
+    virtual shared_mem_params get_internal_params(runtime_types rt_type) const = 0;
+    shared_mem_params get_internal_params() const {
+        return get_internal_params(get_default_runtime_type());
+    }
     virtual bool is_allocated_by(const engine& engine) const { return &engine == _engine && _type != allocation_type::unknown; }
     engine* get_engine() const { return _engine; }
     const layout& get_layout() const { return _layout; }
@@ -69,30 +78,63 @@ struct memory {
             return true;
         }
 
-        if (l.data_padding.lower_size() != tensor(0) || l.data_padding.upper_size() != tensor(0)) {
+        if (l.data_padding) {
             return true;
         }
 
-        if (_bytes_count == l.bytes_count()) {
-            return false;
-        }
-
-        return true;
+        return _bytes_count != l.bytes_count();
     }
-    virtual event::ptr copy_from(stream& /* stream */, const memory& /* other */, bool blocking = true) = 0;
-    virtual event::ptr copy_from(stream& /* stream */, const void* /* host_ptr */, bool blocking = true, size_t dst_offset = 0, size_t data_size = 0) = 0;
 
-    virtual event::ptr copy_to(stream& stream, memory& other, bool blocking = true) { return other.copy_from(stream, *this, blocking); }
-    virtual event::ptr copy_to(stream& /* stream */, void* /* host_ptr */, bool blocking = true) = 0;
+    // Device <== Host
+    virtual event::ptr copy_from(stream& stream, const void* src_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) = 0;
+
+    // Device <== Device
+    virtual event::ptr copy_from(stream& stream, const memory& src_mem, size_t src_offset, size_t dst_offset, size_t size, bool blocking) = 0;
+
+    // Device ==> Host
+    virtual event::ptr copy_to(stream& stream, void* dst_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) const = 0;
+
+    // Device ==> Device
+    virtual event::ptr copy_to(stream& stream, memory& dst_mem, size_t src_offset, size_t dst_offset, size_t size, bool blocking) const {
+        return dst_mem.copy_from(stream, *this, src_offset, dst_offset, size, blocking);
+    }
+
+    virtual event::ptr copy_from(stream& stream, const memory& src_mem, bool blocking = true) {
+        const auto zero_offset = 0;
+        const auto data_size = src_mem._bytes_count;
+        return copy_from(stream, src_mem, zero_offset, zero_offset, data_size, blocking);
+    }
+
+    virtual event::ptr copy_from(stream& stream, const void* src_ptr, bool blocking = true) {
+        const auto zero_offset = 0;
+        const auto data_size = _bytes_count;
+        return copy_from(stream, src_ptr, zero_offset, zero_offset, data_size, blocking);
+    }
+
+    virtual event::ptr copy_to(stream& stream, memory& other, bool blocking = true) const {
+        const auto zero_offset = 0;
+        const auto data_size = _bytes_count;
+        return copy_to(stream, other, zero_offset, zero_offset, data_size, blocking);
+    }
+
+    virtual event::ptr copy_to(stream& stream, void* dst_ptr, bool blocking = true) const {
+        const auto zero_offset = 0;
+        const auto data_size = _bytes_count;
+        return copy_to(stream, dst_ptr, zero_offset, zero_offset, data_size, blocking);
+    }
 
 #ifdef ENABLE_ONEDNN_FOR_GPU
     virtual dnnl::memory get_onednn_memory(dnnl::memory::desc /* desc */, int64_t offset = 0) const {
         throw std::runtime_error("[CLDNN] Can't convert memory object to onednn");
     }
+
+    virtual dnnl::memory get_onednn_grouped_memory(dnnl::memory::desc /* desc */, const memory& offsets) const {
+        throw std::runtime_error("[CLDNN] Can't convert memory object to onednn");
+    }
 #endif
 
     std::shared_ptr<MemoryTracker> get_mem_tracker() const { return m_mem_tracker; }
-    GPU_DEBUG_CODE(bool from_memory_pool = false);
+    bool from_memory_pool = false;
 
 protected:
     engine* _engine;
@@ -112,9 +154,9 @@ struct simple_attached_memory : memory {
 
     void* lock(const stream& /* stream */, mem_lock_type /* type */) override { return _pointer; }
     void unlock(const stream& /* stream */) override {}
-    event::ptr fill(stream& /* stream */, unsigned char) override { return nullptr; }
-    event::ptr fill(stream& /* stream */) override { return nullptr; }
-    shared_mem_params get_internal_params() const override { return { shared_mem_type::shared_mem_empty, nullptr, nullptr, nullptr,
+    event::ptr fill(stream& /* stream */, unsigned char, const std::vector<event::ptr>&, bool) override { return nullptr; }
+    event::ptr fill(stream& /* stream */, const std::vector<event::ptr>&, bool) override { return nullptr; }
+    shared_mem_params get_internal_params(runtime_types rt_type) const override { return { shared_mem_type::shared_mem_empty, nullptr, nullptr, nullptr,
 #ifdef _WIN32
         nullptr,
 #else
@@ -122,17 +164,14 @@ struct simple_attached_memory : memory {
 #endif
         0}; };
 
-    event::ptr copy_from(stream& /* stream */, const memory& /* other */, bool /* blocking */) override {
-        OPENVINO_THROW("[GPU] copy_from is not implemented for simple_attached_memory");
+    event::ptr copy_from(stream& stream, const void* src_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) override {
+        OPENVINO_NOT_IMPLEMENTED;
     }
-    event::ptr copy_from(stream& /* stream */, const void* /* host_ptr */, bool /* blocking */, size_t /* dst_offset */, size_t /* data_size */) override {
-        OPENVINO_THROW("[GPU] copy_from is not implemented for simple_attached_memory");
+    event::ptr copy_from(stream& stream, const memory& src_mem, size_t src_offset, size_t dst_offset, size_t size, bool blocking) override {
+        OPENVINO_NOT_IMPLEMENTED;
     }
-    event::ptr copy_to(stream& /* stream */, memory& /* other */, bool /* blocking */) override {
-        OPENVINO_THROW("[GPU] copy_to is not implemented for simple_attached_memory");
-    }
-    event::ptr copy_to(stream& /* stream */, void* /* host_ptr */, bool /* blocking */) override {
-        OPENVINO_THROW("[GPU] copy_to is not implemented for simple_attached_memory");
+    event::ptr copy_to(stream& stream, void* dst_ptr, size_t src_offset, size_t dst_offset, size_t size, bool blocking) const override {
+        OPENVINO_NOT_IMPLEMENTED;
     }
 
 private:
@@ -154,9 +193,9 @@ struct mem_lock {
     mem_lock(const mem_lock& other) = delete;
     mem_lock& operator=(const mem_lock& other) = delete;
 
-#if defined(_SECURE_SCL) && (_SECURE_SCL > 0)
-    auto begin() & { return stdext::make_checked_array_iterator(_ptr, size()); }
-    auto end() & { return stdext::make_checked_array_iterator(_ptr, size(), size()); }
+#if defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
+    auto begin() & { return make_checked_array_iterator(_ptr, size()); }
+    auto end() & { return make_checked_array_iterator(_ptr, size(), size()); }
 #else
     T* begin() & { return _ptr; }
     T* end() & { return _ptr + size(); }
@@ -192,7 +231,7 @@ struct surfaces_lock {
     surfaces_lock(const surfaces_lock& other) = delete;
     surfaces_lock& operator=(const surfaces_lock& other) = delete;
 
-    static std::unique_ptr<surfaces_lock> create(engine_types engine_type, std::vector<memory::ptr> mem, const stream& stream);
+    static bool is_lock_needed(const shared_mem_type& mem_type);
 };
 
 template<typename T>
@@ -208,28 +247,28 @@ inline std::vector<T> read_vector(cldnn::memory::ptr mem, const cldnn::stream& s
     if (mem->get_allocation_type() == allocation_type::usm_host || mem->get_allocation_type() == allocation_type::usm_shared) {
         switch (mem_dtype) {
             case data_types::i32: {
-                auto p_mem = reinterpret_cast<int32_t*>(mem->buffer_ptr());
+                auto* p_mem = reinterpret_cast<int32_t*>(mem->buffer_ptr());
                 for (size_t i = 0; i < mem->count(); ++i) {
                     out_vecs.push_back(static_cast<T>(p_mem[i]));
                 }
                 break;
             }
             case data_types::i64: {
-                auto p_mem = reinterpret_cast<int64_t*>(mem->buffer_ptr());
+                auto* p_mem = reinterpret_cast<int64_t*>(mem->buffer_ptr());
                 for (size_t i = 0; i < mem->count(); ++i) {
                     out_vecs.push_back(static_cast<T>(p_mem[i]));
                 }
                 break;
             }
             case data_types::f16: {
-                auto p_mem = reinterpret_cast<uint16_t*>(mem->buffer_ptr());
+                auto* p_mem = reinterpret_cast<uint16_t*>(mem->buffer_ptr());
                 for (size_t i = 0; i < mem->count(); ++i) {
                     out_vecs.push_back(static_cast<T>(ov::float16::from_bits(p_mem[i])));
                 }
                 break;
             }
             case data_types::f32: {
-                auto p_mem = reinterpret_cast<float*>(mem->buffer_ptr());
+                auto* p_mem = reinterpret_cast<float*>(mem->buffer_ptr());
                 for (size_t i = 0; i < mem->count(); ++i) {
                     out_vecs.push_back(static_cast<T>(p_mem[i]));
                 }
@@ -238,25 +277,31 @@ inline std::vector<T> read_vector(cldnn::memory::ptr mem, const cldnn::stream& s
             default: OPENVINO_ASSERT(false, "[GPU] read_vector: unsupported data type");
         }
     } else {
+        auto append_from_lock = [](auto& lock, std::vector<T>& out) {
+            out.reserve(lock.end() - lock.begin());
+            for (auto it = lock.begin(); it != lock.end(); ++it) {
+                out.push_back(static_cast<T>(*it));
+            }
+        };
         switch (mem_dtype) {
             case data_types::i32: {
                 mem_lock<int32_t, mem_lock_type::read> lock{mem, stream};
-                out_vecs = std::move(std::vector<T>(lock.begin(), lock.end()));
+                append_from_lock(lock, out_vecs);
                 break;
             }
             case data_types::i64: {
                 mem_lock<int64_t, mem_lock_type::read> lock{mem, stream};
-                out_vecs = std::move(std::vector<T>(lock.begin(), lock.end()));
+                append_from_lock(lock, out_vecs);
                 break;
             }
             case data_types::f16: {
                 mem_lock<ov::float16, mem_lock_type::read> lock{mem, stream};
-                out_vecs = std::move(std::vector<T>(lock.begin(), lock.end()));
+                append_from_lock(lock, out_vecs);
                 break;
             }
             case data_types::f32: {
                 mem_lock<float, mem_lock_type::read> lock{mem, stream};
-                out_vecs = std::move(std::vector<T>(lock.begin(), lock.end()));
+                append_from_lock(lock, out_vecs);
                 break;
             }
             default: OPENVINO_ASSERT(false, "[GPU] read_vector: unsupported data type");

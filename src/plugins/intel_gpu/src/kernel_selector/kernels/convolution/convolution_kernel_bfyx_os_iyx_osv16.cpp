@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -196,21 +196,16 @@ ConvolutionKernelBase::DispatchData ConvolutionKernel_bfyx_os_iyx_osv16::SetDefa
     return dispatchData;
 }
 
-KernelsPriority ConvolutionKernel_bfyx_os_iyx_osv16::GetKernelsPriority(const Params& /*params*/) const {
-    return FORCE_PRIORITY_3;
+KernelsPriority ConvolutionKernel_bfyx_os_iyx_osv16::GetKernelsPriority(const Params& params) const {
+    const auto& p = static_cast<const convolution_params&>(params);
+    auto input_dt = GetUnitType(p);
+
+    return (p.groups > 1 || input_dt == Datatype::F32) ? FORCE_PRIORITY_3 : FORCE_PRIORITY_4;
 }
 
 bool ConvolutionKernel_bfyx_os_iyx_osv16::Validate(const Params& p) const {
     if (!ConvolutionKernelBase::Validate(p) || !ConvolutionCheckInput(p)) {
-        return false;
-    }
-
-    // To prevent big sized filter which causes lots of CL build time.
-    const size_t acceptable_filter_size = 1024;     // This acceptable size was decided by heuristics
-    const auto& params = static_cast<const convolution_params&>(p);
-    auto filter_size = params.filterSize.x * params.filterSize.y;
-    if (filter_size > acceptable_filter_size) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     return true;
@@ -241,6 +236,22 @@ JitConstants ConvolutionKernel_bfyx_os_iyx_osv16::GetJitConstants(const convolut
     jit.AddConstant(MakeJitConstant("IN_BLOCK_ARRAY_SIZE", dispatchData.cldnnStyle.inputBlockArraySize));
     jit.AddConstant(MakeJitConstant("IN_BLOCK_WIDTH", dispatchData.cldnnStyle.inputBlockWidth));
     jit.AddConstant(MakeJitConstant("PREFETCH", dispatchData.cldnnStyle.prefetch));
+
+    // The LOOP macro fully unrolls filter_y × filter_x iterations at the preprocessor level,
+    // and within each copy, the compiler will also unroll the block_height × block_width inner loops.
+    // The total effective instruction count is proportional to:
+    //   filter_y * filter_x * block_height * block_width
+    // When this product is large, the resulting code causes excessive compilation time,
+    // instruction cache pressure, and register spilling. Fall back to compiler-hinted
+    // unrolling (unroll_for) beyond the threshold.
+    const size_t unroll_ops_threshold = 1024;
+    const size_t total_unroll_ops = static_cast<size_t>(params.filterSize.x) *
+                                    static_cast<size_t>(params.filterSize.y) *
+                                    dispatchData.cldnnStyle.blockWidth *
+                                    dispatchData.cldnnStyle.blockHeight;
+    if (total_unroll_ops >= unroll_ops_threshold) {
+        jit.AddConstant(MakeJitConstant("DISABLE_MANUAL_UNROLL", 1));
+    }
 
     if (leftovers) {
         jit.AddConstant(MakeJitConstant("LEFTOVERS", leftovers));

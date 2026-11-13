@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import io
@@ -10,9 +10,26 @@ from onnx.helper import make_graph, make_model, make_tensor_value_info
 import pytest
 from pathlib import Path
 from itertools import chain
+import tempfile
+import shutil
 
 from openvino.frontend import FrontEndManager
 from tests.runtime import get_runtime
+
+
+def _is_graph_iterator_enabled():
+    env_value = os.environ.get("ONNX_ITERATOR")
+    if env_value is None:
+        return True
+    value = env_value.strip().lower()
+    return value not in {"", "0", "false", "off", "disable"}
+
+
+DECODE_AND_CONVERT_XFAIL = pytest.mark.xfail(
+    condition=_is_graph_iterator_enabled(),
+    reason="Decoding via GraphIterator is not supported yet",
+    strict=True,
+)
 
 
 def create_onnx_model():
@@ -88,7 +105,9 @@ def create_onnx_model_with_custom_attributes():
         attribute_list_str=np.array(["a", "b", "c"], dtype=str),
         attribute_list_f32=np.array([1, 2, 3], dtype=float),
         attribute_list_f64=np.array([1, 2, 3], dtype=np.float64),
-        attribute_list_bool=[True, False, True],
+        # ONNX >= 1.22 make_attribute rejects Python bools in an INTS field; store as ints
+        # explicitly (ONNX represents bool attributes as ints on the wire regardless).
+        attribute_list_bool=[1, 0, 1],
         attribute_list_type=np.array([onnx.TensorProto.INT32, onnx.TensorProto.FLOAT]),
     )
     const_tensor = onnx.helper.make_tensor(
@@ -253,6 +272,7 @@ def test_convert():
     run_model(converted_model, input_1, input_2, expected=[expected])
 
 
+@DECODE_AND_CONVERT_XFAIL
 @pytest.mark.parametrize(
     ("model_filename", "inputs", "expected"),
     [
@@ -318,8 +338,15 @@ def test_load_by_model():
     decoded_function = fe.decode(model)
     assert decoded_function
 
-    assert not fem.load_by_model("test.xx")
-    assert not fem.load_by_model("onnx.yy")
+    with pytest.raises(Exception) as e:
+        fem.load_by_model("test.xx")
+
+    assert e.match(r'Could not open the file: "test.xx"')
+
+    with pytest.raises(Exception) as e:
+        fem.load_by_model("onnx.yy")
+
+    assert e.match(r'Could not open the file: "onnx.yy"')
 
 
 def test_onnx_conversion_extension_check_attributes():
@@ -328,7 +355,7 @@ def test_onnx_conversion_extension_check_attributes():
     # use specific (openvino.frontend.onnx) import here
     from openvino.frontend.onnx import ConversionExtension
     from openvino.frontend import NodeContext
-    import openvino.runtime.opset8 as ops
+    import openvino.opset8 as ops
 
     # use the model with attributes
     fe = fem.load_by_model(onnx_model_with_custom_attributes_filename)
@@ -382,7 +409,7 @@ def test_onnx_conversion_extension_attribute_with_default_value():
     # use specific (openvino.frontend.onnx) import here
     from openvino.frontend.onnx import ConversionExtension
     from openvino.frontend import NodeContext
-    import openvino.runtime.opset8 as ops
+    import openvino.opset8 as ops
 
     # use the model without attributes
     fe = fem.load_by_model(onnx_model_filename)
@@ -449,8 +476,8 @@ def test_onnx_conversion_extension_cast_attributes():
     # use specific (openvino.frontend.onnx) import here
     from openvino.frontend.onnx import ConversionExtension
     from openvino.frontend import NodeContext
-    from openvino.runtime import Type
-    import openvino.runtime.opset8 as ops
+    from openvino import Type
+    import openvino.opset8 as ops
 
     # use the model without attributes
     fe = fem.load_by_model(onnx_model_with_custom_attributes_filename)
@@ -506,7 +533,7 @@ def test_onnx_conversion_extension_common():
     # use common (openvino.frontend) import here
     from openvino.frontend import ConversionExtension
     from openvino.frontend import NodeContext
-    import openvino.runtime.opset8 as ops
+    import openvino.opset8 as ops
 
     fe = fem.load_by_model(onnx_model_filename)
     assert fe
@@ -536,7 +563,7 @@ def test_onnx_conversion_extension():
     # use specific (openvino.frontend.onnx) import here
     from openvino.frontend.onnx import ConversionExtension
     from openvino.frontend import NodeContext
-    import openvino.runtime.opset8 as ops
+    import openvino.opset8 as ops
 
     fe = fem.load_by_model(onnx_model_filename)
     assert fe
@@ -566,7 +593,7 @@ def test_onnx_conversion_extension_with_custom_domain():
     # use specific (openvino.frontend.onnx) import here
     from openvino.frontend.onnx import ConversionExtension
     from openvino.frontend import NodeContext
-    import openvino.runtime.opset8 as ops
+    import openvino.opset8 as ops
 
     fe = fem.load_by_model(onnx_model_extension_with_custom_domain)
     assert fe
@@ -621,7 +648,7 @@ def test_op_extension_specify_opset(opset_prefix):
 
     # use specific (openvino.frontend.onnx) import here
     from openvino.frontend.onnx import OpExtension
-    from openvino.runtime import Core
+    from openvino import Core
 
     core = Core()
 
@@ -646,7 +673,7 @@ def test_op_extension_specify_wrong_opset(opset_prefix):
 
     # use specific (openvino.frontend.onnx) import here
     from openvino.frontend.onnx import OpExtension
-    from openvino.runtime import Core
+    from openvino import Core
 
     core = Core()
 
@@ -663,7 +690,7 @@ def test_op_extension_via_onnx_extension_set_attrs_values():
 
     # use specific (openvino.frontend.onnx) import here
     from openvino.frontend.onnx import OpExtension
-    from openvino.runtime import Core
+    from openvino import Core
 
     core = Core()
 
@@ -690,6 +717,7 @@ def test_op_extension_via_onnx_extension_set_attrs_values():
                 "exclude-pad": True,
                 "auto_pad": "same_upper",
                 "rounding_type": "floor",
+                "dilations": [1, 1],
             },
         )
     )
@@ -703,7 +731,7 @@ def test_op_extension_via_frontend_extension_set_attrs_values():
 
     # use common (openvino.frontend) import here
     from openvino.frontend import OpExtension
-    from openvino.runtime import Core
+    from openvino import Core
 
     core = Core()
     # check the model is valid
@@ -729,6 +757,7 @@ def test_op_extension_via_frontend_extension_set_attrs_values():
                 "exclude-pad": True,
                 "auto_pad": "same_upper",
                 "rounding_type": "floor",
+                "dilations": [1, 1],
             },
         )
     )
@@ -742,7 +771,7 @@ def test_op_extension_via_frontend_extension_map_attributes():
 
     # use common (openvino.frontend) import here
     from openvino.frontend import OpExtension
-    from openvino.runtime import Core
+    from openvino import Core
 
     core = Core()
     # check the model is valid
@@ -763,6 +792,7 @@ def test_op_extension_via_frontend_extension_map_attributes():
                 "pads_end": [1, 1],
                 "exclude-pad": True,
                 "rounding_type": "floor",
+                "dilations": [1, 1],
             },
         )
     )
@@ -772,12 +802,11 @@ def test_op_extension_via_frontend_extension_map_attributes():
 
 
 def get_builtin_extensions_path():
-    win_folder_path = Path(__file__).parent.parent.parent.parent
-    linux_folder_path = win_folder_path.joinpath("lib")
+    ci_tests_path = Path(__file__).resolve().parents[3]
     for lib_path in chain(
-        win_folder_path.glob("*.dll"), linux_folder_path.glob("*.so")
+        ci_tests_path.glob("*.dll"), ci_tests_path.glob("*.so")
     ):
-        if "libtest_builtin_extensions" in lib_path.name:
+        if "test_builtin_extensions" in lib_path.name:
             return str(lib_path)
     return ""
 
@@ -820,14 +849,41 @@ def test_so_extension_via_frontend_decode_input_model():
     assert decoded_model
 
 
+@pytest.mark.skipif(
+    len(get_builtin_extensions_path()) == 0,
+    reason="The extension library path was not found",
+)
+def test_add_extension_unicode_paths():
+    skip_if_onnx_frontend_is_disabled()
+
+    test_directory = Path(__file__).resolve().parent
+    unicode_characters = r"晚安_путь_к_файлу"
+    with tempfile.TemporaryDirectory(dir=test_directory, prefix=unicode_characters) as temp_dir:
+        extension_path = Path(get_builtin_extensions_path())
+        temp_extension_path = Path(temp_dir) / extension_path.name
+        shutil.copyfile(extension_path, temp_extension_path)
+
+        assert os.path.exists(temp_extension_path), "Could not create an extension library with unicode path."
+
+        def convert_model(path):
+            fe = fem.load_by_framework(framework=ONNX_FRONTEND_NAME)
+            fe.add_extension(path)
+            in_model = fe.load(onnx_model_2_filename)
+            converted_model = fe.convert(in_model)
+            assert converted_model
+
+        convert_model(temp_extension_path)
+
+
 def test_load_bytesio_model():
-    from openvino.runtime import Core
+    from openvino import Core
 
     fe = fem.load_by_framework(framework=ONNX_FRONTEND_NAME)
     model_from_fe = fe.load(model_stream)
     assert model_from_fe
     converted_model = fe.convert(model_from_fe)
-    assert converted_model.friendly_name == "graph"
+    expected_name = "onnx_Frontend_IR" if _is_graph_iterator_enabled() else "graph"
+    assert converted_model.friendly_name == expected_name
 
     core = Core()
     model = core.read_model(model_stream)

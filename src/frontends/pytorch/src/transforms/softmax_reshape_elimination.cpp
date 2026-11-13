@@ -1,19 +1,17 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "softmax_reshape_elimination.hpp"
 
+#include "openvino/core/graph_util.hpp"
 #include "openvino/core/rt_info.hpp"
 #include "openvino/core/validation_util.hpp"
 #include "openvino/op/reshape.hpp"
 #include "openvino/op/softmax.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace pass {
+namespace ov::frontend::pytorch::pass {
 
 SoftmaxReshapeElimination::SoftmaxReshapeElimination() {
     const auto m_reshape0 = ov::pass::pattern::wrap_type<ov::op::v1::Reshape>(ov::pass::pattern::has_static_shape());
@@ -39,7 +37,7 @@ SoftmaxReshapeElimination::SoftmaxReshapeElimination() {
             const auto softmax_rank = softmax->get_input_partial_shape(0).rank();
             int64_t axis = 0;
             if (const auto softmax_v8 = ov::as_type_ptr<const ov::op::v8::Softmax>(softmax)) {
-                axis = ov::util::normalize_axis(softmax->get_friendly_name(), softmax_v8->get_axis(), softmax_rank);
+                axis = ov::util::try_normalize_axis(softmax_v8->get_axis(), softmax_rank, *softmax_v8);
             } else if (const auto softmax_v1 = ov::as_type_ptr<const ov::op::v1::Softmax>(softmax)) {
                 axis = softmax_v1->get_axis();
             } else {
@@ -75,7 +73,4 @@ SoftmaxReshapeElimination::SoftmaxReshapeElimination() {
         });
 }
 
-}  // namespace pass
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::pass

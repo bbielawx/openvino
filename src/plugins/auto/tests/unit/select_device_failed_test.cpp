@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -26,16 +26,14 @@ using ConfigParams = std::tuple<bool,                       // if can continue t
 
 class AutoLoadFailedTest : public tests::AutoTest, public ::testing::TestWithParam<ConfigParams> {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ConfigParams> obj) {
-        unsigned int selectCount;
-        unsigned int loadCount;
-        unsigned int loadSuccessCount;
-        std::vector<std::tuple<std::string, bool>> deviceConfigs;
-        bool continueRun;
-        bool thrExcWheSelect;
-        MODEL configModel;
-        std::tie(continueRun, thrExcWheSelect, configModel, deviceConfigs, selectCount, loadCount, loadSuccessCount) =
-            obj.param;
+    static std::string getTestCaseName(const testing::TestParamInfo<ConfigParams>& obj) {
+        const auto& [continueRun,
+                     thrExcWheSelect,
+                     configModel,
+                     deviceConfigs,
+                     selectCount,
+                     loadCount,
+                     loadSuccessCount] = obj.param;
         std::ostringstream result;
         for (auto& item : deviceConfigs) {
             if (std::get<1>(item)) {
@@ -77,14 +75,8 @@ public:
 
 TEST_P(AutoLoadFailedTest, LoadCNNetWork) {
     // get Parameter
-    unsigned int selectCount;
-    unsigned int loadCount;
-    unsigned int loadSuccessCount;
-    std::vector<std::tuple<std::string, bool>> deviceConfigs;
-    bool continueRun;
-    bool thrExcWheSelect;
-    MODEL configModel;
-    std::tie(continueRun, thrExcWheSelect, configModel, deviceConfigs, selectCount, loadCount, loadSuccessCount) =
+
+    const auto& [continueRun, thrExcWheSelect, configModel, deviceConfigs, selectCount, loadCount, loadSuccessCount] =
         this->GetParam();
 
     // test auto plugin
@@ -133,7 +125,7 @@ TEST_P(AutoLoadFailedTest, LoadCNNetWork) {
         // set the return value of SelectDevice
         // for example if there are three device, if will return GPU on the first call, and then NPU
         // at last CPU
-        ON_CALL(*plugin, select_device(Property(&std::vector<DeviceInformation>::size, Eq(selDevsSize)), _, _))
+        ON_CALL(*plugin, select_device(Property(&std::vector<DeviceInformation>::size, Eq(selDevsSize)), _, _, _, _))
             .WillByDefault(Return(metaDevices[deviceConfigs.size() - selDevsSize]));
         devicesStr += deviceName;
         devicesStr += ((++iter) == deviceConfigs.end()) ? "" : ",";
@@ -150,16 +142,16 @@ TEST_P(AutoLoadFailedTest, LoadCNNetWork) {
     if (thrExcWheSelect) {
         selDevsSize = deviceConfigs.size();
         if (selDevsSize > 1) {
-            ON_CALL(*plugin, select_device(Property(&std::vector<DeviceInformation>::size, Eq(selDevsSize - 1)), _, _))
+            ON_CALL(*plugin, select_device(Property(&std::vector<DeviceInformation>::size, Eq(selDevsSize - 1)), _, _, _, _))
                 .WillByDefault(ov::Throw(""));
         } else {
-            ON_CALL(*plugin, select_device(Property(&std::vector<DeviceInformation>::size, Eq(1)), _, _))
+            ON_CALL(*plugin, select_device(Property(&std::vector<DeviceInformation>::size, Eq(1)), _, _, _, _))
                 .WillByDefault(ov::Throw(""));
         }
     }
 
     EXPECT_CALL(*plugin, parse_meta_devices(_, _)).Times(AtLeast(1));
-    EXPECT_CALL(*plugin, select_device(_, _, _)).Times(selectCount);
+    EXPECT_CALL(*plugin, select_device(_, _, _, _, _)).Times(selectCount);
     EXPECT_CALL(*core,
                 compile_model(::testing::Matcher<const std::shared_ptr<const ov::Model>&>(_),
                               ::testing::Matcher<const std::string&>(_),
@@ -169,9 +161,11 @@ TEST_P(AutoLoadFailedTest, LoadCNNetWork) {
     // if loadSuccess will get the optimalNum requset of per device, in this test is 2;
     EXPECT_CALL(*mockIExeNet.get(), get_property(StrEq(ov::optimal_number_of_infer_requests.name())))
         .Times(loadSuccessCount);
+    // only logged by AUTO after a compile
+    EXPECT_CALL(*mockIExeNet.get(), get_property(StrEq(ov::loaded_from_cache.name()))).Times(AnyNumber());
     EXPECT_CALL(*mockIExeNet.get(), create_infer_request()).Times(loadSuccessCount * 2);
     if (continueRun) {
-        ASSERT_NO_THROW(plugin->compile_model(model, config));
+        OV_ASSERT_NO_THROW(plugin->compile_model(model, config));
     } else {
         ASSERT_THROW(plugin->compile_model(model, config), ov::Exception);
     }

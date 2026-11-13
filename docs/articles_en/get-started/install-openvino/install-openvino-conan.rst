@@ -1,5 +1,3 @@
-.. {#openvino_docs_install_guides_installing_openvino_conan}
-
 Install OpenVINO™ Runtime from Conan Package Manager
 ======================================================
 
@@ -17,26 +15,16 @@ Install OpenVINO™ Runtime from Conan Package Manager
    * is dedicated to users of all major OSes: Windows, Linux, and macOS
      (all x86_64 / arm64 architectures)
 
+   Before installing OpenVINO, see the
+   :doc:`System Requirements page <../../../about-openvino/release-notes-openvino/system-requirements>`.
 
-.. tab-set::
+.. note::
+    This community-maintained distribution channel is provided to help users explore and evaluate OpenVINO.
+    
+    Please note that accuracy, performance, and behavior may differ from officially supported OpenVINO distributions, and are not guaranteed by the OpenVINO team in this channel. Due to the community-driven nature of this distribution channel, the OpenVINO team does not guarantee timely updates aligned with official releases, nor update availability for all OpenVINO versions.
+    
+    For production deployments and product integration, we recommend using officially supported distribution channels (for example, official S3 archives or PyPI packages), which provide validated builds and defined guarantees.
 
-   .. tab-item:: System Requirements
-      :sync: system-requirements
-
-      | Full requirement listing is available in:
-      | :doc:`System Requirements Page <../../../about-openvino/system-requirements>`
-
-   .. tab-item:: Processor Notes
-      :sync: processor-notes
-
-      | To see if your processor includes the integrated graphics technology and supports iGPU inference, refer to:
-      | `Product Specifications <https://ark.intel.com/content/www/us/en/ark.html>`__
-
-   .. tab-item:: Software
-      :sync: software
-
-      | There are many ways to work with Conan Package Manager. Before you proceed, learn more about it on the
-      | `Conan distribution page <https://conan.io/downloads>`__
 
 Installing OpenVINO Runtime with Conan Package Manager
 ############################################################
@@ -52,7 +40,7 @@ Installing OpenVINO Runtime with Conan Package Manager
    .. code-block:: sh
 
       [requires]
-      openvino/2024.0.0
+      openvino/2026.3.0
       [generators]
       CMakeDeps
       CMakeToolchain
@@ -92,7 +80,7 @@ Additional Resources
 * Learn more about :doc:`OpenVINO Workflow <../../../openvino-workflow>`.
 * To prepare your models for working with OpenVINO, see :doc:`Model Preparation <../../../openvino-workflow/model-preparation>`.
 * Learn more about :doc:`Inference with OpenVINO Runtime <../../../openvino-workflow/running-inference>`.
-* See sample applications in :doc:`OpenVINO toolkit Samples Overview <../../../learn-openvino/openvino-samples>`.
+* See sample applications in :doc:`OpenVINO toolkit Samples Overview <../../../get-started/learn-openvino/openvino-samples>`.
 * Check out the OpenVINO `product home page <https://software.intel.com/en-us/openvino-toolkit>`__.
 
 

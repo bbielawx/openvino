@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,14 +6,12 @@
 
 #include "openvino/pass/pass.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 class ConvertConvolutionToInternal : public ov::pass::ModelPass {
 public:
-    OPENVINO_RTTI("ConvertConvolutionToInternal", "0");
+    OPENVINO_MODEL_PASS_RTTI("ConvertConvolutionToInternal");
     bool run_on_model(const std::shared_ptr<ov::Model>& m) override;
 };
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

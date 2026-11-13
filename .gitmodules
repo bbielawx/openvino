@@ -37,6 +37,7 @@
 [submodule "thirdparty/onnx"]
 	path = thirdparty/onnx/onnx
 	url = https://github.com/onnx/onnx.git
+	ignore = dirty
 [submodule "thirdparty/protobuf"]
 	path = thirdparty/protobuf/protobuf
 	url = https://github.com/protocolbuffers/protobuf.git
@@ -52,9 +53,6 @@
 [submodule "thirdparty/onednn_gpu"]
 	path = src/plugins/intel_gpu/thirdparty/onednn_gpu
 	url = https://github.com/oneapi-src/oneDNN.git
-[submodule "tools/pot/thirdparty/open_model_zoo"]
-	path = thirdparty/open_model_zoo
-	url = https://github.com/openvinotoolkit/open_model_zoo.git
 [submodule "thirdparty/json/nlohmann_json"]
 	path = thirdparty/json/nlohmann_json
 	url = https://github.com/nlohmann/json.git
@@ -72,12 +70,34 @@
 [submodule "src/plugins/intel_cpu/thirdparty/mlas"]
 	path = src/plugins/intel_cpu/thirdparty/mlas
 	url = https://github.com/openvinotoolkit/mlas.git
-[submodule "src/plugins/intel_npu/thirdparty/level-zero"]
-	path = src/plugins/intel_npu/thirdparty/level-zero
+[submodule "thirdparty/level_zero/level-zero"]
+	path = thirdparty/level_zero/level-zero
 	url = https://github.com/oneapi-src/level-zero.git
 [submodule "src/plugins/intel_npu/thirdparty/level-zero-ext"]
 	path = src/plugins/intel_npu/thirdparty/level-zero-ext
 	url = https://github.com/intel/level-zero-npu-extensions.git
+[submodule "src/plugins/intel_npu/thirdparty/yaml-cpp"]
+	path = src/plugins/intel_npu/thirdparty/yaml-cpp
+	url = https://github.com/jbeder/yaml-cpp.git
 [submodule "thirdparty/telemetry"]
 	path = thirdparty/telemetry
 	url = https://github.com/openvinotoolkit/telemetry.git
+[submodule "src/plugins/intel_cpu/thirdparty/libxsmm"]
+	path = src/plugins/intel_cpu/thirdparty/libxsmm
+	url = https://github.com/libxsmm/libxsmm.git
+[submodule "src/plugins/intel_cpu/thirdparty/kleidiai"]
+	path = src/plugins/intel_cpu/thirdparty/kleidiai
+	url = https://github.com/ARM-software/kleidiai.git
+[submodule "src/plugins/intel_cpu/thirdparty/xbyak_riscv"]
+	path = src/plugins/intel_cpu/thirdparty/xbyak_riscv
+	url = https://github.com/herumi/xbyak_riscv.git
+[submodule "src/plugins/auto/thirdparty/ipf"]
+	path = src/plugins/auto/thirdparty/ipf
+	url = https://github.com/intel/ipf.git
+[submodule "thirdparty/liburing/liburing"]
+	path = thirdparty/liburing/liburing
+	url = https://github.com/axboe/liburing.git
+	ignore = dirty
+[submodule "src/plugins/intel_gpu/thirdparty/TernOCL"]
+	path = src/plugins/intel_gpu/thirdparty/TernOCL
+	url = https://github.com/libxsmm/TernOCL.git

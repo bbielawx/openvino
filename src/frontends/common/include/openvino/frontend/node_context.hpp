@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,14 +11,13 @@
 #include "openvino/pass/manager.hpp"
 #include "openvino/pass/pass.hpp"
 
-namespace ov {
-namespace frontend {
+namespace ov::frontend {
 
 class FRONTEND_API NodeContext {
 public:
     // TODO: Why this ctor is explicit when get_op_type is virtual so m_op_type looks to be a custom implementation
     explicit NodeContext(const std::string& op_type) : m_op_type(op_type) {}
-    virtual ~NodeContext() = default;
+    virtual ~NodeContext();
 
     /// \brief  Returns a number of inputs
     virtual size_t get_input_size() const {
@@ -46,6 +45,16 @@ public:
     /// there are more than one input
     virtual Output<Node> get_input(const std::string& name) const {
         FRONT_END_NOT_IMPLEMENTED(get_input);
+    }
+
+    /// \brief Returns output of Variable node (or Variable value).
+    /// Variable is a special node that stores a value represented with a sub-graph.
+    /// Variable has a concrete value at each conversion step.
+    /// The current (consuming) operation node can change its value
+    /// so consumers of this Variable will have a new value at next conversion steps.
+    /// See ov::frontend::Variable class for more details.
+    virtual Output<Node> get_input_by_reference(int idx) const {
+        FRONT_END_NOT_IMPLEMENTED(get_input_by_reference);
     }
 
     /// \brief Returns values from Constant input with the given index as ov::Any.
@@ -110,6 +119,21 @@ public:
         FRONT_END_NOT_IMPLEMENTED(get_subgraph);
     }
 
+    /// \brief Returns Node object that can be with updated attributes
+    /// such node name, runtime info, etc.
+    /// By default, it returns the same node without update
+    virtual std::shared_ptr<Node> mark_node(std::shared_ptr<Node> ov_node) const {
+        return ov_node;
+    }
+
+    /// \brief PyTorch may have None inputs coming to operations
+    /// Other frontends do not have it per our observation
+    virtual bool input_is_none(size_t index) const {
+        auto num_inputs = get_input_size();
+        FRONT_END_GENERAL_CHECK(index < num_inputs, "Input index is out of allowed indices range");
+        return false;
+    }
+
 private:
     virtual ov::Any apply_additional_conversion_rules(const ov::Any& data, const std::type_info& type_info) const {
         return data;
@@ -144,5 +168,4 @@ using CreatorFunction = std::function<OutputVector(const NodeContext&)>;
 using CreatorFunctionNamed = std::function<std::map<std::string, OutputVector>(const NodeContext&)>;
 using CreatorFunctionNamedAndIndexed = std::function<NamedOutputVector(const NodeContext&)>;
 
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend

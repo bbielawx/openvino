@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include "permute_inst.h"
@@ -34,7 +34,7 @@ layout permute_inst::calc_output_layout(permute_node const& node, kernel_impl_pa
 
     auto output_type = desc->output_data_types[0].value_or(input_layout.data_type);
     if (impl_param.has_fused_primitives()) {
-        output_type = impl_param.get_fused_output_layout().data_type;
+        output_type = impl_param.get_output_element_type();
     }
 
     // Adjust output format for optimizing out of transpose related to acdb format.
@@ -47,13 +47,24 @@ layout permute_inst::calc_output_layout(permute_node const& node, kernel_impl_pa
 }
 
 template<typename ShapeType>
-std::vector<layout> permute_inst::calc_output_layouts(permute_node const& /*node*/, kernel_impl_params const& impl_param) {
+std::vector<layout> permute_inst::calc_output_layouts(permute_node const& node, kernel_impl_params const& impl_param) {
     auto desc = impl_param.typed_desc<permute>();
     auto input_layout = impl_param.get_input_layout();
 
     auto output_type = desc->output_data_types[0].value_or(input_layout.data_type);
+
+    auto output_fmt = input_layout.format;
+    if (node.get_preferred_output_fmt() != format::any) {
+        output_fmt = node.get_preferred_output_fmt();
+    }
+
     if (impl_param.has_fused_primitives()) {
-        output_type = impl_param.get_fused_output_layout().data_type;
+        output_type = impl_param.get_output_element_type();
+        for (const auto& desc : impl_param.fused_desc) {
+            if (desc.is_type<reorder>()) {
+                output_fmt = desc.get_output_layout().format;
+            }
+        }
     }
 
     ShapeType input_shape = input_layout.get<ShapeType>();
@@ -62,14 +73,14 @@ std::vector<layout> permute_inst::calc_output_layouts(permute_node const& /*node
 
     if (input_rank.is_dynamic()) {
         output_shape = ShapeType::dynamic(desc->permute_order.size());
-        return { layout{output_shape, output_type, input_layout.format} };
+        return { layout{output_shape, output_type, output_fmt} };
     }
 
     int64_t input_static_rank = input_rank.get_length();
     auto permute_order = desc->permute_order;
     if (permute_order.empty()) {
         for (int64_t i = 1; i <= input_static_rank; ++i) {
-            permute_order.emplace_back(input_static_rank - i);
+            permute_order.emplace_back(static_cast<uint16_t>(input_static_rank - i));
         }
     }
 
@@ -77,7 +88,7 @@ std::vector<layout> permute_inst::calc_output_layouts(permute_node const& /*node
         output_shape.push_back(input_shape[permute_order[i]]);
     }
 
-    return { layout{output_shape, output_type, input_layout.format, desc->output_paddings[0]} };
+    return { layout{output_shape, output_type, output_fmt, desc->output_paddings[0]} };
 }
 
 template std::vector<layout> permute_inst::calc_output_layouts<ov::PartialShape>(permute_node const& node, const kernel_impl_params& impl_param);
@@ -114,8 +125,9 @@ permute_inst::typed_primitive_inst(network& network, permute_node const& node) :
     auto required_order_values_size = static_cast<uint32_t>(permute_order.size());
 
     for (decltype(required_order_values_size) i = 0; i < required_order_values_size; i++) {
-        if (!(std::find(permute_order.begin(), permute_order.end(), i) != permute_order.end()))
+        if (!(std::find(permute_order.begin(), permute_order.end(), i) != permute_order.end())) {
             CLDNN_ERROR_MESSAGE(node.id(), "Permute order does not contain all of required values.");
+        }
     }
 
     update_output_memory();
@@ -127,19 +139,30 @@ void permute_inst::on_execute() {
 
 
 void permute_inst::update_output_memory() {
-    if (!can_be_optimized() || _impl_params->is_dynamic())
+    if (!can_be_optimized() || _impl_params->is_dynamic()) {
         return;
+    }
 
-    if (_outputs.size() > 0 && static_cast<bool>(_outputs[0])
-        && _network.get_engine().is_the_same_buffer(output_memory(), input_memory()))
+    build_deps();
+
+    if (input_memory_ptr() == nullptr) {
         return;
+    }
 
-    if (_node != nullptr)
-        build_deps();
+    if (!_outputs.empty() && static_cast<bool>(_outputs[0])
+        && _network.get_engine().is_the_same_buffer(output_memory(), input_memory())) {
+        return;
+    }
 
     GPU_DEBUG_TRACE_DETAIL << id() << " : update_output_memory with mem of input " << get_node().get_dependency(0).id()
                            << " : " << input_memory_ptr()->buffer_ptr() << std::endl;
-    _outputs = {_network.get_engine().reinterpret_buffer(input_memory(), _impl_params->get_output_layout())};
+    // Can_be_optimized nodes are allocating from memory_pool too. In this case,
+    // we need release the legacy output memory from memory pool explicitly.
+    if (static_cast<bool>(_outputs[0]) &&
+        get_node().get_program().get_config().get_enable_memory_pool()) {
+        get_network().get_memory_pool().release_memory(_outputs[0].get(), get_node().get_unique_id(), get_node().id(), get_network_id());
+    }
+    _outputs = {get_network().get_engine().reinterpret_buffer(input_memory(), _impl_params->get_output_layout())};
     _mem_allocated = false;
 }
 

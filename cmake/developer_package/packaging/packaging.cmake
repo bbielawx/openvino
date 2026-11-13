@@ -1,30 +1,205 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
 include(CPackComponent)
+
+if(OV_GENERATOR_MULTI_CONFIG)
+    set(OPENVINO_STATIC_PDB_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}/$<CONFIG>/compile_pdbs)
+else()
+    set(OPENVINO_STATIC_PDB_OUTPUT_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}/compile_pdbs)
+endif()
+
+#
+# ov_install_pdb(<target name>)
+#
+macro(ov_install_pdb target)
+    if(WIN32)
+        get_target_property(_lib_type ${target} TYPE)
+
+        if(BUILD_SHARED_LIBS)
+            # check that target type is either MODULE or SHARED
+            if(NOT _lib_type MATCHES "^(MODULE_LIBRARY|SHARED_LIBRARY)$")
+                message(FATAL_ERROR "OpenVINO PDB files should be installed only for SHARED or MODULE libraries, given target type is ${_lib_type}")
+            endif()
+
+            # installation of linker PDB files for shared libraries
+            install(FILES $<TARGET_PDB_FILE:${target}>
+                    DESTINATION ${OV_CPACK_RUNTIMEDIR} COMPONENT pdb
+                    OPTIONAL
+                    EXCLUDE_FROM_ALL)
+        elseif(_lib_type STREQUAL "STATIC_LIBRARY")
+            get_target_property(_compile_pdb_name ${target} OUTPUT_NAME)
+            if(_compile_pdb_name MATCHES "NOTFOUND")
+                set(_compile_pdb_name ${target})
+            endif()
+
+            set_target_properties(${target} PROPERTIES
+                                  COMPILE_PDB_NAME ${_compile_pdb_name}
+                                  COMPILE_PDB_NAME_DEBUG ${_compile_pdb_name}${OV_DEBUG_POSTFIX}
+                                  COMPILE_PDB_OUTPUT_DIRECTORY "${OPENVINO_STATIC_PDB_OUTPUT_DIRECTORY}")
+
+            # override compile PDB locations for objects libraries within static library
+            get_target_property(sources ${target} SOURCES)
+            foreach(source IN LISTS sources)
+                if(source MATCHES "\\$<TARGET_OBJECTS:")
+                    string(REGEX REPLACE ".*\\$<TARGET_OBJECTS:" "" source "${source}")
+                    string(REGEX REPLACE ">$" "" source "${source}")
+                    string(REGEX REPLACE ">$" "" object_library "${source}")
+
+                    if(TARGET ${object_library})
+                        # we need to rename CPU dnnl PDB files to be different from GPU ones (which we cannot rename on cmake level because of external project)
+                        if(object_library MATCHES "^dnnl.*")
+                            set(_compile_pdb_name "openvino_cpu_${object_library}")
+                        else()
+                            set(_compile_pdb_name ${object_library})
+                        endif()
+
+                        set_target_properties(${object_library} PROPERTIES
+                                              COMPILE_PDB_NAME ${_compile_pdb_name}
+                                              COMPILE_PDB_NAME_DEBUG ${_compile_pdb_name}${OV_DEBUG_POSTFIX}
+                                              COMPILE_PDB_OUTPUT_DIRECTORY "${OPENVINO_STATIC_PDB_OUTPUT_DIRECTORY}")
+                    endif()
+
+                    unset(object_library)
+                endif()
+            endforeach()
+
+            unset(source)
+            unset(sources)
+            unset(_compile_pdb_name)
+        endif()
+
+        unset(_lib_type)
+    endif()
+endmacro()
+
+# Increments the global visited-epoch used by _ov_collect_static_deps_impl so
+# that per-target _OV_SDEP_SEEN_EPOCH flags from previous traversals are
+# implicitly invalidated without having to clear them.
+function(_ov_static_deps_new_epoch)
+    get_property(_ov_sde_epoch GLOBAL PROPERTY _OV_STATIC_DEP_EPOCH)
+    if(NOT _ov_sde_epoch)
+        set(_ov_sde_epoch 0)
+    endif()
+    math(EXPR _ov_sde_epoch "${_ov_sde_epoch} + 1")
+    set_property(GLOBAL PROPERTY _OV_STATIC_DEP_EPOCH "${_ov_sde_epoch}")
+endfunction()
+
+#
+# _ov_collect_static_deps_impl(<target>)
+#
+# Internal recursive helper: walks both INTERFACE_LINK_LIBRARIES and
+# LINK_LIBRARIES depth-first and accumulates all non-imported project targets
+# (resolved through ALIAS) into the global property _OV_STATIC_DEP_RESULT.
+#
+function(_ov_collect_static_deps_impl target)
+    get_target_property(_csd_alias "${target}" ALIASED_TARGET)
+    if(_csd_alias)
+        set(_csd_real "${_csd_alias}")
+    else()
+        set(_csd_real "${target}")
+    endif()
+
+    if(NOT TARGET "${_csd_real}")
+        return()
+    endif()
+
+    # Guard: skip already-visited targets
+    get_property(_csd_epoch GLOBAL PROPERTY _OV_STATIC_DEP_EPOCH)
+    get_property(_csd_seen TARGET "${_csd_real}" PROPERTY _OV_SDEP_SEEN_EPOCH)
+    if(_csd_seen STREQUAL "${_csd_epoch}")
+        return()
+    endif()
+    set_property(TARGET "${_csd_real}" PROPERTY _OV_SDEP_SEEN_EPOCH "${_csd_epoch}")
+
+    # Skip IMPORTED targets — they belong to external packages (e.g. system TBB)
+    get_target_property(_csd_imp "${_csd_real}" IMPORTED)
+    if(_csd_imp)
+        return()
+    endif()
+
+    set_property(GLOBAL APPEND PROPERTY _OV_STATIC_DEP_RESULT "${_csd_real}")
+
+    # Collect both interface and private link deps
+    set(_csd_all_deps "")
+    foreach(_csd_prop IN ITEMS INTERFACE_LINK_LIBRARIES LINK_LIBRARIES)
+        get_target_property(_csd_prop_deps "${_csd_real}" "${_csd_prop}")
+        if(_csd_prop_deps)
+            list(APPEND _csd_all_deps ${_csd_prop_deps})
+        endif()
+    endforeach()
+
+    foreach(_csd_dep IN LISTS _csd_all_deps)
+        # Skip generator expressions such as $<LINK_ONLY:...>
+        if(_csd_dep MATCHES "^\\$<")
+            continue()
+        endif()
+        if(TARGET "${_csd_dep}")
+            _ov_collect_static_deps_impl("${_csd_dep}")
+        endif()
+    endforeach()
+endfunction()
+
+#
+# ov_install_static_deps(<targets-list-variable> <comp>)
+#
+# Installs every target named in <targets-list-variable> and all of their
+# non-imported transitive link dependencies (both INTERFACE and LINK_LIBRARIES)
+# into the OpenVINO export set (OpenVINOTargets)
+#
+macro(ov_install_static_deps _ov_isd_targets_var _ov_isd_comp)
+    _ov_static_deps_new_epoch()
+    set_property(GLOBAL PROPERTY _OV_STATIC_DEP_RESULT "")
+    foreach(_ov_isd_root IN LISTS ${_ov_isd_targets_var})
+        if(TARGET "${_ov_isd_root}")
+            _ov_collect_static_deps_impl("${_ov_isd_root}")
+        endif()
+    endforeach()
+    get_property(_ov_isd_all GLOBAL PROPERTY _OV_STATIC_DEP_RESULT)
+    foreach(_ov_isd_dep IN LISTS _ov_isd_all)
+        ov_install_static_lib("${_ov_isd_dep}" "${_ov_isd_comp}")
+    endforeach()
+    unset(_ov_isd_targets_var)
+    unset(_ov_isd_root)
+    unset(_ov_isd_dep)
+    unset(_ov_isd_all)
+endmacro()
 
 #
 # ov_install_static_lib(<target> <comp>)
 #
 macro(ov_install_static_lib target comp)
     if(NOT BUILD_SHARED_LIBS)
-        get_target_property(target_type ${target} TYPE)
-        if(target_type STREQUAL "STATIC_LIBRARY")
-            set_target_properties(${target} PROPERTIES EXCLUDE_FROM_ALL OFF)
+        # Resolve alias targets — install(TARGETS) does not accept aliases
+        get_target_property(aliased_target ${target} ALIASED_TARGET)
+        if(aliased_target)
+            set(install_target ${aliased_target})
+        else()
+            set(install_target ${target})
         endif()
 
-        # save all internal installed targets to filter them later in 'ov_generate_dev_package_config'
-        list(APPEND openvino_installed_targets ${target})
-        set(openvino_installed_targets "${openvino_installed_targets}" CACHE INTERNAL
-            "A list of OpenVINO internal targets" FORCE)
+        # Skip imported targets — they are owned by their own package config
+        # and are not installed as part of OpenVINO.
+        get_target_property(is_imported ${install_target} IMPORTED)
+        if(NOT is_imported)
+            get_target_property(target_type ${install_target} TYPE)
+            if(target_type STREQUAL "STATIC_LIBRARY")
+                set_target_properties(${install_target} PROPERTIES EXCLUDE_FROM_ALL OFF)
+            endif()
 
-        install(TARGETS ${target} EXPORT OpenVINOTargets
-                ARCHIVE DESTINATION ${OV_CPACK_ARCHIVEDIR} COMPONENT ${comp} ${ARGN})
+            list(APPEND openvino_installed_targets ${install_target})
+            set(openvino_installed_targets "${openvino_installed_targets}" CACHE INTERNAL
+                "A list of OpenVINO internal targets" FORCE)
 
-        # export to local tree to build against static build tree
-        export(TARGETS ${target} NAMESPACE openvino::
-               APPEND FILE "${CMAKE_BINARY_DIR}/OpenVINOTargets.cmake")
+            install(TARGETS ${install_target} EXPORT OpenVINOTargets
+                    ARCHIVE DESTINATION ${OV_CPACK_ARCHIVEDIR} COMPONENT ${comp} ${ARGN})
+
+            ov_install_pdb(${install_target})
+
+            export(TARGETS ${install_target} NAMESPACE openvino::
+                   APPEND FILE "${CMAKE_BINARY_DIR}/OpenVINOTargets.cmake")
+        endif()
     endif()
 endmacro()
 
@@ -64,7 +239,11 @@ endfunction()
 function(ov_get_pyversion pyversion)
     find_package(Python3 QUIET COMPONENTS Interpreter Develoment.Module)
     if(Python3_Interpreter_FOUND)
-        set(${pyversion} "python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}" PARENT_SCOPE)
+        set(_pyversion "python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}")
+        if(Python3_SOABI AND (Python3_SOABI MATCHES "cpython-[0-9]+t-" OR Python3_SOABI MATCHES "cp[0-9]+t-"))
+            set(_pyversion "${_pyversion}t")
+        endif()
+        set(${pyversion} "${_pyversion}" PARENT_SCOPE)
     else()
         set(${pyversion} "NOT-FOUND" PARENT_SCOPE)
     endif()
@@ -123,6 +302,32 @@ function(ov_install_with_name file component)
 endfunction()
 
 #
+# checks that current OpenVINO versions has previous version in RPM / DEB conflicts
+#
+function(ov_check_conflicts_versions var_name)
+    set(ov_major ${OpenVINO_VERSION_MAJOR})
+    set(ov_minor ${OpenVINO_VERSION_MINOR})
+    set(ov_patch ${OpenVINO_VERSION_PATCH})
+
+    if(ov_patch EQUAL 0)
+        if(ov_minor EQUAL 0)
+            math(EXPR ov_major "${ov_major} - 1")
+        else()
+            math(EXPR ov_minor "${ov_minor} - 1")
+        endif()
+    else()
+        math(EXPR ov_patch "${ov_patch} - 1")
+    endif()
+
+    set(ov_prev_version "${ov_major}.${ov_minor}.${ov_patch}")
+
+    # perform check
+    if(NOT ov_prev_version IN_LIST ${var_name})
+        message(FATAL_ERROR "List ${var_name} (${${var_name}}) does not contain version ${ov_prev_version}")
+    endif()
+endfunction()
+
+#
 # List of public OpenVINO components
 #
 
@@ -147,11 +352,13 @@ macro(ov_define_component_names)
     set(OV_CPACK_COMP_OPENVINO_REQ_FILES "openvino_req_files")
     # nodejs
     set(OV_CPACK_COMP_NPM "ov_node_addon")
-    # tools
-    set(OV_CPACK_COMP_OPENVINO_DEV_REQ_FILES "openvino_dev_req_files")
     # scripts
     set(OV_CPACK_COMP_INSTALL_DEPENDENCIES "install_dependencies")
     set(OV_CPACK_COMP_SETUPVARS "setupvars")
+    # symbolic_links
+    set(OV_CPACK_COMP_LINKS "core_dev_links")
+    # pkgconfig
+    set(OV_CPACK_COMP_PKG_CONFIG "core_dev_pkgconfig")
 endmacro()
 
 ov_define_component_names()

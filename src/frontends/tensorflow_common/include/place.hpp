@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,9 +7,7 @@
 #include "openvino/frontend/decoder.hpp"
 #include "openvino/frontend/frontend.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
+namespace ov::frontend::tensorflow {
 
 class TensorPlace;
 class OpPlace;
@@ -156,6 +154,12 @@ public:
                 ov::element::Type type,
                 const std::vector<std::string>& names);
 
+    TensorPlace(const ov::frontend::InputModel& input_model,
+                const ov::PartialShape& pshape,
+                ov::element::Type type,
+                const std::vector<std::string>& names,
+                const std::string& operation_name);
+
     void add_producing_port(const std::shared_ptr<OutPortPlace>& out_port);
     void add_consuming_port(const std::shared_ptr<InPortPlace>& in_port);
 
@@ -165,6 +169,9 @@ public:
     }
     const element::Type& get_element_type() const {
         return m_type;
+    }
+    const std::string& get_operation_name() const {
+        return m_operation_name;
     }
     void set_partial_shape(const PartialShape& pshape) {
         m_pshape = pshape;
@@ -183,11 +190,11 @@ public:
 private:
     PartialShape m_pshape;
     element::Type m_type;
+    // store original node name from which tensor place is created
+    std::string m_operation_name;
 
     std::vector<std::weak_ptr<OutPortPlace>> m_producing_ports;
     std::vector<std::weak_ptr<InPortPlace>> m_consuming_ports;
 };
 
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow

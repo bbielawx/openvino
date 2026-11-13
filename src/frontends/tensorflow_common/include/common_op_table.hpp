@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,10 +17,7 @@
                            ("While validating node '" + node_context.get_op_type() + "'"), \
                            __VA_ARGS__)
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 #define OP_CONVERTER(op)       OutputVector op(const ov::frontend::NodeContext& node)
 #define OP_CONVERTER_NAMED(op) NamedOutputVector op(const ov::frontend::NodeContext& node)
 #define OP_T_CONVERTER(op) \
@@ -35,6 +32,8 @@ OP_CONVERTER(translate_addv2_op);
 OP_CONVERTER(translate_add_n_op);
 OP_CONVERTER(translate_approximate_equal_op);
 OP_CONVERTER(translate_adjust_contrast_op);
+OP_CONVERTER(translate_adjust_hue_op);
+OP_CONVERTER(translate_adjust_saturation_op);
 OP_CONVERTER(translate_angle_op);
 OP_CONVERTER(translate_arg_max_op);
 OP_CONVERTER(translate_arg_min_op);
@@ -72,6 +71,9 @@ OP_CONVERTER(translate_mul_op);
 OP_CONVERTER(translate_dynamic_partition_op);
 OP_CONVERTER(translate_einsum_op);
 OP_CONVERTER(translate_elu_op);
+OP_CONVERTER(translate_equal_op);
+OP_CONVERTER(translate_erfc_op);
+OP_CONVERTER(translate_expm1_op);
 OP_CONVERTER(translate_expand_dims_op);
 OP_CONVERTER(translate_extract_image_patches_op);
 OP_CONVERTER(translate_fake_quant_op);
@@ -84,6 +86,8 @@ OP_CONVERTER(translate_gather_op);
 OP_CONVERTER(translate_gather_v2_op);
 OP_CONVERTER(translate_gather_nd_op);
 OP_CONVERTER(translate_gather_tree_op);
+OP_CONVERTER(translate_gelu_op);
+OP_CONVERTER(translate_hsv_to_rgb_op);
 OP_CONVERTER(translate_identity_op);
 OP_CONVERTER(translate_identity_n_op);
 OP_CONVERTER(translate_ifft_op);
@@ -122,12 +126,14 @@ OP_CONVERTER(translate_ones_like_op);
 OP_CONVERTER(translate_pack_op);
 OP_CONVERTER(translate_pad_op);
 OP_CONVERTER(translate_padv2_op);
+OP_CONVERTER(translate_prod_op);
 OP_CONVERTER(translate_range_op);
 OP_CONVERTER(translate_rank_op);
 OP_CONVERTER(translate_random_uniform_op);
 OP_CONVERTER(translate_random_uniform_int_op);
 OP_CONVERTER(translate_real_imag_op);
 OP_CONVERTER(translate_relu_6_op);
+OP_CONVERTER(translate_relu_0_to_1_op);
 OP_CONVERTER(translate_reciprocal_op);
 OP_CONVERTER(translate_reshape_op);
 OP_CONVERTER(translate_resource_gather_op);
@@ -135,12 +141,19 @@ OP_CONVERTER(translate_reverse_op);
 OP_CONVERTER(translate_reverse_v2_op);
 OP_CONVERTER(translate_reverse_sequence_op);
 OP_CONVERTER(translate_rfft_op);
+OP_CONVERTER(translate_rgb_to_hsv_op);
+OP_CONVERTER(translate_rint_op);
 OP_CONVERTER(translate_roll_op);
 OP_CONVERTER(translate_round_op);
 OP_CONVERTER(translate_rsqrt_op);
 OP_CONVERTER(translate_scatter_nd_op);
+OP_CONVERTER(translate_segment_max_op);
 OP_CONVERTER(translate_segment_sum_op);
 OP_CONVERTER(translate_space_to_batch_nd_op);
+OP_CONVERTER_NAMED(translate_sparse_fill_empty_rows_op);
+OP_CONVERTER(translate_sparse_segment_op);
+OP_CONVERTER(translate_sparse_tensor_dense_add_op);
+OP_CONVERTER(translate_sparse_tensor_dense_mat_mul_op);
 OP_CONVERTER(translate_sparse_to_dense_op);
 OP_CONVERTER(translate_select_op);
 OP_CONVERTER(translate_select_v2_op);
@@ -154,7 +167,9 @@ OP_CONVERTER(translate_split_v_op);
 OP_CONVERTER(translate_square_op);
 OP_CONVERTER(translate_squeeze_op);
 OP_CONVERTER(translate_strided_slice_op);
+OP_CONVERTER(translate_sub_op);
 OP_CONVERTER(translate_sqrt_op);
+OP_CONVERTER(translate_empty_tensor_list_op);
 OP_CONVERTER(translate_tensor_list_from_tensor_op);
 OP_CONVERTER(translate_tensor_list_get_item_op);
 OP_CONVERTER(translate_tensor_list_length_op);
@@ -164,6 +179,8 @@ OP_CONVERTER(translate_tensor_list_set_item_op);
 OP_CONVERTER(translate_tensor_list_stack_op);
 OP_CONVERTER(translate_tensor_list_resize_op);
 OP_CONVERTER(translate_tensor_list_concat_v2_op);
+OP_CONVERTER(translate_tensor_scatter_add_op);
+OP_CONVERTER(translate_tensor_scatter_update_op);
 OP_CONVERTER(translate_tile_op);
 OP_CONVERTER(translate_tobool_op);
 OP_CONVERTER_NAMED(translate_top_k_op);
@@ -174,6 +191,7 @@ OP_CONVERTER(translate_truncate_mod_op);
 OP_CONVERTER(translate_unique_with_counts_op);
 OP_CONVERTER(translate_unpack_op);
 OP_CONVERTER(translate_unravel_index_op);
+OP_CONVERTER(translate_unsorted_segment_max_op);
 OP_CONVERTER(translate_unsorted_segment_sum_op);
 OP_CONVERTER(translate_where_op);
 OP_CONVERTER(translate_x_div_y_op);
@@ -184,7 +202,4 @@ OP_CONVERTER(translate_zeros_like_op);
 // Translators for internal operations
 OP_CONVERTER_NAMED(translate_unique_op);
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

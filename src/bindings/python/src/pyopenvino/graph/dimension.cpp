@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,7 +20,7 @@ void regclass_graph_Dimension(py::module m) {
     using value_type = ov::Dimension::value_type;
 
     py::class_<ov::Dimension, std::shared_ptr<ov::Dimension>> dim(m, "Dimension");
-    dim.doc() = "openvino.runtime.Dimension wraps ov::Dimension";
+    dim.doc() = "openvino.Dimension wraps ov::Dimension";
     dim.def(py::init<>());
     dim.def(py::init<value_type&>(),
             py::arg("dimension"),
@@ -42,7 +42,7 @@ void regclass_graph_Dimension(py::module m) {
                 :type max_dimension: int
             )");
 
-    dim.def(py::init<const std::string&>(), py::arg("str"));
+    dim.def(py::init<std::string_view>(), py::arg("str"));
 
     dim.def_static("dynamic", &ov::Dimension::dynamic);
 
@@ -81,7 +81,7 @@ void regclass_graph_Dimension(py::module m) {
             R"(
                 Return this dimension as integer.
                 This dimension must be static and non-negative.
-                
+
                 :return: Value of the dimension.
                 :rtype: int
             )");

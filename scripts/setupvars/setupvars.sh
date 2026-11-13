@@ -1,16 +1,16 @@
 #!/bin/bash
 
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 abs_path () {
     script_path=$(eval echo "$1")
     directory=$(dirname "$script_path")
-    builtin cd "$directory" || exit
+    builtin cd "$directory" >/dev/null 2>&1 || exit
     pwd -P
 }
 
-SCRIPT_DIR="$(abs_path "${BASH_SOURCE[0]}")" >/dev/null 2>&1
+SCRIPT_DIR="$(abs_path "${BASH_SOURCE:-$0}")" >/dev/null 2>&1
 INSTALLDIR="${SCRIPT_DIR}"
 export INTEL_OPENVINO_DIR="$INSTALLDIR"
 
@@ -33,6 +33,8 @@ done
 
 if [ -e "$INSTALLDIR/runtime" ]; then
     export OpenVINO_DIR=$INSTALLDIR/runtime/cmake
+    # If GenAI is installed, export it as well.
+    [ -f "$OpenVINO_DIR/OpenVINOGenAIConfig.cmake" ] && export OpenVINOGenAI_DIR=$OpenVINO_DIR
 
     system_type=$(/bin/ls "$INSTALLDIR/runtime/lib/")
     OV_PLUGINS_PATH=$INSTALLDIR/runtime/lib/$system_type
@@ -40,6 +42,13 @@ if [ -e "$INSTALLDIR/runtime" ]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
         export DYLD_LIBRARY_PATH=${OV_PLUGINS_PATH}/Release:${OV_PLUGINS_PATH}/Debug${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}
         export LD_LIBRARY_PATH=${OV_PLUGINS_PATH}/Release:${OV_PLUGINS_PATH}/Debug${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+        # Multi-config generator dirs (RelWithDebInfo, MinSizeRel) are only present in local builds
+        for config in RelWithDebInfo MinSizeRel; do
+            if [ -d "${OV_PLUGINS_PATH}/${config}" ]; then
+                export DYLD_LIBRARY_PATH=${OV_PLUGINS_PATH}/${config}:${DYLD_LIBRARY_PATH}
+                export LD_LIBRARY_PATH=${OV_PLUGINS_PATH}/${config}:${LD_LIBRARY_PATH}
+            fi
+        done
         export PKG_CONFIG_PATH=${OV_PLUGINS_PATH}/Release/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
     else
         export LD_LIBRARY_PATH=${OV_PLUGINS_PATH}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
@@ -98,8 +107,8 @@ if command -v lsb_release >/dev/null 2>&1; then
 fi
 
 PYTHON_VERSION_MAJOR="3"
-MIN_REQUIRED_PYTHON_VERSION_MINOR="8"
-MAX_SUPPORTED_PYTHON_VERSION_MINOR="12"
+MIN_REQUIRED_PYTHON_VERSION_MINOR="11"
+MAX_SUPPORTED_PYTHON_VERSION_MINOR="15"
 
 check_python_version () {
     if [ -z "$python_version" ]; then
@@ -111,9 +120,12 @@ check_python_version () {
         python_version_minor=$( python3 -c "import sys; print(str(\"${python_version}\".split('.')[1]))" )
     fi
 
+    # Strip non-numeric suffix from minor version (e.g., 14t -> 14)
+    python_version_minor_numeric="${python_version_minor%%[!0-9]*}"
+
     if  [ "$PYTHON_VERSION_MAJOR" != "$python_version_major" ] ||
-        [ "$python_version_minor" -lt "$MIN_REQUIRED_PYTHON_VERSION_MINOR" ] ||
-        [ "$python_version_minor" -gt "$MAX_SUPPORTED_PYTHON_VERSION_MINOR" ] ; then
+        [ "$python_version_minor_numeric" -lt "$MIN_REQUIRED_PYTHON_VERSION_MINOR" ] ||
+        [ "$python_version_minor_numeric" -gt "$MAX_SUPPORTED_PYTHON_VERSION_MINOR" ] ; then
         echo "[setupvars.sh] WARNING: Unsupported Python version ${python_version}. Please install one of Python" \
         "${PYTHON_VERSION_MAJOR}.${MIN_REQUIRED_PYTHON_VERSION_MINOR} -" \
         "${PYTHON_VERSION_MAJOR}.${MAX_SUPPORTED_PYTHON_VERSION_MINOR} (64-bit) from https://www.python.org/downloads/"

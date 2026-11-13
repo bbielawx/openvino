@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,10 +17,7 @@
 using namespace std;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 void normalize_block_shape_pads_crops(const NodeContext& node,
                                       Output<Node>& block_shape,
@@ -39,7 +36,7 @@ void normalize_block_shape_pads_crops(const NodeContext& node,
     auto M = make_shared<v3::ShapeOf>(block_shape, element::i32);
 
     // compute a number of padding elements required to normalize block_shape
-    // in the beggining and in the end
+    // in the beginning and in the end
     auto num_begin = make_shared<v0::Constant>(element::i32, Shape{1}, 1);
     auto num_end = make_shared<v1::Subtract>(input_rank, M)->output(0);
     num_end = make_shared<v1::Subtract>(num_end, num_begin)->output(0);
@@ -63,7 +60,7 @@ void normalize_block_shape_pads_crops(const NodeContext& node,
 }
 
 OutputVector translate_space_to_batch_nd_op(const NodeContext& node) {
-    default_op_checks(node, 3, {"SpaceToBatchND"});
+    default_op_checks(node, 3, {"SpaceToBatchND", "SPACE_TO_BATCH_ND"});
     auto input = node.get_input(0);
     Output<Node> block_shape, pads_begin, pads_end;
 
@@ -74,7 +71,7 @@ OutputVector translate_space_to_batch_nd_op(const NodeContext& node) {
 }
 
 OutputVector translate_batch_to_space_nd_op(const NodeContext& node) {
-    default_op_checks(node, 3, {"BatchToSpaceND"});
+    default_op_checks(node, 3, {"BatchToSpaceND", "BATCH_TO_SPACE_ND"});
     auto input = node.get_input(0);
     Output<Node> block_shape, crops_begin, crops_end;
 
@@ -84,7 +81,4 @@ OutputVector translate_batch_to_space_nd_op(const NodeContext& node) {
     return {batch_to_space};
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

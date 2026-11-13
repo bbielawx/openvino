@@ -1,12 +1,21 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
 #include "cpu_shape.h"
 #include "cpu_types.h"
-#include "memory_desc/cpu_memory_desc_utils.h"
+#include "openvino/core/except.hpp"
 #include "openvino/core/type/element_type.hpp"
 
 /**
@@ -19,11 +28,12 @@
  *
  */
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 namespace node {
+// WA for `friend class`
+// NOLINTNEXTLINE(bugprone-forward-declaration-namespace)
 class Split;
-}   // namespace node
+}  // namespace node
 
 class MemoryDesc;
 
@@ -31,19 +41,19 @@ using MemoryDescPtr = std::shared_ptr<MemoryDesc>;
 using MemoryDescCPtr = std::shared_ptr<const MemoryDesc>;
 using VecMemoryDescs = std::vector<MemoryDescPtr>;
 
-enum MemoryDescType {
+enum MemoryDescType : uint8_t {
     Undef = 0,
     Blocked = 1,
     Dnnl = 1 << 1,
-
-    DnnlBlocked = Blocked | Dnnl
+    DnnlBlocked = Blocked | Dnnl,
+    Empty = 1 << 2,
 };
 
-enum class LayoutType : unsigned {
-    nspc,      // general per channels format
-    ncsp,      // general planar
-    nCsp8c,    // general channels blocked by 8
-    nCsp16c    // general channels blocked by 16
+enum class LayoutType : uint8_t {
+    nspc,    // general per channels format
+    ncsp,    // general planar
+    nCsp8c,  // general channels blocked by 8
+    nCsp16c  // general channels blocked by 16
 };
 
 class MemoryDesc {
@@ -71,33 +81,33 @@ public:
 
     /**
      * @brief Clone descriptor with new dims.
-     * Throws an exception if relaxedCheck is false and some of the new dims conflicts with the internal shape (i.e. its defined dims ,rank, upper bounds)
-     * or if internal shape and dims have different ranks
+     * Throws an exception if relaxedCheck is false and some of the new dims conflicts with the internal shape (i.e. its
+     * defined dims ,rank, upper bounds) or if internal shape and dims have different ranks
      * @param dims new dims
      * @param relaxedCheck flag which defined must we check dims with internal desc on compatibility
      * @return MemoryDescPtr with new dims
      */
     MemoryDescPtr cloneWithNewDims(const VectorDims& dims, bool relaxedCheck = false) const {
         if (relaxedCheck) {
-            if (getShape().getRank() != dims.size()) {
-                OPENVINO_THROW("ParameterMismatch: Can not clone with new dims, ranks mistmatch. Descriptor's rank: ",
-                               getShape().getRank(),
-                               " is incompatible with provided rank of dimensions: ",
-                               dims.size(),
-                               ".");
-            }
-        } else if (!getShape().isCompatible(dims)) {
-            OPENVINO_THROW("ParameterMismatch: Can not clone with new dims. Descriptor's shape: ",
-                           getShape().toString(),
-                           " is incompatible with provided dimensions: ",
-                           MemoryDescUtils::dims2str(dims),
-                           ".");
+            OPENVINO_ASSERT(getShape().getRank() == dims.size(),
+                            "ParameterMismatch: Can not clone with new dims, ranks mistmatch. Descriptor's rank: ",
+                            getShape().getRank(),
+                            " is incompatible with provided rank of dimensions: ",
+                            dims.size(),
+                            ".");
+        } else {
+            OPENVINO_ASSERT(getShape().isCompatible(dims),
+                            "ParameterMismatch: Can not clone with new dims. Descriptor's shape: ",
+                            getShape().toString(),
+                            " is incompatible with provided dimensions: ",
+                            dims2str(dims),
+                            ".");
         }
 
         return cloneWithNewDimsImp(dims);
     }
 
-    virtual MemoryDescPtr cloneWithNewPrecision(const ov::element::Type prec) const = 0;
+    virtual MemoryDescPtr cloneWithNewPrecision(ov::element::Type prec) const = 0;
 
     virtual bool isCompatible(const MemoryDesc& rhs) const = 0;
 
@@ -132,23 +142,25 @@ public:
         return getMaxMemSize() != MemoryDesc::UNDEFINED_SIZE;
     }
 
+    bool empty() const {
+        return type == Empty;
+    }
+
     template <typename T,
-            typename std::enable_if<!std::is_pointer<T>::value && !std::is_reference<T>::value, int>::type = 0,
-            typename std::enable_if<std::is_base_of<MemoryDesc, T>::value, int>::type = 0>
+              typename = std::enable_if_t<!std::is_pointer_v<T> && !std::is_reference_v<T>>,
+              typename = std::enable_if_t<std::is_base_of_v<MemoryDesc, T>>>
     T* as() {
         T* casted = dynamic_cast<T*>(this);
-        if (!casted)
-            OPENVINO_THROW("Cannot dynamically cast MemoryDesc");
+        OPENVINO_ASSERT(casted, "Cannot dynamically cast MemoryDesc");
         return casted;
     }
 
     template <typename T,
-            typename std::enable_if<!std::is_pointer<T>::value && !std::is_reference<T>::value, int>::type = 0,
-            typename std::enable_if<std::is_base_of<MemoryDesc, T>::value, int>::type = 0>
+              typename = std::enable_if_t<!std::is_pointer_v<T> && !std::is_reference_v<T>>,
+              typename = std::enable_if_t<std::is_base_of_v<MemoryDesc, T>>>
     const T* as() const {
         const T* casted = dynamic_cast<const T*>(this);
-        if (!casted)
-            OPENVINO_THROW("Cannot dynamically cast MemoryDesc");
+        OPENVINO_ASSERT(casted, "Cannot dynamically cast MemoryDesc");
         return casted;
     }
 
@@ -156,17 +168,16 @@ public:
 
 protected:
     MemoryDesc() : type(MemoryDescType::Undef) {}
-    MemoryDesc(Shape shape, MemoryDescType type)
-            : type(type), shape(std::move(shape)) {}
+    MemoryDesc(Shape shape, MemoryDescType type) : type(type), shape(std::move(shape)) {}
 
-    MemoryDesc(const VectorDims& dims, MemoryDescType type)
-            : type(type), shape(dims) {}
+    MemoryDesc(const VectorDims& dims, MemoryDescType type) : type(type), shape(dims) {}
 
     virtual void setPrecision(ov::element::Type prc) = 0;
 
     virtual size_t getCurrentMemSizeImp() const = 0;
 
-    // Get offset to the n'th element. Returns physical index of the element by the logical one considering padding, layout, blocking etc.
+    // Get offset to the n'th element. Returns physical index of the element by the logical one considering padding,
+    // layout, blocking etc.
     virtual size_t getElementOffset(size_t elemNumber) const = 0;
 
     virtual bool canComputeMemSizeZeroDims() const = 0;
@@ -192,5 +203,4 @@ protected:
     friend class node::Split;
 };
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

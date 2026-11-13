@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,9 +9,7 @@
 #include "group_convolution_shape_inference.hpp"
 #include "openvino/op/group_conv.hpp"
 
-namespace ov {
-namespace intel_gpu {
-namespace op {
+namespace ov::intel_gpu::op {
 
 Convolution::Convolution(const ov::Output<Node>& data_batch,
                          const ov::Output<Node>& filters,
@@ -66,11 +64,9 @@ void Convolution::validate_and_infer_types() {
     const auto& filters_et = get_input_element_type(1);
 
     element::Type result_et;
-
-    if (m_output_type != ov::element::undefined) {
+    if (m_output_type != ov::element::dynamic) {
         result_et = m_output_type;
     } else if (data_batch_et.compatible(filters_et)) {
-        ov::element::Type::merge(result_et, data_batch_et, filters_et);
         NODE_VALIDATION_CHECK(this,
                               element::Type::merge(result_et, data_batch_et, filters_et),
                               "Element types for data batch and filters do not match (data batch element type: ",
@@ -107,21 +103,20 @@ std::shared_ptr<Node> Convolution::clone_with_new_inputs(const ov::OutputVector&
                                              m_groups,
                                              m_auto_pad,
                                              m_output_type);
-    } else {
-        return std::make_shared<Convolution>(new_args.at(0),
-                                             new_args.at(1),
-                                             new_args.at(2),
-                                             new_args.at(3),
-                                             new_args.at(4),
-                                             new_args.at(5),
-                                             m_strides,
-                                             m_pads_begin,
-                                             m_pads_end,
-                                             m_dilations,
-                                             m_groups,
-                                             m_auto_pad,
-                                             m_output_type);
     }
+    return std::make_shared<Convolution>(new_args.at(0),
+                                         new_args.at(1),
+                                         new_args.at(2),
+                                         new_args.at(3),
+                                         new_args.at(4),
+                                         new_args.at(5),
+                                         m_strides,
+                                         m_pads_begin,
+                                         m_pads_end,
+                                         m_dilations,
+                                         m_groups,
+                                         m_auto_pad,
+                                         m_output_type);
 }
 
 bool Convolution::has_groups() const {
@@ -147,16 +142,13 @@ std::vector<ov::PartialShape> shape_infer(const Convolution* op,
         tmp_op.set_auto_pad(op->get_auto_pad());
 
         return shape_infer(&tmp_op, input_shapes, pads_begin, pads_end);
-   } else {
-        ov::op::v1::Convolution tmp_op;
-        tmp_op.set_strides(op->get_strides());
-        tmp_op.set_dilations(op->get_dilations());
-        tmp_op.set_auto_pad(op->get_auto_pad());
-
-        return shape_infer(&tmp_op, input_shapes, pads_begin, pads_end);
    }
+   ov::op::v1::Convolution tmp_op;
+   tmp_op.set_strides(op->get_strides());
+   tmp_op.set_dilations(op->get_dilations());
+   tmp_op.set_auto_pad(op->get_auto_pad());
+
+   return shape_infer(&tmp_op, input_shapes, pads_begin, pads_end);
 }
 
-}  // namespace op
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu::op

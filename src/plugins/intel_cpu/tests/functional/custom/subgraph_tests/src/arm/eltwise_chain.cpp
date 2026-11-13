@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -22,7 +22,7 @@ using namespace ov::test::eltwise_chain;
 
 namespace {
 
-std::vector<std::vector<EltwiseTypes>> eltwiseOpsConvertInt8 = {
+std::vector<std::vector<EltwiseChainOp>> eltwiseOpsConvertInt8 = {
         { EltwiseTypes::MULTIPLY },
         { EltwiseTypes::ADD },
         { EltwiseTypes::DIVIDE }

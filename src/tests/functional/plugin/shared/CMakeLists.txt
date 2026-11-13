@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -41,6 +41,9 @@ endif()
 
 if (TARGET openvino::snippets)
     list(APPEND LINK_LIBRARIES_PRIVATE ov_snippets_models)
+    if (ENABLE_SNIPPETS_LIBXSMM_TPP)
+        add_definitions(-DSNIPPETS_LIBXSMM_TPP)
+    endif()
 else()
     list(APPEND EXCLUDED_SOURCE_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src/snippets)
 endif()
@@ -51,19 +54,21 @@ ov_add_target(
         ROOT ${PUBLIC_HEADERS_DIR}
         ADDITIONAL_SOURCE_DIRS
             ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ADD_CPPLINT
         EXCLUDED_SOURCE_PATHS ${EXCLUDED_SOURCE_PATHS}
         DEFINES ${DEFINES}
         INCLUDES
             PUBLIC
                 "$<BUILD_INTERFACE:${PUBLIC_HEADERS_DIR}>"
+            PRIVATE
+                "${OpenVINO_SOURCE_DIR}/src/plugins/template/include"
+                $<TARGET_PROPERTY:openvino::reference,SOURCE_DIR>/include
         LINK_LIBRARIES
             PUBLIC
                 openvino::pugixml
                 common_test_utils
                 func_test_utils
                 ov_lpt_models
-                sharedTestClasses
+                base_func_tests
             PRIVATE
                 ${LINK_LIBRARIES_PRIVATE}
         DEPENDENCIES
@@ -71,15 +76,8 @@ ov_add_target(
 )
 
 ov_build_target_faster(${TARGET_NAME}
-    PCH PRIVATE "src/precomp.hpp"
+    PCH_HEADER "src/precomp.hpp"
 )
-
-if (ENABLE_INTEL_CPU)
-    set_source_files_properties(
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/behavior/ov_executable_network/get_metric.cpp"
-        PROPERTIES COMPILE_DEFINITIONS ENABLE_INTEL_CPU=1)
-endif()
-
 # install & export
 
 ov_developer_package_export_targets(TARGET ${TARGET_NAME}

@@ -1,5 +1,3 @@
-.. {#openvino_docs_OV_UG_supported_plugins_NPU}
-
 NPU Device
 ==========
 
@@ -8,31 +6,56 @@ NPU Device
                  a low-power processing device dedicated to running AI inference.
 
 
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+
+   npu-device/remote-tensor-api-npu-plugin
+   npu-device/batching-on-npu-plugin
+
+
 The Neural Processing Unit is a low-power hardware solution, introduced with the
 Intel® Core™ Ultra generation of CPUs (formerly known as Meteor Lake). It enables
-you to offload certain neural network computation tasks from other devices,
+you to offload certain neural network computation tasks
 for more streamlined resource management.
 
-Note that the NPU plugin is currently available only with the Archive distribution of OpenVINO™
-and you need to :doc:`install a proper NPU driver <../../../get-started/configurations/configurations-intel-npu>`
-to use it successfully.
+NPU Plugin is now available through all relevant OpenVINO distribution channels.
 
-| **Supported Platforms:**
-|   Host: Intel® Core™ Ultra (former Meteor Lake)
-|   NPU device: NPU 3720
-|   OS: Ubuntu* 22.04 64-bit (with Linux kernel 6.6+), MS Windows* 11 64-bit (22H2, 23H2)
+NPU Plugin needs an NPU Driver to be installed on the system to execute a model.
+Follow the instructions below to install the latest NPU drivers:
 
+* `Windows driver <https://www.intel.com/content/www/us/en/download/794734/intel-npu-driver-windows.html>`__
+* `Linux driver <https://github.com/intel/linux-npu-driver/releases>`__
 
-| **Supported Inference Data Types**
-| The NPU plugin supports the following data types as inference precision of internal primitives:
-|    Floating-point data types: F32, F16O
-|    Quantized data types: U8 (quantized models may be int8 or mixed FP16-INT8)
-|    Computation precision for the HW is FP16.
-|
-| For more details on how to get a quantized model, refer to the
-  :doc:`Model Optimization guide <../../model-optimization>` and
-  :doc:`NNCF tool quantization guide <../../model-optimization-guide/quantizing-models-post-training/basic-quantization-flow>`.
+.. note::
 
+   The NPU compiler library was first introduced in the OpenVINO 2026.0 release package as a preview feature (`Compiler-In-Plugin`).
+   Starting with the 2026.1 release, `Compiler-In-Plugin` becomes the preferred compiler type used by the NPU Plugin.
+   Users can override the default compiler selection by setting ``ov::intel_npu::compiler_type``.
+
+The plugin uses either the NPU compiler library included in the driver or
+the compiler library included in the OpenVINO package to convert the OpenVINO specific
+representation of the model into a proprietary format. The compiler performs platform specific
+optimizations in order to efficiently schedule the execution of layers and memory transactions
+on various NPU hardware submodules.
+
+To use NPU for inference, pass the device name to the ``ov::Core::compile_model()`` method:
+
+.. tab-set::
+
+   .. tab-item:: Python
+      :sync: py
+
+      .. doxygensnippet:: docs/articles_en/assets/snippets/compile_model_npu.py
+         :language: py
+         :fragment: [compile_model_default_npu]
+
+   .. tab-item:: C++
+      :sync: cpp
+
+      .. doxygensnippet:: docs/articles_en/assets/snippets/compile_model_npu.cpp
+         :language: cpp
+         :fragment: [compile_model_default_npu]
 
 
 Model Caching
@@ -64,6 +87,9 @@ may be summarized in three stages:
 3. All subsequent requests to compile the same IR model with the same arguments
    use the pre-compiled model, reading it from the cache instead of recompiling.
 
+UMD Dynamic Model Caching can be bypassed for given model by setting boolean property
+ov::intel_npu::bypass_umd_caching (NPU_BYPASS_UMD_CACHE) to true at compilation. (default value is false)
+
 
 OpenVINO Model Caching
 +++++++++++++++++++++++++++++
@@ -78,15 +104,21 @@ instead of recompiling it.
 For more details about OpenVINO model caching, see the
 :doc:`Model Caching Overview <../optimize-inference/optimizing-latency/model-caching-overview>`.
 
+| **Supported Inference Data Types**
+| The NPU plugin supports the following data types as inference precision of internal primitives:
+|    Floating-point data types: F32, F16
+|    Quantized data types: U8 (quantized models may be INT8 or mixed FP16-INT8)
+|    Computation precision for the HW is FP16.
+|
+| For more details on how to get a quantized model, refer to the
+  :doc:`Model Optimization guide <../../model-optimization>` and
+  :doc:`NNCF tool quantization guide <../../model-optimization-guide/quantizing-models-post-training/basic-quantization-flow>`.
 
 Supported Features and properties
 #######################################
 
-The NPU device is currently supported by AUTO and MULTI inference modes
+The NPU device is currently supported by AUTO inference modes
 (HETERO execution is partially supported, for certain models).
-
-The NPU support in OpenVINO is still under active development and may
-offer a limited set of supported OpenVINO features.
 
 **Supported Properties:**
 
@@ -96,30 +128,64 @@ offer a limited set of supported OpenVINO features.
 
       .. code-block::
 
-         ov::internal::caching_properties
-         ov::enable_profiling
-         ov::hint::performance_mode
-         ov::hint::num_requests
-         ov::hint::model_priority
-         ov::hint::enable_cpu_pinning
-         ov::log::level
          ov::device::id
+         ov::log::level
+         ov::hint::enable_cpu_pinning
+         ov::hint::inference_precision
+         ov::hint::model_priority
+         ov::hint::num_requests
+         ov::hint::performance_mode
+         ov::hint::execution_mode
          ov::cache_dir
-         ov::internal::exclusive_async_requests
+         ov::compilation_num_threads
+         ov::enable_profiling
+         ov::workload_type
+         ov::intel_npu::compilation_mode_params
+         ov::intel_npu::compiler_dynamic_quantization
+         ov::intel_npu::qdq_optimization
+         ov::intel_npu::qdq_optimization_aggressive
+         ov::intel_npu::turbo
+         ov::intel_npu::platform
+         ov::intel_npu::tiles
+         ov::intel_npu::bypass_umd_caching
+         ov::intel_npu::defer_weights_load
+         ov::intel_npu::run_inferences_sequentially
+         ov::intel_npu::disable_idle_memory_prunning
+         ov::intel_npu::compiler_type
+         ov::intel_npu::enable_strides_for
 
    .. tab-item:: Read-only properties
 
       .. code-block::
 
          ov::supported_properties
-         ov::streams::num
+         ov::available_devices
          ov::optimal_number_of_infer_requests
          ov::range_for_async_infer_requests
          ov::range_for_streams
-         ov::available_devices
-         ov::device::uuid
+         ov::num_streams
+         ov::execution_devices
+         ov::runtime_requirements
+         ov::compatibility_check
          ov::device::architecture
+         ov::device::capabilities
          ov::device::full_name
+         ov::device::uuid
+         ov::device::luid (windows only)
+         ov::device::pci_info
+         ov::device::gops
+         ov::device::type
+         ov::intel_npu::device_alloc_mem_size
+         ov::intel_npu::device_total_mem_size
+         ov::intel_npu::driver_version
+         ov::intel_npu::compiler_version
+         ov::intel_npu::max_tiles
+
+   .. tab-item:: Write-only properties
+
+      .. code-block::
+
+         ov::cache_encryption_callbacks
 
 .. note::
 
@@ -127,28 +193,256 @@ offer a limited set of supported OpenVINO features.
    based on the performance mode is **4 for THROUGHPUT** and **1 for LATENCY**.
    The default mode for the NPU device is LATENCY.
 
+**ov::intel_npu::compilation_mode_params**
+
+``ov::intel_npu::compilation_mode_params`` is an NPU-specific property that allows
+control of model compilation for NPU.
+
+.. note::
+
+   The functionality is in experimental stage currently, can be a subject for
+   deprecation and may be replaced with generic OV API in future OV releases.
+
+Following configuration options are supported:
+
+**optimization-level**
+
+Defines an optimization effort hint to the compiler.
+
+.. list-table::
+   :widths: 10 200
+   :header-rows: 1
+
+   * - **Value**
+     - **Description**
+   * - 0
+     - Reduced subset of optimization passes. May result in smaller compile time.
+   * - 1
+     - **Default.** Balanced performance/compile time.
+   * - 2
+     - Prioritize performance over compile time that may be an issue.
+
+**performance-hint-override**
+
+The LATENCY mode can be overridden by specifying ``ov::hint::performance_mode``
+Has no effect for other ``ov::hint::PerformanceMode`` hints.
+
+.. list-table::
+   :widths: 10 200
+   :header-rows: 1
+
+   * - **Value**
+     - **Description**
+   * - efficiency
+     - **Default.** Balanced performance and power consumption.
+   * - latency
+     - Prioritize performance over power efficiency.
+
+Usage example:
+
+.. code-block::
+
+   map<str, str> config = {ov::intel_npu::compilation_mode_params.name(), ov::Any("optimization-level=1 performance-hint-override=latency")};
+
+   compile_model(model, config);
+
+**ov::intel_npu::turbo**
+
+The turbo mode, where available, provides a hint to the system to maintain the
+maximum NPU frequency and memory throughput within the platform TDP limits.
+The turbo mode is not recommended for sustainable workloads due to higher power
+consumption and potential impact on other compute resources.
+
+.. code-block::
+
+   core.set_property("NPU", ov::intel_npu::turbo(true));
+
+or
+
+.. code-block::
+
+   core.compile_model(ov_model, "NPU", {ov::intel_npu::turbo(true)});
+
+.. note::
+
+   NPU_TURBO usage may cause higher compile time, memory footprint,
+   affect workload latency and compatibility issues with older NPU drivers
+
+**ov::intel_npu::max_tiles and ov::intel_npu::tiles**
+
+For on-device compilation, the plugin queries the driver for the available number of tiles and sets ``ov::intel_npu::max_tiles``.
+
+``ov::intel_npu::max_tiles`` is a read-only property, and it will not be listed as supported in cases where no device is present.
+
+Note that ``ov::intel_npu::max_tiles`` represents the maximum number of tiles available,
+but the compiler may target a lower number of tiles depending on other properties.
+Users can set ``ov::intel_npu::tiles`` to override the number of tiles selected by the compiler based on other properties.
+
+.. note::
+
+   When setting ``ov::intel_npu::tiles``, users must ensure that the value does not
+   exceed ``ov::intel_npu::max_tiles``. Any tile count other than 1 may impact
+   cross-device compatibility if it is not explicitly validated against the target
+   device's ``ov::intel_npu::max_tiles`` value.
+
+**ov::intel_npu::compiler_type**
+
+This property allows users to override the default compiler type selected by the plugin.
+By default, the NPU Plugin behavior corresponds to the ``PREFER_PLUGIN`` setting.
+In this mode, the integrated compiler (``Compiler-In-Plugin``) is used when all the following conditions are met:
+
+- The library is present
+- The compiler supports the current platform ``or`` there is no platform detected (offline compilation)
+- Compatibility is maintained between the current compiler version and all drivers released for the platform ``or`` there is no platform detected (offline compilation)
+
+Note: On Meteor Lake (3720), when the property is set to ``PREFER_PLUGIN`` (by default), the plugin will fall back to ``Compiler-in-Driver`` because
+the compiler library integrated in the plugin may not be compatible with driver versions lower than v2565.
+Users can set ``ov::intel_npu::compiler_type`` to ``PLUGIN`` to force ``Compiler-in-Plugin``, but the blob will fail to execute on incompatible drivers.
+
+If any condition is not met, the plugin automatically falls back to using ``Compiler-In-Driver``.
+The compiler type used to compile a model can be queried from the resulting ``CompiledModel`` by reading the ``ov::intel_npu::compiler_type`` property.
+
+.. note::
+
+  For on-device compilation with ``Compiler-In-Plugin``, the plugin is responsible for querying the platform information
+  from the driver and for passing the mandatory configs to the compiler (platform ID, available number of tiles, stepping information).
+  Such compiled models are compatible with all the drivers released for that platform.
+
+  For offline compilation, users must explicitly set the ``ov::intel_npu::platform`` property to one of the supported values (see table above).
+  Setting extra properties during offline compilation may result in compiled models that cannot be executed on SKUs with fewer resources or on drivers that do not support those features.
+
+Example: Setting ``performance-hint-override=latency`` through ``ov::intel_npu::compilation_mode_params`` instructs the compiler
+to use all available resources for the given platform. If ``ov::intel_npu::max_tiles`` is not provided,
+the compiler falls back to a fixed lookup table embedded in the library to determine available resources, which might not be representative of all SKUs.
+
+**ov::cache_encryption_callbacks**
+
+Enables blob encryption and decryption using user-provided callbacks. This is a write-only property that accepts a struct with encryption and decryption callback functions.
+Can be used for both model caching and user requested export or import of compiled models (blobs) scenarios.
+
+.. note::
+
+   If user compiles a model using ``Compiler-In-Driver``, currently there is no secure compilation available in driver until ``32.0.100.4724`` (inclusively) and an exception will be thrown
+   for older drivers during compilation if encryption callbacks were set.
+
+Usage example:
+
+.. note::
+
+   Will set OV provided ``codec_xor`` utility encryption and decryption at plugin level, every compiled model created will inherit these callbacks if not changed explicitly.
+
+.. code-block::
+
+   core.set_property("NPU", ov::cache_encryption_callbacks(ov::EncryptionCallbacks(ov::util::codec_xor, ov::util::codec_xor)));
+
+   core.compile_model(ov_model, "NPU").export_model(encrypted_blob_stream);
+
+   core.import_model(encrypted_blob_stream, "NPU");
+
+.. note::
+
+   Also force decryption function by providing it as a property to ``import_model`` API
+
+.. code-block::
+
+   core.import_model(encrypted_blob_stream, "NPU", {ov::cache_encryption_callbacks(ov::EncryptionCallbacks{nullptr, ov::util::codec_xor})});
+
+.. note::
+    
+   Force other encryption and decryption callbacks for compiled model below
+
+.. code-block::
+
+   auto compile_model = core.compile_model(ov_model, "NPU", {ov::cache_encryption_callbacks(ov::EncryptionCallbacks{[](const std::string& str) {
+       auto custom_encryption = str;
+       // user encryption logic here...
+       return custom_encryption;
+   }, nullptr})});
+
+   compiled_model.export_model(custom_encrypted_blob_stream);
+
+or
+
+.. code-block::
+
+   auto compile_model = core.compile_model(ov_model, "NPU");
+
+   compiled_model.set_property(ov::cache_encryption_callbacks(ov::EncryptionCallbacks{[](const std::string& str) {
+       auto custom_encryption = str;
+       // user encryption logic here...
+       return custom_encryption;
+   }, nullptr}));
+
+   compiled_model.export_model(custom_encrypted_blob_stream);
+
+**ov::runtime_requirements**
+
+This property returns a plugin-specific requirements string from a compiled model.
+
+.. code-block::
+
+   auto requirements = compiled_model.get_property(ov::runtime_requirements);
+
+.. note::
+
+   Particular models might not support the ``ov::runtime_requirements`` property. For example,
+   models compiled with a driver (compiler-in-driver) that does not support Level Zero
+   version 1.16, or models compiled with ``ENABLE_WEIGHTLESS=true``, which is only a
+   preview feature for now. Before reading the property, the application is recommended
+   to check whether it is present in the list of supported properties for that model.
+   Reading an unsupported property will throw.
+
+**ov::compatibility_check**
+
+This property can be queried with a requirements string to check whether
+the described model is compatible with the current runtime.
+
+.. code-block::
+
+   auto compat = core.get_property("NPU", ov::compatibility_check, {{ov::runtime_requirements.name(), requirements}});
+
+.. _npu-dynamic-shapes:
+
+Dynamic Shapes
+#############################
+
+Dynamic shape support on NPU is a preview (experimental) feature. The general description of what dynamic
+shapes are and how they are used can be found in the
+:doc:`dynamic shapes guide <../model-input-output/dynamic-shapes>`.
+
+Dynamic shapes are supported starting from the NPU40XX (Lunar Lake generation) platform and require
+`Windows NPU driver 32.0.100.4621 <https://www.intel.com/content/www/us/en/download/794734/914683/intel-npu-driver-windows.html>`__
+or `Linux NPU driver 1.30 <https://github.com/intel/linux-npu-driver/releases#release-v1.30.0>`__ (or newer).
+Only bounded dynamic shapes are supported, which means each dynamic dimension must specify an upper bound,
+for example ``ov::Dimension(1, 512)``.
+
+Dynamic shapes are supported only with the ``Compiler-In-Plugin`` compiler type; the ``Compiler-In-Driver``
+path does not support dynamic shapes. See the ``ov::intel_npu::compiler_type`` property description above for
+details on selecting the compiler type. The driver versions listed above are required because dynamic shape
+support depends on the driver's support for IO strides, which is available only starting from those versions.
+
+.. note::
+
+   As a preview feature, dynamic shape support currently has the following limitations:
+
+   - Support is limited to vision models and has been validated on super resolution models (e.g., ESPCN).
+   - Only bounded dynamic shapes are supported at this time. Full dynamic shape support, including
+     unbounded shapes and broader model coverage, is planned for future releases.
 
 Limitations
 #############################
 
-* Currently, only the models with static shapes are supported on NPU.
-* If the path to the model file includes non-Unicode symbols, such as in Chinese,
-  the model cannot be used for inference on NPU. It will return an error.
-* Running the Alexnet model with NPU may result in a drop in accuracy.
-  At this moment, the googlenet-v4 model is recommended for classification tasks.
+* Dynamic shape support is a preview feature. See the :ref:`Dynamic Shapes <npu-dynamic-shapes>` section
+  for supported platforms, drivers, and constraints.
 
 **Import/Export:**
 
-Offline compilation and blob import is supported but only for development purposes.
+Offline compilation and blob import is supported only for development purposes.
 Pre-compiled models (blobs) are not recommended to be used in production.
-Blob compatibility across different OpenVINO versions/ NPU driver versions is not
-guaranteed.
+Blob compatibility across different OpenVINO versions is not guaranteed.
 
 Additional Resources
 #############################
 
-* `Vision colorization Notebook <notebooks/222-vision-image-colorization-with-output.html>`__
-* `Classification Benchmark C++ Demo <https://github.com/openvinotoolkit/open_model_zoo/tree/master/demos/classification_benchmark_demo/cpp>`__
-* `3D Human Pose Estimation Python Demo <https://github.com/openvinotoolkit/open_model_zoo/tree/master/demos/3d_segmentation_demo/python>`__
-* `Object Detection C++ Demo <https://github.com/openvinotoolkit/open_model_zoo/tree/master/demos/object_detection_demo/cpp>`__
-* `Object Detection Python Demo <https://github.com/openvinotoolkit/open_model_zoo/tree/master/demos/object_detection_demo/python>`__
+* `Working with NPUs in OpenVINO™ Notebook <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/hello-npu>`__
+* `Vision colorization Notebook <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/ddcolor-image-colorization>`__

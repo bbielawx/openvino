@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,6 +11,7 @@ ParamsKey SelectKernelRef::GetSupportedKey() const {
     ParamsKey k;
 
     k.EnableInputDataType(Datatype::F16);
+    k.EnableInputDataType(Datatype::BF16);
     k.EnableInputDataType(Datatype::F32);
     k.EnableInputDataType(Datatype::INT8);
     k.EnableInputDataType(Datatype::UINT8);
@@ -19,6 +20,7 @@ ParamsKey SelectKernelRef::GetSupportedKey() const {
 
     k.EnableOutputDataType(Datatype::F32);
     k.EnableOutputDataType(Datatype::F16);
+    k.EnableOutputDataType(Datatype::BF16);
     k.EnableOutputDataType(Datatype::INT8);
     k.EnableOutputDataType(Datatype::UINT8);
     k.EnableOutputDataType(Datatype::INT16);
@@ -27,10 +29,12 @@ ParamsKey SelectKernelRef::GetSupportedKey() const {
     k.EnableInputLayout(DataLayout::bfyx);
     k.EnableInputLayout(DataLayout::yxfb);
     k.EnableInputLayout(DataLayout::byxf);
+    k.EnableInputLayout(DataLayout::bfzyx);
 
     k.EnableOutputLayout(DataLayout::bfyx);
     k.EnableOutputLayout(DataLayout::yxfb);
     k.EnableOutputLayout(DataLayout::byxf);
+    k.EnableOutputLayout(DataLayout::bfzyx);
 
     k.EnableBatching();
     k.EnableTensorPitches();
@@ -43,7 +47,7 @@ ParamsKey SelectKernelRef::GetSupportedKey() const {
 
 bool SelectKernelRef::Validate(const Params& p) const {
     if (!SelectKernelBase::Validate(p)) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     return true;

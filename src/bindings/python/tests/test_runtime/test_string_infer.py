@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
 import pytest
 
-import openvino.runtime.opset13 as ops
+import openvino.opset13 as ops
 from openvino import (
     CompiledModel,
     InferRequest,
@@ -67,6 +67,7 @@ def test_default_decode_flag(class_defaults, expected_value):
     [
         ([bytes("text", encoding="utf-8"), bytes("openvino", encoding="utf-8")], [-1]),
         ([[b"xyz"], [b"abc"], [b"this is my last"]], [3, -1]),
+        ([b"text\0with\0null", b"openvino\0"], [-1]),
         (["text", "abc", "openvino"], [3]),
         (["text", "больше текста", "jeszcze więcej słów", "효과가 있었어"], [-1]),
         ([["text"], ["abc"], ["openvino"]], [3, 1]),
@@ -91,6 +92,7 @@ def test_infer_request_infer(string_data, data_shape, decode_strings):
     [
         ([bytes("text", encoding="utf-8"), bytes("openvino", encoding="utf-8")], [-1]),
         ([[b"xyz"], [b"abc"], [b"this is my last"]], [3, -1]),
+        ([b"text\0with\0null", b"openvino\0"], [-1]),
         (["text", "abc", "openvino"], [3]),
         (["text", "больше текста", "jeszcze więcej słów", "효과가 있었어"], [-1]),
         ([["text"], ["abc"], ["openvino"]], [3, 1]),
@@ -108,3 +110,17 @@ def test_compiled_model_infer(string_data, data_shape, decode_strings):
     compiled_model = create_string_compiled_model(data_shape)
     res = compiled_model(string_data, decode_strings=decode_strings)
     assert np.array_equal(res[0], as_string_array(string_data) if decode_strings else as_bytes_array(string_data))
+
+
+@pytest.mark.parametrize(
+    ("string_data"),
+    [
+        b"openvino",
+        "openvino",
+    ],
+)
+@pytest.mark.parametrize("share_inputs", [True, False])
+def test_infer_request_infer_dict_scalar_string(string_data, share_inputs):
+    infer_request = create_string_infer_request([])
+    res = infer_request.infer({0: string_data}, share_inputs=share_inputs, decode_strings=False)
+    assert np.array_equal(res[0], as_bytes_array(string_data))

@@ -1,19 +1,14 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/adaptive_avg_pooling2d.hpp"
-
+#include "core/operator_set.hpp"
 #include "exceptions.hpp"
 #include "openvino/op/adaptive_avg_pool.hpp"
 
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 ov::OutputVector adaptive_avg_pooling2d(const ov::frontend::onnx::Node& node) {
     const auto inputs = node.get_ov_inputs();
     const auto num_inputs = inputs.size();
@@ -22,9 +17,5 @@ ov::OutputVector adaptive_avg_pooling2d(const ov::frontend::onnx::Node& node) {
 
     return {std::make_shared<v8::AdaptiveAvgPool>(inputs[0], inputs[1])};
 }
-
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("adaptive_avg_pool2d", OPSET_SINCE(1), ai_onnx::opset_1::adaptive_avg_pooling2d, PYTORCH_ATEN_DOMAIN);
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

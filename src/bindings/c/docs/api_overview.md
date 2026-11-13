@@ -8,24 +8,15 @@ This API provides a simplified interface for OpenVINO functionality that allows 
 
 ## Supported OSes
 
-Currently the OpenVINO C API is supported on Ubuntu* 18.04/20.04/22.04 Microsoft Windows* 10/11 and CentOS* 7.3/10.15 and above OSes.
-Supported Python* versions:
-
-  - Ubuntu 22.04 long-term support (LTS), 64-bit (Kernel 5.15+)
-  - Ubuntu 20.04 long-term support (LTS), 64-bit (Kernel 5.15+)
-  - Ubuntu 18.04 long-term support (LTS) with limitations, 64-bit (Kernel 5.4+)
-  - Windows* 10
-  - Windows* 11
-  - macOS* 12.6 and above, 64-bit and ARM64
-  - Red Hat Enterprise Linux* 8, 64-bit
-  - Debian 9 ARM64 and ARM
-  - CentOS 7 64-bit
+The C API is built as part of the OpenVINO Runtime distributions. Refer to the
+[OpenVINO system requirements](https://docs.openvino.ai/latest/about-openvino/release-notes-openvino/system-requirements.html)
+for the maintained operating-system and architecture matrix.
 
 ## Setting Up the Environment
 
 To configure the environment for the OpenVINO C* API, run:
 
-- On Ubuntu 20.04/22.04: `source <INSTALL_DIR>/setupvars.sh .`
+- On Linux: `source <INSTALL_DIR>/setupvars.sh`
 - On Windows 10/11:
 
   * `. <path-to-setupvars-folder>/setupvars.ps1` in PowerShell
@@ -155,9 +146,7 @@ typedef struct {
 ```
 typedef enum {
 
-    UNDEFINED = 0U,  //!< Undefined element type
-
-    DYNAMIC,         //!< Dynamic element type
+    DYNAMIC = 0U,  //!< Dynamic element type
 
     BOOLEAN,         //!< boolean element type
 
@@ -181,7 +170,13 @@ typedef enum {
 
     U1,              //!< binary element type
 
+    U2,              //!< u2 element type
+
+    U3,              //!< u3 element type
+
     U4,              //!< u4 element type
+
+    U6,              //!< u6 element type
 
     U8,              //!< u8 element type
 
@@ -192,6 +187,16 @@ typedef enum {
     U64,             //!< u64 element type
 
     NF4,             //!< nf4 element type
+
+    F8E4M3,          //!< f8e4m3 element type
+
+    F8E5M3,          //!< f8e5m2 element type
+
+    STRING,          //!< string element type
+
+    F4E2M1,          //!< f4e2m1 element type
+
+    F8E8M0,          //!< f8e8m0 element type
 
 } ov_element_type_e;
 ```
@@ -345,6 +350,7 @@ OPENVINO_C_VAR(const char*) ov_property_key_intel_auto_device_bind_buffer;
 OPENVINO_C_VAR(const char*) ov_property_key_intel_auto_enable_startup_fallback;
 
 OPENVINO_C_VAR(const char*) ov_property_key_intel_auto_enable_runtime_fallback;
+OPENVINO_C_VAR(const char*) ov_property_key_intel_auto_compile_for_all;
 ```
 
 ### GPU plugin specified properties
@@ -486,7 +492,7 @@ This struct represents OpenVINO entity and allows you to manipulate with plugins
     - `device_name` - Name of a device to load a model to.
     - `property_args_size` - How many properties args will be passed, each property contains 2 args: key and value.
     - `compiled_model` - A pointer to the newly created compiled_model.
-    - `...` - property paramater, optional pack of pairs: <char* property_key, char* property_value> relevant only for this load operation operation.
+    - `...` - property parameter, optional pack of pairs: <char* property_key, char* property_value> relevant only for this load operation operation.
 
   - Return value: Status code of the operation: OK(0) for success.
 
@@ -613,6 +619,14 @@ This struct represents OpenVINO entity and allows you to manipulate with plugins
     - `compiled_model` - A pointer to the newly created compiled_model.
     - `...` - variadic parmameters Actual property parameter for remote context
 
+  - Return value: Status code of the operation: OK(0) for success.
+
+- `ov_status_e ov_core_add_extension(const ov_core_t* core, const char* library_path)`
+
+  - Description: Adds an extension to the core.
+  - Parameters:
+    - `core` - A pointer `ov_core_t` instance.
+    - `library_path` - Path to an extension.
   - Return value: Status code of the operation: OK(0) for success.
 
 ## OV Model
@@ -1056,6 +1070,14 @@ This struct provides an interface to infer requests of `ov_compiled_model_t` and
     - `tensor` - A point to ov_tensor_t
   -  Return value: Status code of the operation: OK(0) for success.
 
+- `ov_status_e ov_tensor_create_from_string_array(const char** string_array, const size_t array_size, const ov_shape_t shape, ov_tensor_t** tensor)`
+  - Description: Constructs Tensor using string array and size.
+    - `string_array` - String array
+    - `array_size` - Number of elements in string array
+    - `shape` - Tensor shape
+    - `tensor` - A point to ov_tensor_t
+  -  Return value: Status code of the operation: OK(0) for success.
+
 - `ov_status_e ov_tensor_create(const ov_element_type_e type, const ov_shape_t shape, ov_tensor_t** tensor)`
   - Description: Constructs Tensor using element type and shape. Allocate internal host storage using default allocator.
   - Parameters:
@@ -1090,6 +1112,14 @@ This struct provides an interface to infer requests of `ov_compiled_model_t` and
   - Parameters:
     - `tensor` - A point to ov_tensor_t
     - `data` - A point to host memory.
+  -  Return value: Status code of the operation: OK(0) for success.
+
+- `ov_status_e ov_tensor_set_string_data(ov_tensor_t* tensor, const char** string_array, size_t array_size)`
+  - Description: Set string data for tensor
+  - Parameters:
+    - `tensor` - A point to ov_tensor_t
+    - `string_array` - String array
+    - `array_size` - Number of elements in string array
   -  Return value: Status code of the operation: OK(0) for success.
 
 - `void ov_tensor_free(ov_tensor_t* tensor)`

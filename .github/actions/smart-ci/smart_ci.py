@@ -1,6 +1,11 @@
+# Copyright (C) 2018-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 import re
 import argparse
+import sys
+
 import yaml
 import json
 import jsonschema
@@ -8,6 +13,23 @@ import logging
 from pathlib import Path
 from ghapi.all import GhApi
 from fnmatch import fnmatch
+
+
+# Changes limited to agentic workflows and rerunner automation carry no signal for product CI, so a PR or
+# merge-queue entry that touches only these always skips the pipeline.
+ALWAYS_SKIPPABLE_FILE_PATTERNS = (
+    '.github/workflows/*.md',                          # agentic workflow sources
+    '.github/workflows/*.lock.yml',                    # their compiled workflows
+    '.github/workflows/shared/agentic-workflows/*',    # shared fragments they import
+    '.github/aw/*',                                  # gh-aw action lock and configuration
+    '.github/ci-doctor*/schemas/*',                   # persisted investigation schemas
+    '.github/scripts/agentic-workflows/*',            # safe-output job scripts
+    '.github/scripts/workflow_rerun/*',              # rerunner code, tests and reviewed error list
+    '.github/workflows/workflow_rerunner.yml',
+    '.github/workflows/agentic_workflows_check.yml',
+    '.claude/skills/ov-agentic-workflows/*',          # agentic workflow guidance
+    '.agents/skills/ov-agentic-workflows/*',
+)
 
 
 class ComponentConfig:
@@ -143,6 +165,8 @@ def parse_args():
     parser.add_argument('--skip-when-only-listed-files-changed',
                         help="Comma-separated list of patterns (fnmatch-style). If PR has only matching files changed, "
                              "return indicator that CI can be skipped")
+    parser.add_argument('--enable_for_org', default='openvinotoolkit',
+                        help='Enable running workflows for a given organization; triggers from other orgs are skipped')
     args = parser.parse_args()
     return args
 
@@ -173,6 +197,13 @@ def main():
         components_config = yaml.safe_load(config)
 
     owner, repository = args.repo.split('/')
+
+    if owner != args.enable_for_org:
+        logger.info(f"Running workflows is enabled only for repos in {args.enable_for_org} organization. "
+                    f"The current workflow was initiated from other org: {owner}, skipping")
+        set_github_output("skip_workflow", "True")
+        sys.exit(0)
+
     gh_api = GhApi(owner=owner, repo=repository, token=os.getenv("GITHUB_TOKEN"))
     pr = gh_api.pulls.get(args.pr) if args.pr else None
 
@@ -212,8 +243,8 @@ def main():
     # In post-commits - validate all components regardless of changeset
     # In pre-commits - validate only changed components with their dependencies
     all_defined_components = components_config.keys()
-    changed_component_names = set(all_defined_components) if run_full_scope else \
-        get_changed_component_names(pr, all_possible_components, args.pattern)
+    changed_by_pr = get_changed_component_names(pr, all_possible_components, args.pattern) if pr else None
+    changed_component_names = set(all_defined_components) if run_full_scope else changed_by_pr
 
     logger.info(f"changed_component_names: {changed_component_names}")
 
@@ -222,19 +253,25 @@ def main():
 
     skip_workflow = False
     if is_merge_queue or (args.pr and not run_full_scope):
-        if args.skip_when_only_listed_labels_set:
+        if args.skip_when_only_listed_labels_set and changed_component_names:
             excepted_labels = set(args.skip_when_only_listed_labels_set.split(','))
             excepted_labels_only = changed_component_names - excepted_labels == set()
             skip_workflow = excepted_labels_only
 
-        if not skip_workflow and args.skip_when_only_listed_files_changed:
-            # To avoid spending extra API requests running step below only if necessary
-            changed_files = get_changeset(gh_api, args.pr, merge_queue_target_branch, args.commit_sha)
-            patterns = set(args.skip_when_only_listed_files_changed.split(','))
+    # Skip when the whole changeset matches skip patterns. Agentic workflow files are always
+    # skippable (ALWAYS_SKIPPABLE_FILE_PATTERNS); the per-workflow input adds more. Runs for PRs
+    # and merge-queue entries regardless of Smart CI scope, so an agentic-only change is skipped
+    # even when it would otherwise trigger full scope (e.g. via the 'no-match-files' label).
+    if not skip_workflow and (is_merge_queue or args.pr):
+        skip_patterns = set(ALWAYS_SKIPPABLE_FILE_PATTERNS)
+        if args.skip_when_only_listed_files_changed:
+            skip_patterns.update(args.skip_when_only_listed_files_changed.split(','))
 
-            matched_files_only = all(any(fnmatch(f.filename, pattern) for pattern in patterns) for f in changed_files)
-            logger.debug(f"matched files only: {matched_files_only}")
-            skip_workflow = matched_files_only
+        changed_files = get_changeset(gh_api, args.pr, merge_queue_target_branch, args.commit_sha)
+        matched_files_only = bool(changed_files) and \
+            all(any(fnmatch(f.filename, pattern) for pattern in skip_patterns) for f in changed_files)
+        logger.debug(f"matched files only: {matched_files_only}")
+        skip_workflow = matched_files_only
 
     if skip_workflow:
         logger.info(f"All changes are marked for skip, workflow may be skipped")
@@ -243,6 +280,12 @@ def main():
     # Syntactic sugar for easier use in GHA pipeline
     affected_components_output = {name: {s: True for s in scope} for name, scope in affected_components.items()}
     set_github_output("affected_components", json.dumps(affected_components_output))
+
+    # Components actually changed by a pull request are marked as True (if event is PR;
+    # otherwise all components considered changed).
+    changed_components_output = {name: True if not pr or name in changed_by_pr else False
+                                 for name in all_possible_components}
+    set_github_output("changed_components", json.dumps(changed_components_output))
 
 
 if __name__ == '__main__':

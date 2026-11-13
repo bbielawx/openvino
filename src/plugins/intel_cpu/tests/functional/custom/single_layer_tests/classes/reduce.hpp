@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -35,7 +35,7 @@ typedef std::tuple<
 class ReduceCPULayerTest : public testing::WithParamInterface<ReduceLayerCPUTestParamSet>,
                            virtual public SubgraphBaseTest, public CpuTestWithFusing {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ReduceLayerCPUTestParamSet> obj);
+    static std::string getTestCaseName(const testing::TestParamInfo<ReduceLayerCPUTestParamSet>& obj);
 protected:
     void SetUp() override;
     void generate_inputs(const std::vector<ov::Shape>& targetInputStaticShapes) override;
@@ -52,10 +52,13 @@ const std::vector<std::vector<int>>& axes();
 const std::vector<std::vector<int>>& axesND();
 const std::vector<ov::test::utils::OpType>& opTypes();
 const std::vector<utils::ReductionType>& reductionTypes();
+const std::vector<utils::ReductionType>& reductionTypesArithmetic();
+const std::vector<utils::ReductionType>& reductionTypesCompare();
 const std::vector<ElementType>& inpOutPrc();
 const std::vector<std::map<std::string, ov::element::Type>> additionalConfig();
 const std::vector<std::map<std::string, ov::element::Type>> additionalConfigFP32();
 const std::vector<utils::ReductionType>& reductionTypesInt32();
+const std::vector<utils::ReductionType>& reductionTypesNativeInt32();
 
 }  // namespace Reduce
 }  // namespace test

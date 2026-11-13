@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
+import openvino as ov
 
-import openvino.runtime.opset13 as ops
-from openvino import Type, PartialShape, Model, compile_model
-from openvino.runtime.op import Constant
+import openvino.opset13 as ops
+from openvino import Type, PartialShape, Model, Strides, Tensor, compile_model
+from openvino.op import Constant
 from openvino.helpers import pack_data, unpack_data
 
 import pytest
 from enum import Enum
+import platform
 
 
 class DataGetter(Enum):
@@ -86,7 +88,7 @@ def test_init_with_array(src_dtype, dst_dtype, shared_flag, data_getter):
         data = np.ascontiguousarray(data)
 
     # Create constant from based on numpy dtype or openvino type
-    ov_const = ops.constant(data, dtype=dst_dtype, shared_memory=shared_flag)
+    ov_const = ops.constant(data, dst_dtype, shared_memory=shared_flag)
 
     # Check shape and element type of Constant class
     assert isinstance(ov_const, Constant)
@@ -204,53 +206,12 @@ def test_init_with_scalar(init_value, src_dtype, dst_dtype, shared_flag, data_ge
     assert np.allclose(const_data, expected_result)
 
 
-@pytest.mark.parametrize(
-    ("src_dtype"),
-    [
-        (np.float16),
-        (np.uint16),
-    ],
-)
-@pytest.mark.parametrize(
-    ("shared_flag"),
-    [
-        (True),
-        (False),
-    ],
-)
-@pytest.mark.parametrize(
-    ("data_getter"),
-    [
-        (DataGetter.COPY),
-        (DataGetter.VIEW),
-    ],
-)
-def test_init_bf16_populate(src_dtype, shared_flag, data_getter):
-    data = np.random.rand(1, 2, 16, 8) + 0.5
-    data = data.astype(src_dtype)
-
-    # To create bf16 constant, allocate memory and populate it:
-    init_data = np.zeros(shape=data.shape, dtype=src_dtype)
-    ov_const = ops.constant(init_data, dtype=Type.bf16, shared_memory=shared_flag)
-    ov_const.data[:] = data
-
-    # Check shape and element type of Constant class
-    assert isinstance(ov_const, Constant)
-    assert np.all(list(ov_const.shape) == [1, 2, 16, 8])
-    assert ov_const.get_element_type() == Type.bf16
-
-    _dst_dtype = Type.bf16.to_dtype()
-
-    assert ov_const.get_element_type().to_dtype() == _dst_dtype
-    # Compare values to Constant
-    if data_getter == DataGetter.COPY:
-        const_data = ov_const.get_data()
-    elif data_getter == DataGetter.VIEW:
-        const_data = ov_const.data
-    else:
-        raise AttributeError("Unknown DataGetter passed!")
-    assert const_data.dtype == _dst_dtype
-    assert np.allclose(const_data, data)
+def test_cant_change_data_in_const():
+    arr_0 = np.ones([1, 3, 32, 32])
+    ov_const = ops.constant(arr_0)
+    arr_1 = np.ones([1, 3, 32, 32]) + 1
+    with pytest.raises(ValueError, match="assignment destination is read-only"):
+        ov_const.data[:] = arr_1
 
 
 @pytest.mark.parametrize(
@@ -268,6 +229,7 @@ def test_init_bf16_populate(src_dtype, shared_flag, data_getter):
         (False),
     ],
 )
+@pytest.mark.skipif(platform.machine() in ["aarch64"], reason="CVS-177547")
 def test_init_bf16_direct(ov_type, numpy_dtype, shared_flag):
     data = np.random.rand(4) + 1.5
     data = data.astype(numpy_dtype)
@@ -286,62 +248,13 @@ def test_init_bf16_direct(ov_type, numpy_dtype, shared_flag):
 
 
 @pytest.mark.parametrize(
-    "shape",
-    [
-        ([1, 3, 28, 28]),
-        ([1, 3, 27, 27]),
-    ],
-)
-@pytest.mark.parametrize(
-    ("low", "high", "ov_type", "src_dtype"),
-    [
-        (0, 2, Type.u1, np.uint8),
-        (0, 16, Type.u4, np.uint8),
-        (-8, 7, Type.i4, np.int8),
-        (0, 16, Type.nf4, np.uint8),
-    ],
-)
-@pytest.mark.parametrize(
-    ("shared_flag"),
-    [
-        (True),
-        (False),
-    ],
-)
-@pytest.mark.parametrize(
-    ("data_getter"),
-    [
-        (DataGetter.COPY),
-        (DataGetter.VIEW),
-    ],
-)
-def test_constant_helper_packing(shape, low, high, ov_type, src_dtype, shared_flag, data_getter):
-    data = np.random.uniform(low, high, shape).astype(src_dtype)
-
-    # Allocate memory first:
-    ov_const = ops.constant(np.zeros(shape=data.shape, dtype=src_dtype),
-                            dtype=ov_type,
-                            shared_memory=shared_flag)
-    # Fill data with packed values
-    packed_data = pack_data(data, ov_const.get_element_type())
-    ov_const.data[:] = packed_data
-
-    # Always unpack the data!
-    if data_getter == DataGetter.COPY:
-        unpacked = unpack_data(ov_const.get_data(), ov_const.get_element_type(), ov_const.shape)
-    elif data_getter == DataGetter.VIEW:
-        unpacked = unpack_data(ov_const.data, ov_const.get_element_type(), ov_const.shape)
-    else:
-        raise AttributeError("Unknown DataGetter passed!")
-
-    assert np.array_equal(unpacked, data)
-
-
-@pytest.mark.parametrize(
     ("ov_type", "src_dtype"),
     [
         (Type.u1, np.uint8),
+        (Type.u2, np.uint8),
+        (Type.u3, np.uint8),
         (Type.u4, np.uint8),
+        (Type.u6, np.uint8),
         (Type.i4, np.int8),
         (Type.nf4, np.uint8),
     ],
@@ -380,18 +293,56 @@ def test_constant_direct_packing(ov_type, src_dtype, shared_flag, data_getter):
 
 
 @pytest.mark.parametrize(
-    ("shared_flag"),
+    ("ov_type", "high"),
     [
-        (True),
-        (False),
+        (Type.u3, 8),
+        (Type.u6, 64),
     ],
 )
-def test_write_to_buffer(shared_flag):
-    arr_0 = np.ones([1, 3, 32, 32])
-    ov_const = ops.constant(arr_0, shared_memory=shared_flag)
-    arr_1 = np.ones([1, 3, 32, 32]) + 1
-    ov_const.data[:] = arr_1
-    assert np.array_equal(ov_const.data, arr_1)
+@pytest.mark.parametrize("num_elements", [1, 3, 13, 64])
+def test_pack_data_matches_core_layout(ov_type, high, num_elements):
+    # `pack_data` must produce byte-for-byte the same buffer as the core packs a Constant into,
+    # including sizes where the bit-stream ends in the middle of the last byte.
+    data = (np.arange(num_elements) % high).astype(np.uint8)
+
+    ov_const = ops.constant(data, dtype=ov_type)
+
+    assert np.array_equal(ov_const.data, pack_data(data, ov_type))
+
+
+@pytest.mark.parametrize(
+    ("ov_type", "low", "high", "dtype"),
+    [
+        (Type.u1, 0, 2, np.uint8),
+        (Type.u2, 0, 4, np.uint8),
+        (Type.u4, 0, 16, np.uint8),
+        (Type.i4, -8, 8, np.int8),
+        (Type.nf4, 0, 16, np.uint8),
+    ],
+)
+@pytest.mark.parametrize("shape", [(1,), (3,), (13,), (64,), (3, 5)])
+def test_pack_unpack_data_match_core_layout(ov_type, low, high, dtype, shape):
+    # The core packs element 0 into the most significant bit for u1
+    # and into the least significant bits for u2, u4, i4 and nf4.
+    values = np.arange(np.prod(shape)) % (high - low) + low
+    data = values.astype(dtype).reshape(shape)
+
+    ov_const = ops.constant(data, dtype=ov_type)
+
+    assert np.array_equal(ov_const.data.view(np.uint8), pack_data(data, ov_type))
+    assert np.array_equal(unpack_data(ov_const.data, ov_type, data.shape), data)
+
+
+@pytest.mark.parametrize("num_elements", [7, 16])
+def test_pack_data_f4e2m1_matches_core_layout(num_elements):
+    codes = np.arange(16, dtype=np.uint8)[:num_elements]
+    all_values = np.array([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.0, -0.5, -1, -1.5, -2, -3, -4, -6], dtype=np.float32)
+    values = all_values[:num_elements]
+
+    ov_const = ops.constant(values, dtype=Type.f4e2m1)
+
+    assert np.array_equal(ov_const.data.view(np.uint8), pack_data(codes, Type.f4e2m1))
+    assert np.array_equal(unpack_data(ov_const.data, Type.f4e2m1, codes.shape), codes)
 
 
 @pytest.mark.parametrize(
@@ -413,16 +364,23 @@ def test_memory_sharing(shared_flag):
         assert not np.shares_memory(arr, ov_const.data)
 
 
-@pytest.mark.parametrize(("ov_type", "numpy_dtype"), [
-    (Type.f32, np.float32),
-    (Type.f16, np.float16),
-])
-def test_float_to_f8e5m2_constant(ov_type, numpy_dtype):
-    from openvino.runtime import opset12 as opset
-    import openvino as ov
-    data = np.array([4.75, 4.5, -5.25, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
-                     0.6, 0.7, 0.8, 0.9, 1, -0.0, -0.1, -0.2, -0.3,
-                     -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1.0, 0.0000152587890625, 448, 500, 512, 57344], dtype=numpy_dtype)
+OPSETS = [ov.opset12, ov.opset13]
+
+
+@pytest.mark.parametrize(("opset"), OPSETS)
+@pytest.mark.parametrize(
+    ("ov_type", "numpy_dtype"),
+    [
+        (Type.f32, np.float32),
+        (Type.f16, np.float16),
+    ],
+)
+def test_float_to_f8e5m2_constant(ov_type, numpy_dtype, opset):
+    data = np.array([
+        4.75, 4.5, -5.25, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
+        0.6, 0.7, 0.8, 0.9, 1, -0.0, -0.1, -0.2, -0.3,
+        -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1.0, 0.0000152587890625, 448, 500, 512, 57344
+    ], dtype=numpy_dtype)
 
     compressed_const = opset.constant(data, dtype=ov.Type.f8e5m2, name="f8e5m2_constant")
     convert = opset.convert(compressed_const, data.dtype)
@@ -443,13 +401,15 @@ def test_float_to_f8e5m2_constant(ov_type, numpy_dtype):
     assert np.allclose(result, target)
 
 
-@pytest.mark.parametrize(("ov_type", "numpy_dtype"), [
-    (Type.f32, np.float32),
-    (Type.f16, np.float16),
-])
-def test_float_to_f8e4m3_constant(ov_type, numpy_dtype):
-    from openvino.runtime import opset12 as opset
-    import openvino as ov
+@pytest.mark.parametrize(("opset"), OPSETS)
+@pytest.mark.parametrize(
+    ("ov_type", "numpy_dtype"),
+    [
+        (Type.f32, np.float32),
+        (Type.f16, np.float16),
+    ],
+)
+def test_float_to_f8e4m3_constant(ov_type, numpy_dtype, opset):
     data = np.array([4.75, 4.5, -5.25, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
                      0.6, 0.7, 0.8, 0.9, 1, -0.0, -0.1, -0.2, -0.3,
                      -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1, 448, 512], dtype=numpy_dtype)
@@ -473,16 +433,113 @@ def test_float_to_f8e4m3_constant(ov_type, numpy_dtype):
     assert np.allclose(result, target, equal_nan=True)
 
 
-@pytest.mark.parametrize(("ov_type", "numpy_dtype"), [
-    (Type.f32, np.float32),
-    (Type.f16, np.float16),
-])
-def test_float_to_f8e5m2_convert(ov_type, numpy_dtype):
-    from openvino.runtime import opset12 as opset
-    import openvino as ov
-    data = np.array([4.75, 4.5, -5.25, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
-                     0.6, 0.7, 0.8, 0.9, 1, -0.0, -0.1, -0.2, -0.3,
-                     -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1.0, 0.0000152587890625, 448, 500, 512, 57344], dtype=numpy_dtype)
+@pytest.mark.parametrize(("opset"), OPSETS)
+@pytest.mark.parametrize(
+    ("ov_type", "numpy_dtype"),
+    [
+        (Type.f32, np.float32),
+        (Type.f16, np.float16),
+    ],
+)
+def test_float_to_f8e8m0_constant_matrix(ov_type, numpy_dtype, opset):
+    pytest.skip("CVS-145281 BUG: nan to inf repro.")
+
+    shape = (2, 2)
+    data = np.full(shape, np.nan)
+
+    compressed_const = opset.constant(data, dtype=ov_type, name="fx_constant")
+    convert_to_fp8 = opset.convert(compressed_const, Type.f8e8m0)
+    convert_back = opset.convert(convert_to_fp8, ov_type)
+    parameter = opset.parameter(ov.PartialShape([-1, -1]), ov_type)
+    add_op = opset.add(parameter, convert_back)
+    model = ov.Model([add_op], [parameter])
+
+    compiled = ov.compile_model(model, "GPU")
+    tensor = np.zeros(data.shape, dtype=numpy_dtype)
+    result = compiled(tensor)[0]
+
+    target = np.full(shape, np.nan)
+
+    assert np.allclose(result, target, equal_nan=True)
+
+
+@pytest.mark.parametrize(("opset"), OPSETS)
+@pytest.mark.parametrize(
+    ("ov_type", "numpy_dtype"),
+    [
+        (Type.f32, np.float32),
+        (Type.f16, np.float16),
+    ],
+)
+def test_float_to_f8e8m0_constant_single_nan(ov_type, numpy_dtype, opset):
+    pytest.skip("CVS-145281 BUG: nan to inf repro.")
+
+    data = np.array([np.nan], dtype=numpy_dtype)
+
+    compressed_const = opset.constant(data, dtype=ov.Type.f8e8m0, name="f8e8m0_constant")
+    convert = opset.convert(compressed_const, data.dtype)
+    parameter = opset.parameter(ov.PartialShape([-1]), ov_type)
+    add_op = opset.add(parameter, convert)
+    model = ov.Model([add_op], [parameter])
+
+    compiled = ov.compile_model(model)
+    tensor = np.zeros(data.shape, dtype=numpy_dtype)
+    result = compiled(tensor)[0]
+
+    target = [np.nan]
+    target = np.array(target, dtype=numpy_dtype)
+
+    assert np.allclose(result, target, equal_nan=True)
+
+
+@pytest.mark.parametrize(("opset"), OPSETS)
+@pytest.mark.parametrize(
+    ("ov_type", "numpy_dtype"),
+    [
+        (Type.f32, np.float32),
+        (Type.f16, np.float16),
+    ],
+)
+def test_float_to_f8e8m0_constant(ov_type, numpy_dtype, opset):
+    pytest.skip("CVS-145281 BUG: nan to inf repro. [random - depends on the device]")
+
+    data = np.array([4.75, 4.5, 5.25, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
+                     0.6, 0.7, 0.8, 0.9, 1, -0.0, 1.1, 1.2, 1.3,
+                     1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 448, 512, np.nan], dtype=numpy_dtype)
+
+    compressed_const = opset.constant(data, dtype=ov.Type.f8e8m0, name="f8e8m0_constant")
+    convert = opset.convert(compressed_const, data.dtype)
+    parameter = opset.parameter(ov.PartialShape([-1]), ov_type)
+    add_op = opset.add(parameter, convert)
+    model = ov.Model([add_op], [parameter])
+
+    compiled = ov.compile_model(model)
+    tensor = np.zeros(data.shape, dtype=numpy_dtype)
+    result = compiled(tensor)[0]
+
+    target = [4.0, 4.0, 4.0, 0.0, 0.125, 0.25, 0.25,
+              0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0,
+              0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0,
+              2.0, 2.0, 2.0, 2.0, 512, 512, np.nan]
+    target = np.array(target, dtype=numpy_dtype)
+
+    assert np.allclose(result, target, equal_nan=True)
+
+
+@pytest.mark.parametrize(("opset"), OPSETS)
+@pytest.mark.parametrize(
+    ("ov_type", "numpy_dtype"),
+    [
+        (Type.f32, np.float32),
+        (Type.f16, np.float16),
+    ],
+)
+def test_float_to_f8e5m2_convert(ov_type, numpy_dtype, opset):
+    data = np.array([
+        4.75, 4.5, -5.25, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
+        0.6, 0.7, 0.8, 0.9, 1, -0.0, -0.1, -0.2, -0.3,
+        -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1.0, 0.0000152587890625, 448, 500, 512, 57344
+    ], dtype=numpy_dtype)
 
     compressed_const = opset.constant(data, dtype=ov_type, name="fx_constant")
     convert_to_fp8 = opset.convert(compressed_const, Type.f8e5m2)
@@ -504,13 +561,15 @@ def test_float_to_f8e5m2_convert(ov_type, numpy_dtype):
     assert np.allclose(result, target)
 
 
-@pytest.mark.parametrize(("ov_type", "numpy_dtype"), [
-    (Type.f32, np.float32),
-    (Type.f16, np.float16),
-])
-def test_float_to_f8e4m3_convert(ov_type, numpy_dtype):
-    from openvino.runtime import opset12 as opset
-    import openvino as ov
+@pytest.mark.parametrize(("opset"), OPSETS)
+@pytest.mark.parametrize(
+    ("ov_type", "numpy_dtype"),
+    [
+        (Type.f32, np.float32),
+        (Type.f16, np.float16),
+    ],
+)
+def test_float_to_f8e4m3_convert(ov_type, numpy_dtype, opset):
     data = np.array([4.75, 4.5, -5.25, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
                      0.6, 0.7, 0.8, 0.9, 1, -0.0, -0.1, -0.2, -0.3,
                      -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1, 448, 512], dtype=numpy_dtype)
@@ -533,3 +592,337 @@ def test_float_to_f8e4m3_convert(ov_type, numpy_dtype):
     target = np.array(target, dtype=numpy_dtype)
 
     assert np.allclose(result, target, equal_nan=True)
+
+
+@pytest.mark.parametrize(("opset"), OPSETS)
+@pytest.mark.parametrize(
+    ("ov_type", "numpy_dtype"),
+    [
+        (Type.f32, np.float32),
+        (Type.f16, np.float16),
+    ],
+)
+def test_float_to_f8e8m0_convert(ov_type, numpy_dtype, opset):
+    pytest.skip("CVS-145281 BUG: nan to inf repro. [random - depends on the device]")
+
+    data = np.array([4.75, 4.5, 5.25, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5,
+                     0.6, 0.7, 0.8, 0.9, 1, -0.0, 1.1, 1.2, 1.3,
+                     1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 448, 512, np.nan], dtype=numpy_dtype)
+
+    compressed_const = opset.constant(data, dtype=ov_type, name="fx_constant")
+    convert_to_fp8 = opset.convert(compressed_const, Type.f8e8m0)
+    convert_back = opset.convert(convert_to_fp8, ov_type)
+    parameter = opset.parameter(ov.PartialShape([-1]), ov_type)
+    add_op = opset.add(parameter, convert_back)
+    model = ov.Model([add_op], [parameter])
+
+    compiled = ov.compile_model(model)
+    tensor = np.zeros(data.shape, dtype=numpy_dtype)
+    result = compiled(tensor)[0]
+
+    target = [4.0, 4.0, 4.0, 0.0, 0.125, 0.25, 0.25,
+              0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0,
+              0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0,
+              2.0, 2.0, 2.0, 2.0, 512, 512, np.nan]
+    target = np.array(target, dtype=numpy_dtype)
+
+    assert np.allclose(result, target, equal_nan=True)
+
+
+@pytest.mark.parametrize(
+    ("src_dtype"),
+    [
+        (np.float16),
+        (np.float32),
+        (np.float64),
+        (np.int8),
+        (np.uint8),
+        (np.int16),
+        (np.uint16),
+        (np.int32),
+        (np.uint32),
+        (np.int64),
+        (np.bool_),
+    ],
+)
+@pytest.mark.parametrize(
+    ("dst_dtype"),
+    [
+        (None),
+        (np.float16),
+        (np.float32),
+        (np.float64),
+        (np.int8),
+        (np.uint8),
+        (np.int16),
+        (np.uint16),
+        (np.int32),
+        (np.uint32),
+        (np.int64),
+        (np.bool_),
+    ],
+)
+@pytest.mark.parametrize(
+    ("copy_flag"),
+    [
+        (True),
+        (False),
+    ],
+)
+def test_get_data_casting(src_dtype, dst_dtype, copy_flag):
+    data = np.random.rand(2, 4, 16) + 0.01  # do not allow 0s -- extra edge-case for bool type
+    data = data.astype(src_dtype)
+
+    ov_const = ops.constant(data, dtype=src_dtype)
+    arr = ov_const.get_data(dtype=dst_dtype, copy=copy_flag)
+
+    if (src_dtype == dst_dtype or dst_dtype is None) and copy_flag is False:
+        assert arr.flags["OWNDATA"] is False
+        assert np.array_equal(arr, data)
+    else:
+        assert arr.flags["OWNDATA"] is True
+        assert np.array_equal(arr, data.astype(dst_dtype))
+
+
+@pytest.mark.parametrize(
+    ("src_dtype"),
+    [
+        (np.float16),
+        (np.float32),
+        (np.float64),
+        (np.int8),
+        (np.uint8),
+        (np.int16),
+        (np.uint16),
+        (np.int32),
+        (np.uint32),
+        (np.int64),
+        (np.bool_),
+    ],
+)
+@pytest.mark.parametrize(
+    ("copy_flag"),
+    [
+        (True),
+        (False),
+    ],
+)
+def test_get_data_casting_bool(src_dtype, copy_flag):
+    data = np.array([1.0, 0.0, 2.0, 0.5, 0.3, 0.1, 3.0]).astype(src_dtype)
+
+    ov_const = ops.constant(data, dtype=src_dtype)
+    arr = ov_const.get_data(dtype=np.bool_, copy=copy_flag)
+
+    if src_dtype == np.bool_ and copy_flag is False:
+        assert arr.flags["OWNDATA"] is False
+        assert np.array_equal(arr, data)
+    else:
+        assert arr.flags["OWNDATA"] is True
+        assert np.array_equal(arr, data.astype(np.bool_))
+
+
+@pytest.mark.parametrize(
+    ("src_dtype"),
+    [
+        (np.float16),
+        (np.float32),
+        (np.float64),
+    ],
+)
+@pytest.mark.parametrize(
+    ("dst_dtype"),
+    [
+        (None),
+        (np.float16),
+        (np.float32),
+        (np.float64),
+    ],
+)
+@pytest.mark.parametrize(
+    ("copy_flag"),
+    [
+        (True),
+        (False),
+    ],
+)
+def test_get_data_casting_bf16(src_dtype, dst_dtype, copy_flag):
+    data = np.array([1.0, 0.0, 1012.5, 0.5, 2.0]).astype(src_dtype)
+    ov_const = ops.constant(data, dtype=Type.bf16)
+
+    arr = ov_const.get_data(dtype=dst_dtype, copy=copy_flag)
+
+    expected_result = np.array([1.0, 0.0, 1012.0, 0.5, 2.0], dtype=np.float32)
+
+    if dst_dtype is None and copy_flag is False:
+        assert arr.flags["OWNDATA"] is False
+        assert arr.dtype == np.float16
+        assert np.array_equal(arr.view(np.int16), expected_result.view(np.int16)[1::2])
+    elif dst_dtype == np.float16 and copy_flag is False:
+        assert arr.flags["OWNDATA"] is False
+        assert np.array_equal(arr.view(np.int16), expected_result.view(np.int16)[1::2])
+    else:  # copy_flag is True
+        assert arr.flags["OWNDATA"] is True
+        if dst_dtype in [None, np.float16]:
+            assert np.array_equal(arr.view(np.int16), expected_result.view(np.int16)[1::2])
+        else:  # up-casting to np.float32 or np.float64
+            assert np.array_equal(arr, expected_result)
+
+
+@pytest.mark.parametrize(
+    ("src_dtype"),
+    [
+        (np.int8),
+    ],
+)
+@pytest.mark.parametrize(
+    ("ov_type"),
+    [
+        (Type.u1),
+    ],
+)
+@pytest.mark.parametrize(
+    ("dst_dtype"),
+    [
+        (None),
+        (np.int8),
+    ],
+)
+@pytest.mark.parametrize(
+    ("copy_flag"),
+    [
+        (True),
+        (False),
+    ],
+)
+def test_get_data_casting_packed(src_dtype, ov_type, dst_dtype, copy_flag):
+    data = np.array([[0, 0, 0, 0, 1, 0, 0, 1], [0, 0, 0, 0, 0, 0, 0, 1]], dtype=src_dtype)
+    ov_const = ops.constant(value=data, dtype=ov_type)
+    arr = ov_const.get_data(dtype=dst_dtype, copy=copy_flag)
+
+    if dst_dtype is None:
+        if copy_flag:
+            assert arr.flags["OWNDATA"] is True
+        else:
+            assert arr.flags["OWNDATA"] is False
+        assert np.array_equal(arr, np.packbits(data))
+    else:
+        assert arr.flags["OWNDATA"] is True
+        assert np.array_equal(arr, data)
+
+
+@pytest.mark.parametrize(
+    ("shared_flag"),
+    [
+        (True),
+        (False),
+    ],
+)
+def test_const_from_tensor(shared_flag):
+    shape = [1, 2, 3, 3]
+    arr = np.ones(shape).astype(np.float32)
+    ov_tensor = Tensor(arr, shape, Type.f32)
+    ov_const = ops.constant(tensor=ov_tensor, shared_memory=shared_flag)
+
+    assert isinstance(ov_const, Constant)
+    assert np.all(list(ov_const.shape) == shape)
+    arr += 1
+
+    if shared_flag is True:
+        assert np.array_equal(ov_const.data, arr)
+        assert np.shares_memory(arr, ov_const.data)
+    else:
+        assert not np.array_equal(ov_const.data, arr)
+        assert not np.shares_memory(arr, ov_const.data)
+
+    assert ov_const.strides == [72, 36, 12, 4]
+    assert ov_const.get_tensor_view().get_strides() == Strides([72, 36, 12, 4])
+
+
+def test_const_from_tensor_with_shared_memory_by_default():
+    shape = [1, 2, 3, 3]
+    arr = np.ones(shape).astype(np.float32)
+    ov_tensor = Tensor(arr, shape, Type.f32)
+    ov_const = ops.constant(tensor=ov_tensor)
+
+    assert isinstance(ov_const, Constant)
+    assert np.all(list(ov_const.shape) == shape)
+    arr += 1
+    assert np.array_equal(ov_const.data, arr)
+    assert np.shares_memory(arr, ov_const.data)
+
+
+@pytest.mark.parametrize(
+    ("src_dtype", "ov_type"),
+    [
+        (np.float16, Type.f16),
+        (np.float32, Type.f32),
+        (np.int8, Type.i8),
+        (np.uint16, Type.u16),
+        (np.bool_, Type.boolean),
+    ],
+)
+@pytest.mark.parametrize(
+    "make_view",
+    [
+        lambda arr: arr[:, ::2],
+        lambda arr: arr.T,
+        lambda arr: arr[::-1],
+    ],
+)
+def test_constant_from_non_contiguous_array_keeps_type(src_dtype, ov_type, make_view):
+    arr = make_view(np.arange(24).reshape(4, 6).astype(src_dtype))
+    assert not arr.flags["C_CONTIGUOUS"]
+
+    ov_const = ops.constant(arr)
+
+    assert ov_const.get_element_type() == ov_type
+    assert list(ov_const.shape) == list(arr.shape)
+    assert ov_const.data.dtype == arr.dtype
+    assert np.array_equal(ov_const.data, arr)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (np.array(["openvino"], dtype=str), ["openvino"]),
+        (np.array(["text", "", "x" * 40], dtype=str), ["text", "", "x" * 40]),
+        (np.array([["ab", "c"], ["d", "efg"]], dtype=str), ["ab", "c", "d", "efg"]),
+        (np.array([b"bytes", b"b"], dtype=np.bytes_), ["bytes", "b"]),
+        (np.array("scalar", dtype=str), ["scalar"]),
+        (np.array(["openvino", "test"], dtype=str)[::-1], ["test", "openvino"]),
+    ],
+)
+def test_string_constant(value, expected):
+    ov_const = ops.constant(value)
+
+    assert isinstance(ov_const, Constant)
+    assert ov_const.get_element_type() == Type.string
+    assert list(ov_const.shape) == list(value.shape)
+    assert ov_const.get_value_strings() == expected
+
+
+def test_string_constant_inference():
+    value = np.array(["openvino", "string", "constant"], dtype=str)
+    param = ops.parameter([3], dtype=Type.string, name="input")
+    model = Model([ops.concat([param, ops.constant(value)], axis=0)], [param])
+
+    result = compile_model(model, "CPU")([np.array(["a", "b", "c"], dtype=str)])[0]
+
+    assert list(result) == ["a", "b", "c", "openvino", "string", "constant"]
+
+
+def test_string_constant_with_shared_memory():
+    with pytest.raises(RuntimeError, match="String types can be only copied"):
+        Constant(np.array(["openvino"], dtype=str), shared_memory=True)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        np.array(["\ud800"], dtype=str),  # lone surrogate, not encodable to UTF-8
+        np.array(["text", "\udfff", "openvino"], dtype=str),
+    ],
+)
+def test_string_constant_not_encodable(value):
+    with pytest.raises(UnicodeEncodeError, match="surrogates not allowed"):
+        ops.constant(value)

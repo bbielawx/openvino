@@ -1,17 +1,22 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "rdft_kernel.hpp"
 
+#include <xbyak/xbyak.h>
+
+#include <cpu/x64/cpu_isa_traits.hpp>
+#include <cstddef>
+#include <cstdint>
+
 using namespace dnnl::impl;
 using namespace dnnl::impl::cpu::x64;
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
 #ifndef OPENVINO_ARCH_ARM64
-#define GET_OFF(field) offsetof(jit_dft_args, field)
+#    define GET_OFF(field) offsetof(jit_dft_args, field)
 
 template <cpu_isa_t isa>
 void jit_dft_kernel_f32<isa>::generate() {
@@ -42,8 +47,9 @@ void jit_dft_kernel_f32<isa>::generate() {
         break;
     }
     int simd_size = vlen / output_type_size;
-    if (kernel_type_ == complex_to_complex)
+    if (kernel_type_ == complex_to_complex) {
         simd_size = vlen / type_size;
+    }
 
     mov(input_ptr, ptr[param1 + GET_OFF(input)]);
     mov(input_size, ptr[param1 + GET_OFF(input_size)]);
@@ -64,15 +70,15 @@ void jit_dft_kernel_f32<isa>::generate() {
     lea(output_ptr, ptr[output_ptr + output_type_size * output_start]);
 
     size_t reg_idx = 0;
-    Xmm xmm_signal_size = Xmm(reg_idx);
-    Vmm vmm_signal_size = Vmm(reg_idx);
+    auto xmm_signal_size = Xmm(reg_idx);
+    auto vmm_signal_size = Vmm(reg_idx);
     if (is_inverse_) {
         reg_idx++;
         uni_vbroadcastss(vmm_signal_size, ptr[param1 + GET_OFF(signal_size)]);
         uni_vcvtdq2ps(vmm_signal_size, vmm_signal_size);
     }
 
-    Xmm neg_mask = Xmm(reg_idx);
+    auto neg_mask = Xmm(reg_idx);
     if (kernel_type_ == complex_to_complex) {
         reg_idx++;
         uni_vpxor(neg_mask, neg_mask, neg_mask);
@@ -81,14 +87,14 @@ void jit_dft_kernel_f32<isa>::generate() {
     }
 
     size_t vmm_reg_idx = reg_idx;
-    Vmm inp_real = Vmm(vmm_reg_idx++);
-    Vmm inp_imag = Vmm(vmm_reg_idx++);
-    Vmm cos = Vmm(vmm_reg_idx++);
-    Vmm sin = Vmm(vmm_reg_idx++);
+    auto inp_real = Vmm(vmm_reg_idx++);
+    auto inp_imag = Vmm(vmm_reg_idx++);
+    auto cos = Vmm(vmm_reg_idx++);
+    auto sin = Vmm(vmm_reg_idx++);
     const Vmm& twiddles = cos;
-    Vmm tmp = Vmm(vmm_reg_idx++);
-    Vmm output_real = Vmm(vmm_reg_idx++);
-    Vmm output_imag = Vmm(vmm_reg_idx++);
+    auto tmp = Vmm(vmm_reg_idx++);
+    auto output_real = Vmm(vmm_reg_idx++);
+    auto output_imag = Vmm(vmm_reg_idx++);
     const Vmm& output = output_real;
     perm_low = Vmm(vmm_reg_idx++);
     perm_high = Vmm(vmm_reg_idx++);
@@ -98,9 +104,9 @@ void jit_dft_kernel_f32<isa>::generate() {
     mov(rax, reinterpret_cast<uint64_t>(perm_high_values.data()));
     uni_vmovups(perm_high, ptr[rax]);
 
-    Xmm xmm_input = Xbyak::Xmm(reg_idx++);
-    Xmm xmm_twiddles = Xbyak::Xmm(reg_idx++);
-    Xmm xmm_output = Xbyak::Xmm(reg_idx++);
+    auto xmm_input = Xbyak::Xmm(reg_idx++);
+    auto xmm_twiddles = Xbyak::Xmm(reg_idx++);
+    auto xmm_output = Xbyak::Xmm(reg_idx++);
 
     mov(rax, signal_size);
     and_(rax, 1);
@@ -119,7 +125,7 @@ void jit_dft_kernel_f32<isa>::generate() {
             uni_vpxor(output, output, output);
         }
 
-        auto c2r_kernel = [&] (bool backwards) {
+        auto c2r_kernel = [&](bool backwards) {
             // if backwards == false:
             //     output_real += input_real * cos(..) - input_imag * sin(..)
             // else:
@@ -137,7 +143,7 @@ void jit_dft_kernel_f32<isa>::generate() {
             add(twiddles_ptr, 2 * vlen);
         };
 
-        auto c2c_kernel = [&] (bool backwards) {
+        auto c2c_kernel = [&](bool backwards) {
             // if backwards == false:
             //     output_real += input_real * cos(..) - input_imag * sin(..)
             //     output_imag += input_imag * cos(..) + input_real * sin(..)
@@ -233,7 +239,7 @@ void jit_dft_kernel_f32<isa>::generate() {
     auto nonsimd_loop = [&] {
         uni_vxorps(xmm_output, xmm_output, xmm_output);
 
-        auto c2r_kernel = [&] (bool backwards) {
+        auto c2r_kernel = [&](bool backwards) {
             // if backwards == false:
             //     output_real += input_real * cos(..) - input_imag * sin(..)
             // else:
@@ -249,7 +255,7 @@ void jit_dft_kernel_f32<isa>::generate() {
             uni_vaddss(xmm_output, xmm_output, xmm_input);
         };
 
-        auto c2c_kernel = [&] (bool backwards) {
+        auto c2c_kernel = [&](bool backwards) {
             // if backwards == false:
             //     output_real += input_real * cos(..) - input_imag * sin(..)
             //     output_imag += input_imag * cos(..) + input_real * sin(..)
@@ -377,7 +383,10 @@ void jit_dft_kernel_f32<isa>::generate() {
 // imag = [11, 12, 13, 14, 15, 16, 17, 18]
 // interleaved = [1, 11, 2, 12, 3, 13, 4, 14, 5, 15, 6, 16, 7, 17, 8, 18]
 template <>
-void jit_dft_kernel_f32<avx512_core>::interleave_and_store(const Vmm& real, const Vmm& imag, const Xbyak::RegExp& reg_exp, const Vmm& tmp) {
+void jit_dft_kernel_f32<avx512_core>::interleave_and_store(const Vmm& real,
+                                                           const Vmm& imag,
+                                                           const Xbyak::RegExp& reg_exp,
+                                                           const Vmm& tmp) {
     const Vmm& low = tmp;
     const Vmm& high = real;
     uni_vmovups(low, real);
@@ -388,7 +397,10 @@ void jit_dft_kernel_f32<avx512_core>::interleave_and_store(const Vmm& real, cons
 }
 
 template <>
-void jit_dft_kernel_f32<avx2>::interleave_and_store(const Vmm& real, const Vmm& imag, const Xbyak::RegExp& reg_exp, const Vmm& tmp) {
+void jit_dft_kernel_f32<avx2>::interleave_and_store(const Vmm& real,
+                                                    const Vmm& imag,
+                                                    const Xbyak::RegExp& reg_exp,
+                                                    const Vmm& tmp) {
     const Vmm& low = real;
     const Vmm& high = imag;
     vunpcklps(tmp, real, imag);
@@ -400,7 +412,10 @@ void jit_dft_kernel_f32<avx2>::interleave_and_store(const Vmm& real, const Vmm& 
 }
 
 template <>
-void jit_dft_kernel_f32<sse41>::interleave_and_store(const Vmm& real, const Vmm& imag, const Xbyak::RegExp& reg_exp, const Vmm& tmp) {
+void jit_dft_kernel_f32<sse41>::interleave_and_store(const Vmm& real,
+                                                     const Vmm& imag,
+                                                     const Xbyak::RegExp& reg_exp,
+                                                     const Vmm& tmp) {
     const Vmm& low = tmp;
     const Vmm& high = real;
     uni_vmovups(low, real);
@@ -415,5 +430,4 @@ template struct jit_dft_kernel_f32<cpu::x64::avx2>;
 template struct jit_dft_kernel_f32<cpu::x64::avx512_core>;
 
 #endif
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

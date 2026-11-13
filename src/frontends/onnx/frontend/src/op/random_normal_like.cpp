@@ -1,21 +1,15 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/random_normal_like.hpp"
-
+#include "core/operator_set.hpp"
 #include "openvino/frontend/common/random_normal_helper.hpp"
 #include "openvino/op/shape_of.hpp"
 #include "utils/common.hpp"
-
 using namespace ov::op;
 using ov::Shape;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 
 ov::OutputVector random_normal_like(const ov::frontend::onnx::Node& node) {
     const auto input = node.get_ov_inputs().at(0);
@@ -40,8 +34,5 @@ ov::OutputVector random_normal_like(const ov::frontend::onnx::Node& node) {
     return res.first;
 }
 
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("RandomNormalLike", OPSET_SINCE(1), ai_onnx::opset_1::random_normal_like);
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

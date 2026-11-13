@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,7 +6,6 @@
 
 #include "openvino/core/type/element_type_traits.hpp"
 #include "openvino/runtime/tensor.hpp"
-#include "precomp.hpp"
 
 namespace ov {
 namespace test {
@@ -335,6 +334,8 @@ ov::Tensor make_tensor_with_precision_convert(const ov::Tensor& tensor, ov::elem
 #define CASE(SRC_PRC)                                                            \
     case ov::element::SRC_PRC:                                                   \
         switch (prc) {                                                           \
+            CASE0(SRC_PRC, f8e5m2)                                               \
+            CASE0(SRC_PRC, f8e4m3)                                               \
             CASE0(SRC_PRC, bf16)                                                 \
             CASE0(SRC_PRC, f16)                                                  \
             CASE0(SRC_PRC, f32)                                                  \
@@ -357,6 +358,8 @@ ov::Tensor make_tensor_with_precision_convert(const ov::Tensor& tensor, ov::elem
         CASE(f32);
         CASE(f16);
         CASE(bf16);
+        CASE(f8e5m2);
+        CASE(f8e4m3);
         CASE(i64);
         CASE(u64);
         CASE(i32);

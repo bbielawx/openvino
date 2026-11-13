@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,15 +8,12 @@
 
 using namespace std;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow_lite {
-namespace op {
+namespace ov::frontend::tensorflow_lite::op {
 
 OutputVector gather(const ov::frontend::tensorflow_lite::NodeContext& node) {
-    const auto& decoder = get_decoder(node);
-    auto batch_dims = static_cast<int64_t>(decoder->get_attribute(&tflite::GatherOptions::batch_dims));
-    auto axis = opset10::Constant::create(element::i32, {}, {decoder->get_attribute(&tflite::GatherOptions::axis)});
+    auto axis_value = node.get_attribute<int32_t>("axis");
+    auto batch_dims = static_cast<int64_t>(node.get_attribute<int32_t>("batch_dims"));
+    auto axis = opset10::Constant::create(element::i32, {}, {axis_value});
     auto input = node.get_input(0);
     auto input_indices = node.get_input(1);
     auto res = make_shared<opset10::Gather>(input, input_indices, axis, batch_dims);
@@ -24,7 +21,4 @@ OutputVector gather(const ov::frontend::tensorflow_lite::NodeContext& node) {
     return res->outputs();
 }
 
-}  // namespace op
-}  // namespace tensorflow_lite
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow_lite::op

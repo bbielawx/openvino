@@ -1,9 +1,13 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <gtest/gtest.h>
 
+#include "common_test_utils/file_utils.hpp"
+#include "common_test_utils/ov_tensor_utils.hpp"
+#include "common_test_utils/subgraph_builders/split_multi_conv_concat.hpp"
+#include "common_test_utils/test_assertions.hpp"
 #include "openvino/op/roi_align.hpp"
 #include "openvino/op/util/rnn_cell_base.hpp"
 #include "openvino/runtime/core.hpp"
@@ -232,7 +236,7 @@ protected:
         for (const auto& op : model->get_ops()) {
             if (!isLSTM) {
                 if (op->get_friendly_name() == "output") {
-                    const auto roi = std::dynamic_pointer_cast<ov::op::v3::ROIAlign>(op);
+                    const auto roi = ov::as_type_ptr<ov::op::v3::ROIAlign>(op);
                     ASSERT_TRUE(roi);
                     ASSERT_EQ(roi->get_pooled_h(), 7);
                     ASSERT_EQ(roi->get_pooled_w(), 7);
@@ -241,7 +245,7 @@ protected:
                 }
             } else {
                 if (op->get_friendly_name() == "LSTMCell") {
-                    const auto lstm_seq = std::dynamic_pointer_cast<ov::op::util::RNNCellBase>(op);
+                    const auto lstm_seq = ov::as_type_ptr<ov::op::util::RNNCellBase>(op);
                     ASSERT_TRUE(lstm_seq);
                     ASSERT_EQ(lstm_seq->get_clip(), 0.0f);
                     ASSERT_EQ(lstm_seq->get_hidden_size(), 256);
@@ -284,5 +288,88 @@ TEST_F(LocaleTests, DISABLED_WithUSLocaleCPP) {
     std::locale::global(std::locale("en_US.UTF-8"));
     testBody();
     std::locale::global(prev);
+}
+
+class LocaleTestsWithCacheDir : public ::testing::Test {
+    std::string originalLocale;
+    std::string cache_dir;
+    std::shared_ptr<ov::Model> model;
+
+public:
+protected:
+    const std::shared_ptr<ov::Model>& get_test_model() const {
+        return model;
+    }
+
+    void SetUp() override {
+        originalLocale = setlocale(LC_ALL, nullptr);
+        model = ov::test::utils::make_split_multi_conv_concat();
+    }
+    void TearDown() override {
+        setlocale(LC_ALL, originalLocale.c_str());
+        if (!cache_dir.empty()) {
+            ov::test::utils::removeDir(cache_dir);
+        }
+    }
+
+    void testBody(const std::pair<std::string, ov::Any>& cache_prop) {
+        std::map<ov::Output<ov::Node>, ov::Tensor> inputs;
+        for (const auto& input : model->inputs()) {
+            auto tensor = ov::test::utils::create_and_fill_tensor_normal_distribution(input.get_element_type(),
+                                                                                      input.get_shape(),
+                                                                                      0.0f,
+                                                                                      0.2f,
+                                                                                      7235346);
+            inputs.insert({input, tensor});
+        }
+
+        ov::Core core;
+        ov::AnyMap properties = {ov::hint::inference_precision(ov::element::f32), cache_prop};
+
+        auto getOutputBlob = [&]() {
+            auto compiled_model = core.compile_model(model, "CPU", properties);
+            auto req = compiled_model.create_infer_request();
+            for (const auto& input : inputs) {
+                req.set_tensor(input.first, input.second);
+            }
+            auto output_tensor = ov::Tensor(model->output().get_element_type(), model->output().get_shape());
+            req.set_output_tensor(output_tensor);
+            req.infer();
+            return output_tensor;
+        };
+
+        auto output_from_model_read = getOutputBlob();
+        auto output_from_model_cached = getOutputBlob();
+
+        ov::test::utils::compare(output_from_model_read, output_from_model_cached);
+
+        if (cache_prop.first == ov::cache_path.name()) {
+            cache_dir = cache_prop.second.as<std::filesystem::path>().string();
+            ov::test::utils::removeFilesWithExt(cache_dir, "blob");
+        } else if (cache_prop.first == ov::cache_dir.name()) {
+            cache_dir = cache_prop.second.as<std::string>();
+            ov::test::utils::removeFilesWithExt(cache_dir, "blob");
+        }
+    }
+};
+
+TEST_F(LocaleTestsWithCacheDir, WithRULocale) {
+    setlocale(LC_ALL, "ru_RU.UTF-8");
+    OV_ASSERT_NO_THROW(testBody(ov::cache_dir("test_cache")));
+    OV_ASSERT_NO_THROW(testBody(ov::cache_path("test_cache")));
+}
+
+TEST_F(LocaleTestsWithCacheDir, WithUSLocale) {
+    setlocale(LC_ALL, "en_US.UTF-8");
+    OV_ASSERT_NO_THROW(testBody(ov::cache_dir("test_cache")));
+    OV_ASSERT_NO_THROW(testBody(ov::cache_path("test_cache")));
+}
+
+TEST_F(LocaleTestsWithCacheDir, EnableCachingPropertyCollision) {
+    ov::Core core;
+    OV_EXPECT_THROW(
+        core.compile_model(get_test_model(), "CPU", {ov::cache_dir("test_cache"), ov::cache_path("test_cache")}),
+        ov::Exception,
+        _);
 }
 #endif  // defined(ENABLE_OV_IR_FRONTEND)

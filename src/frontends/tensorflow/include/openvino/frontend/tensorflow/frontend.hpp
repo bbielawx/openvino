@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -18,10 +18,8 @@
 #include "openvino/frontend/tensorflow/visibility.hpp"
 #include "openvino/frontend/visibility.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-class TENSORFLOW_API FrontEnd : public ov::frontend::FrontEnd {
+namespace ov::frontend::tensorflow {
+class TENSORFLOW_FRONTEND_API FrontEnd : public ov::frontend::FrontEnd {
 public:
     using Ptr = std::shared_ptr<FrontEnd>;
     FrontEnd();
@@ -73,6 +71,4 @@ protected:
     TranslatorDictionaryType m_op_translators;
 };
 
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow

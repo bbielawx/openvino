@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,8 +8,7 @@
 #include "intel_gpu/primitives/random_uniform.hpp"
 
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 namespace {
 
@@ -22,8 +21,10 @@ void CreateRandomUniformOp(ProgramBuilder &p, const std::shared_ptr<ov::op::v8::
 
     if (output_pshape.is_static() && !p.use_new_shape_infer()) {
         auto output_shape = output_pshape.get_shape();
-        // Extend to 4D shape
-        output_shape.insert(output_shape.end(), 4 - output_shape.size(), 1ul);
+        if (output_shape.size() < 4) {
+            // Extend to 4D shape
+            output_shape.insert(output_shape.end(), 4 - output_shape.size(), 1ul);
+        }
 
         auto random_uniform_prim = cldnn::random_uniform(layer_type_name_ID(op),
                                                          inputs,
@@ -48,5 +49,4 @@ void CreateRandomUniformOp(ProgramBuilder &p, const std::shared_ptr<ov::op::v8::
 
 REGISTER_FACTORY_IMPL(v8, RandomUniform);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

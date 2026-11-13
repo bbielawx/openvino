@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,17 +11,14 @@
 using namespace std;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_depthwise_conv_2d_native_op(const NodeContext& node) {
-    default_op_checks(node, 2, {"DepthwiseConv2dNative"});
+    default_op_checks(node, 2, {"DepthwiseConv2dNative", "DEPTHWISE_CONV_2D"});
     auto input = node.get_input(0);
     auto filter = node.get_input(1);
 
-    // retrive mandatory attributes for DepthwiseConv2dNative
+    // retrieve mandatory attributes for DepthwiseConv2dNative
     auto tf_strides = node.get_attribute<std::vector<int64_t>>("strides");
     auto tf_padding_type = node.get_attribute<std::string>("padding");
     ov::op::PadType auto_pad = convert_tf_padding(node, tf_padding_type);
@@ -43,10 +40,6 @@ OutputVector translate_depthwise_conv_2d_native_op(const NodeContext& node) {
     Strides dilations(2);
     convert_nhwc_to_hw(is_nhwc, tf_strides, strides);
     convert_nhwc_to_hw(is_nhwc, tf_dilations, dilations);
-
-    Shape ng_image_shape(2);
-    Shape ng_kernel_shape(2);
-
     convert_nhwc_to_nchw(is_nhwc, input, ov::Rank(4));
 
     // prepare filter to have a number of groups equal to CIN
@@ -67,7 +60,4 @@ OutputVector translate_depthwise_conv_2d_native_op(const NodeContext& node) {
     ov::frontend::tensorflow::set_node_name(node.get_name(), group_conv.get_node_shared_ptr());
     return {group_conv};
 }
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

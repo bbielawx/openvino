@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,12 +9,12 @@
 #include "openvino/frontend/tensorflow/node_context.hpp"
 #include "openvino/frontend/tensorflow/visibility.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
+namespace ov::frontend::tensorflow {
 
-class TENSORFLOW_API ConversionExtension : public ConversionExtensionBase {
+class ConversionExtension : public ConversionExtensionBase {
 public:
+    OPENVINO_RTTI("frontend::tensorflow::ConversionExtension", "", ConversionExtensionBase);
+
     using Ptr = std::shared_ptr<ConversionExtension>;
 
     ConversionExtension() = delete;
@@ -32,12 +32,8 @@ public:
         return m_converter;
     }
 
-    ~ConversionExtension() override;
-
 private:
     ov::frontend::tensorflow::CreatorFunction m_converter;
 };
 
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow

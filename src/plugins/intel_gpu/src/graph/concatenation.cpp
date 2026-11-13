@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -24,7 +24,7 @@ layout concatenation_inst::calc_output_layout(concatenation_node const& node, ke
 
     auto output_dt = desc->output_data_types[0].value_or(input_layout.data_type);
     if (impl_param.has_fused_primitives()) {
-        output_dt = impl_param.get_fused_output_layout().data_type;
+        output_dt = impl_param.get_output_element_type();
     }
 
     auto axis_index = desc->axis;
@@ -33,8 +33,9 @@ layout concatenation_inst::calc_output_layout(concatenation_node const& node, ke
     result_sizes[axis_index] = 0;
     for (size_t i = 0; i < desc->input.size(); ++i) {
         auto input_sizes = impl_param.get_input_layout(i).get_dims();
-        if (impl_param.get_input_layout(i).format == format::b_fs_yx_fsv16)
+        if (impl_param.get_input_layout(i).format == format::b_fs_yx_fsv16) {
             output_format = format::b_fs_yx_fsv16;
+        }
 
         result_sizes[axis_index] += input_sizes[axis_index];
     }
@@ -52,12 +53,13 @@ std::vector<layout> concatenation_inst::calc_output_layouts(const concatenation_
 
     auto output_dt = desc->output_data_types[0].value_or(input_layout.data_type);
     if (impl_param.has_fused_primitives()) {
-        output_dt = impl_param.get_fused_output_layout().data_type;
+        output_dt = impl_param.get_output_element_type();
     }
     auto output_format = input_layout.format;
     for (size_t i = 0; i < desc->input.size(); ++i) {
-        if (impl_param.get_input_layout(i).format == format::b_fs_yx_fsv16)
+        if (impl_param.get_input_layout(i).format == format::b_fs_yx_fsv16) {
             output_format = format::b_fs_yx_fsv16;
+        }
     }
 
     auto axis_index = desc->axis;
@@ -69,7 +71,7 @@ std::vector<layout> concatenation_inst::calc_output_layouts(const concatenation_
     }
     ov::op::v0::Concat op;
     op.set_friendly_name(desc->id);
-    op.set_concatenation_axis(axis_index);
+    op.set_axis(axis_index);
     std::vector<ShapeType> output_shapes = ov::op::v0::shape_infer(&op, input_shapes);
     return { layout {output_shapes[0], output_dt, output_format} };
 }
@@ -85,10 +87,11 @@ std::string concatenation_inst::to_string(concatenation_node const& node) {
 
     for (size_t i = 0; i < node.get_inputs_count(); ++i) {
         ss_inputs << node.input(i).id();
-        if (node.input(i).get_output_layout().is_static())
+        if (node.input(i).get_output_layout().is_static()) {
             ss_inputs << ", count: " << node.input(i).get_output_layout().count();
-        else
+        } else {
             ss_inputs << ", count: " << "?";
+        }
         i != (node.get_inputs_count() - 1) ? ss_inputs << ", " : ss_inputs << "";
     }
 
@@ -114,7 +117,7 @@ concatenation_inst::typed_primitive_inst(network& network, concatenation_node co
     auto input_size = input_layout.get_dims();
     auto output_size = output_layout.get_dims();
     for (const auto& i : node.get_dependencies()) {
-        auto input_i_layout = i.first->get_output_layout();
+        auto input_i_layout = i.first->get_output_layout(false, i.second);
         auto input_mem_size = input_i_layout.get_dims();
         for (int64_t dim = 0; dim < static_cast<int64_t>(output_layout.get_rank()); ++dim) {
             if (dim == node.get_primitive()->axis) {
@@ -152,15 +155,16 @@ concatenation_inst::typed_primitive_inst(network& network, concatenation_node co
         build_deps();
         std::list<std::vector<std::pair<primitive_inst*, int32_t>>*> stack = {&_deps};
         while (!stack.empty()) {
-            auto nodes_list = stack.front();
+            auto* nodes_list = stack.front();
             stack.pop_front();
 
             for (const auto& processed_nodes : *nodes_list) {
-                auto processed_node = processed_nodes.first;
+                auto* processed_node = processed_nodes.first;
                 processed_node->_outputs = _outputs;
                 if (processed_node->type() == concatenation::type_id() && processed_node->can_be_optimized()) {
-                    if (!processed_node->_deps.empty())
+                    if (!processed_node->_deps.empty()) {
                         stack.push_back(&processed_node->_deps);
+                    }
                 }
             }
         }

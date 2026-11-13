@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,6 +12,7 @@
 #include "intel_gpu/primitives/fully_connected.hpp"
 #include "intel_gpu/primitives/reshape.hpp"
 #include "intel_gpu/primitives/reorder.hpp"
+#include "plugin/transformations/fuse_hadamard_fc.hpp"
 
 namespace ov {
 namespace op {
@@ -22,46 +23,93 @@ using FullyConnectedCompressed = ov::intel_gpu::op::FullyConnectedCompressed;
 }  // namespace op
 }  // namespace ov
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 static void CreateFullyConnectedCompressedOp(ProgramBuilder& p, const std::shared_ptr<op::FullyConnectedCompressed>& op) {
-    validate_inputs_count(op, {4, 5});
+    validate_inputs_count(op, {4, 5, 6, 8});
     auto inputs = p.GetInputInfo(op);
     std::string primitive_name = layer_type_name_ID(op);
+    auto supports_immad = p.get_engine().get_device_info().supports_immad;
 
-    const int INPUT_CNT_WITH_ZP = 5;
     auto input_name = inputs[0].pid;
     auto weights_name = inputs[1].pid;
     auto bias_name = inputs[2].pid;
     auto scale_name = inputs[3].pid;
-    auto zp_name = inputs.size() == INPUT_CNT_WITH_ZP ? inputs[4].pid : "";
+    size_t input_idx = 4;
+    const size_t W_ZP_IDX = input_idx;
+    std::string zp_name = op->get_input_size() > input_idx ? inputs[input_idx++].pid : "";
+    auto activation_scale_input = op->get_input_size() > input_idx ? inputs[input_idx++] : cldnn::input_info();
+    auto activation_zero_point_input = op->get_input_size() > input_idx ? inputs[input_idx++] : cldnn::input_info();
+    auto activation_precomputed_reduction = op->get_input_size() > input_idx ? inputs[input_idx++] : cldnn::input_info();
 
     float zp_value = 0.0f;
     bool has_scalar_zp = false;
-    if (op->get_input_size() == INPUT_CNT_WITH_ZP) {
-        auto zp_const = std::dynamic_pointer_cast<ov::op::v0::Constant>(op->get_input_node_shared_ptr(INPUT_CNT_WITH_ZP-1));
+    if (!zp_name.empty()) {
+        auto zp_const = ov::as_type_ptr<ov::op::v0::Constant>(op->get_input_node_shared_ptr(W_ZP_IDX));
         if (zp_const && ov::shape_size(zp_const->get_output_shape(0)) == 1) {
             has_scalar_zp = true;
             zp_value = zp_const->cast_vector<float>()[0];
         }
     }
+
     auto fc = cldnn::fully_connected(primitive_name,
                                      cldnn::input_info(input_name),
                                      weights_name,
                                      bias_name,
                                      scale_name,
-                                     has_scalar_zp ? "" : zp_name,
+                                     has_scalar_zp && !supports_immad ? "" : zp_name,
+                                     activation_scale_input,
+                                     activation_zero_point_input,
+                                     activation_precomputed_reduction,
                                      cldnn::element_type_to_data_type(op->get_output_element_type(0)),
-                                     cldnn::padding(),
                                      op->get_input_partial_shape(0).size(),
-                                     op->get_input_partial_shape(1).size());
+                                     op->get_input_partial_shape(1).size(),
+                                     op->get_transpose_b(),
+                                     op->get_transpose_b_scale(),
+                                     op->get_transpose_b_zp(),
+                                     op->get_weights_layout());
 
     if (has_scalar_zp) {
         fc.decompression_zero_point_scalar = zp_value;
     }
 
+    // Input rotation absorbed by FuseHadamardIntoFC.
+    const auto& rt = op->get_rt_info();
+    if (auto it = rt.find(int2_hadamard_block_key); it != rt.end()) {
+        fc.hadamard_block = static_cast<size_t>(it->second.as<int64_t>());
+        if (auto st = rt.find(int2_hadamard_signs_key); st != rt.end())
+            fc.hadamard_signs = st->second.as<std::vector<int8_t>>();
+    }
+
     p.add_primitive(*op, fc);
+
+    if (op->get_input_partial_shape(0).size() > 3 && !p.use_new_shape_infer()) {
+        auto lastLayerName = primitive_name;
+        auto outReshapeName = primitive_name + "_cldnn_out_reshape";
+
+        // add reorder
+        auto outDims = op->get_output_shape(0);
+        auto outTensor = tensor_from_dims(outDims);
+
+        if (outDims.size() > 4) {
+            cldnn::format outputFormat = cldnn::format::bfyx;
+            switch (outDims.size()) {
+                case 5: outputFormat = cldnn::format::bfzyx; break;
+                case 6: outputFormat = cldnn::format::bfwzyx; break;
+                default: break;
+            }
+
+            cldnn::primitive_id reorderId = "reorder:" + outReshapeName + "_reorder";
+            cldnn::layout outputLayout(cldnn::element_type_to_data_type(op->get_output_element_type(0)), outputFormat, outTensor);
+            auto reorder_prim = cldnn::reorder(reorderId, cldnn::input_info(primitive_name), outputLayout);
+            p.add_primitive(*op, reorder_prim);
+            lastLayerName = reorderId;
+        }
+
+        // add reshape
+        auto outReshapePrim = cldnn::reshape(outReshapeName, cldnn::input_info(lastLayerName), outTensor);
+        p.add_primitive(*op, outReshapePrim);
+    }
 }
 
 static void CreateFullyConnectedOp(ProgramBuilder& p, const std::shared_ptr<op::FullyConnected>& op) {
@@ -84,10 +132,10 @@ static void CreateFullyConnectedOp(ProgramBuilder& p, const std::shared_ptr<op::
                                          weights_name,
                                          bias_name,
                                          cldnn::element_type_to_data_type(op->get_output_element_type(0)),
-                                         cldnn::padding(),
                                          rank_a,
-                                         rank_b);
-
+                                         rank_b,
+                                         op->get_transpose_b(),
+                                         op->get_weights_layout());
     p.add_primitive(*op, fcPrim);
 
     if (shape_a.size() > 3 && !p.use_new_shape_infer()) {
@@ -122,5 +170,4 @@ static void CreateFullyConnectedOp(ProgramBuilder& p, const std::shared_ptr<op::
 REGISTER_FACTORY_IMPL(internal, FullyConnected);
 REGISTER_FACTORY_IMPL(internal, FullyConnectedCompressed);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

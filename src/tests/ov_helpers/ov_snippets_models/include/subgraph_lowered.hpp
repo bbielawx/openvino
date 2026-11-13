@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -55,7 +55,7 @@ private:
 class Transpose0213MatMulLoweredFunction : public Transpose0213MatMulFunction {
 public:
     explicit Transpose0213MatMulLoweredFunction(const std::vector<PartialShape>& inputShapes, size_t position = 0) :
-            Transpose0213MatMulFunction(inputShapes, std::vector<ov::element::Type>{ov::element::f32, ov::element::f32}, position) {
+            Transpose0213MatMulFunction(inputShapes, std::vector<ov::element::Type>{ov::element::f32, ov::element::f32}, MatMulType::MatMul, position) {
     }
 protected:
     std::shared_ptr<ov::Model> initLowered() const override;

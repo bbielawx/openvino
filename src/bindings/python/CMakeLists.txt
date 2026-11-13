@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -35,27 +35,10 @@ if(NOT DEFINED OpenVINODeveloperPackage_RELOCATABLE)
     set(OpenVINODeveloperPackage_RELOCATABLE OFF)
 endif()
 
-#
-# Settings for FindPython3.cmake
-#
-
-if(NOT DEFINED Python3_USE_STATIC_LIBS)
-    set(Python3_USE_STATIC_LIBS OFF)
-endif()
-
-if(NOT DEFINED Python3_FIND_VIRTUALENV)
-    set(Python3_FIND_VIRTUALENV FIRST)
-endif()
-
-if(NOT DEFINED Python3_FIND_IMPLEMENTATIONS)
-    set(Python3_FIND_IMPLEMENTATIONS CPython PyPy)
-endif()
-
-if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.18)
-    set(python3_development_component Development.Module)
-else()
-    set(python3_development_component Development)
-endif()
+ov_set_if_not_defined(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${OV_LIBRARY_OUTPUT_DIRECTORY})
+ov_set_if_not_defined(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${OV_ARCHIVE_OUTPUT_DIRECTORY})
+ov_set_if_not_defined(CMAKE_PDB_OUTPUT_DIRECTORY ${OV_PDB_OUTPUT_DIRECTORY})
+ov_set_if_not_defined(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${OV_RUNTIME_OUTPUT_DIRECTORY})
 
 #
 # Check python requirements
@@ -71,7 +54,8 @@ function(ov_check_python_build_conditions)
         set(message_mode WARNING)
     endif()
 
-    find_package(Python3 ${find_package_mode} COMPONENTS Interpreter ${python3_development_component})
+    ov_find_python3(${find_package_mode})
+
     if(Python3_Development.Module_FOUND OR Python3_Development_FOUND)
         message(STATUS "Python3 executable: ${Python3_EXECUTABLE}")
         message(STATUS "Python3 version: ${Python3_VERSION}")
@@ -82,7 +66,9 @@ function(ov_check_python_build_conditions)
         if(Python3_SOABI)
             message(STATUS "Python3 SOABI: ${Python3_SOABI}")
         endif()
+        ov_detect_python_module_extension()
         if(PYTHON_MODULE_EXTENSION)
+            set(PYTHON_MODULE_EXTENSION ${PYTHON_MODULE_EXTENSION} PARENT_SCOPE)
             message(STATUS "PYTHON_MODULE_EXTENSION: ${PYTHON_MODULE_EXTENSION}")
         endif()
         message(STATUS "Python3 include dirs: ${Python3_INCLUDE_DIRS}")
@@ -98,12 +84,18 @@ function(ov_check_python_build_conditions)
         set(python_debug OFF)
     endif()
 
-    if((Python3_Development.Module_FOUND OR Python3_Development_FOUND) AND NOT python_debug)
+    set(is_compiler_supported ON)
+    # Python bindings compiled with the 14.28 toolset (19.28 compiler) could not be imported by another Pybind module linked with OpenVINO
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.29)
+        set(is_compiler_supported OFF)
+        message(${message_mode} "MSVC toolset version 14.28 or lower (19.28 compiler) is not supported. Please update your toolset (${CMAKE_CXX_COMPILER_VERSION}).")
+    endif()
+
+    if((Python3_Development.Module_FOUND OR Python3_Development_FOUND) AND NOT python_debug AND is_compiler_supported)
         set(ENABLE_PYTHON_DEFAULT ON PARENT_SCOPE)
     else()
         set(ENABLE_PYTHON_DEFAULT OFF PARENT_SCOPE)
     endif()
-
 endfunction()
 
 ov_check_python_build_conditions()
@@ -135,6 +127,9 @@ set(INIT_FILES_RUNTIME "${OpenVINOPython_SOURCE_DIR}/src/openvino/__init__.py"
 ov_check_init_files_alignment("${INIT_FILES_RUNTIME}")
 
 ov_option(ENABLE_PYTHON "Enables OpenVINO Python API build" ${ENABLE_PYTHON_DEFAULT})
+
+ov_dependent_option (ENABLE_PYTHON_PACKAGING "Enables packaging of Python API in APT / YUM" OFF
+    "ENABLE_PYTHON;LINUX" OFF)
 
 #
 # Check for wheel package
@@ -196,18 +191,19 @@ endif()
 # Build the code
 #
 
-if(Python3_VERSION_MINOR GREATER_EQUAL 11)
-    set(pybind11_min_version 2.9.2)
-else()
-    set(pybind11_min_version 2.8.0)
-endif()
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter ${python3_development_component})
+set(pybind11_min_version 3.0.1)
+# search for FindPython3.cmake instead of legacy modules
+set(PYBIND11_FINDPYTHON ON)
+
+ov_find_python3(REQUIRED)
 find_package(pybind11 ${pybind11_min_version} QUIET)
 
 if(NOT pybind11_FOUND)
     add_subdirectory(thirdparty/pybind11 EXCLUDE_FROM_ALL)
 endif()
+
+include(sources.cmake)
 
 add_subdirectory(src/pyopenvino)
 
@@ -217,7 +213,7 @@ add_subdirectory(src/pyopenvino)
 
 macro(ov_define_setup_py_packaging_vars)
     # Python3_VERSION_MAJOR and Python3_VERSION_MINOR are defined inside pybind11
-    set(pyversion python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR})
+    ov_get_pyversion(pyversion)
 
     # define version (syncronize with tools/openvino_dev/CMakeLists.txt)
     if(DEFINED ENV{CI_BUILD_DEV_TAG} AND NOT "$ENV{CI_BUILD_DEV_TAG}" STREQUAL "")
@@ -250,6 +246,7 @@ macro(ov_define_setup_py_packaging_vars)
         WHEEL_VERSION=${WHEEL_VERSION}
         WHEEL_BUILD=${WHEEL_BUILD}
         # build locations
+        OPENVINO_SOURCE_DIR=${OpenVINO_SOURCE_DIR}
         OPENVINO_BINARY_DIR=${OpenVINO_BINARY_DIR}
         OPENVINO_PYTHON_BINARY_DIR=${OpenVINOPython_BINARY_DIR}
         # to create proper directories for BA, OVC tools
@@ -266,7 +263,9 @@ endmacro()
 macro(ov_define_setup_py_dependencies)
     foreach(_target
             # Python API dependencies
-            _pyopenvino py_ov_frontends
+            pyopenvino py_ov_frontends
+            # C API
+            openvino_c
             # plugins
             ov_plugins
             # frontends
@@ -276,11 +275,14 @@ macro(ov_define_setup_py_dependencies)
         endif()
     endforeach()
 
-    file(GLOB_RECURSE openvino_py_files ${OpenVINOPython_SOURCE_DIR}/src/openvino/*.py)
+    # NOTE: .pyi stub files are intentionally excluded - they are auto-generated by a
+    # scheduled CI workflow and are not required to gate wheel packaging dependencies.
+    set(openvino_py_files ${OPENVINO_PYTHON_SOURCE_FILES})
 
     list(APPEND ov_setup_py_deps
         ${openvino_py_files}
-        "${CMAKE_CURRENT_SOURCE_DIR}/wheel/setup.py"
+        "${OpenVINO_SOURCE_DIR}/pyproject.toml"
+        "${OpenVINO_SOURCE_DIR}/setup.py"
         "${OpenVINOPython_SOURCE_DIR}/requirements.txt"
         "${OpenVINOPython_SOURCE_DIR}/wheel/readme.txt"
         "${OpenVINO_SOURCE_DIR}/LICENSE"
@@ -319,19 +321,18 @@ if(ENABLE_PYTHON_PACKAGING)
 
     # install OpenVINO Python API
 
-    set(python_package_prefix "${CMAKE_CURRENT_BINARY_DIR}/install_${pyversion}")
-    set(install_lib "${python_package_prefix}/lib/${python_versioned_folder}/${ov_site_packages}")
+    set(ov_python_package_prefix "${CMAKE_CURRENT_BINARY_DIR}/openvino/install_${pyversion}")
+    set(ov_install_lib "${ov_python_package_prefix}/lib/${python_versioned_folder}/${ov_site_packages}")
     set(openvino_meta_info_subdir "openvino-${OpenVINO_VERSION}-py${python_xy}.egg-info")
-    set(openvino_meta_info_file "${install_lib}/${openvino_meta_info_subdir}/PKG-INFO")
+    set(openvino_meta_info_file "${ov_install_lib}/${openvino_meta_info_subdir}/PKG-INFO")
 
     add_custom_command(OUTPUT ${openvino_meta_info_file}
-        COMMAND ${CMAKE_COMMAND} -E remove_directory
-            "${python_package_prefix}"
+        COMMAND ${CMAKE_COMMAND} -E remove_directory "${ov_python_package_prefix}"
         COMMAND ${setup_py_env}
                 # variables to reflect options (extensions only or full wheel package)
                 PYTHON_EXTENSIONS_ONLY=ON
                 SKIP_RPATH=ON
-            "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/wheel/setup.py"
+                "${Python3_EXECUTABLE}" "${OpenVINO_SOURCE_DIR}/setup.py"
                 --no-user-cfg
                 --quiet
                 build
@@ -339,9 +340,9 @@ if(ENABLE_PYTHON_PACKAGING)
                 build_ext
                 install
                     --no-compile
-                    --prefix "${python_package_prefix}"
-                    --install-lib "${install_lib}"
-                    --install-scripts "${python_package_prefix}/bin"
+                    --prefix "${ov_python_package_prefix}"
+                    --install-lib "${ov_install_lib}"
+                    --install-scripts "${ov_python_package_prefix}/bin"
                     --single-version-externally-managed
                     --record=installed.txt
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
@@ -349,14 +350,14 @@ if(ENABLE_PYTHON_PACKAGING)
         COMMENT "Create python package with ${openvino_meta_info_subdir} folder")
 
     # Install OpenVINO Telemetry
-
-    set(OpenVINO_Telemetry_SOURCE_DIR "${OpenVINO_SOURCE_DIR}/thirdparty/telemetry")
-    file(GLOB_RECURSE telemetry_files ${OpenVINO_Telemetry_SOURCE_DIR}/*)
-
+    set(telemetry_python_package_prefix "${CMAKE_CURRENT_BINARY_DIR}/telemetry/install_${pyversion}")
+    set(telemetry_install_lib "${telemetry_python_package_prefix}/lib/${python_versioned_folder}/${ov_site_packages}")
     set(openvino_telemetry_meta_info_subdir "openvino-telemetry-${OpenVINO_VERSION}-py${python_xy}.egg-info")
-    set(openvino_telemetry_meta_info_file "${install_lib}/${openvino_telemetry_meta_info_subdir}/PKG-INFO")
+    set(openvino_telemetry_meta_info_file "${telemetry_install_lib}/${openvino_telemetry_meta_info_subdir}/PKG-INFO")
 
     add_custom_command(OUTPUT ${openvino_telemetry_meta_info_file}
+        COMMAND ${CMAKE_COMMAND} -E remove_directory
+        "${telemetry_python_package_prefix}"
         COMMAND "${Python3_EXECUTABLE}" "${OpenVINO_Telemetry_SOURCE_DIR}/setup.py"
                     --no-user-cfg
                     --quiet
@@ -364,9 +365,9 @@ if(ENABLE_PYTHON_PACKAGING)
                         --executable "/usr/bin/python3"
                     install
                         --no-compile
-                        --prefix "${python_package_prefix}"
-                        --install-lib "${install_lib}"
-                        --install-scripts "${python_package_prefix}/bin"
+                        --prefix "${telemetry_python_package_prefix}"
+                        --install-lib "${telemetry_install_lib}"
+                        --install-scripts "${telemetry_python_package_prefix}/bin"
                         --single-version-externally-managed
                         --record=installed.txt
         WORKING_DIRECTORY "${OpenVINO_Telemetry_SOURCE_DIR}"
@@ -380,8 +381,8 @@ if(ENABLE_PYTHON_PACKAGING)
     # install python package, which will be later packed into DEB | RPM
     ov_cpack_add_component(${OV_CPACK_COMP_PYTHON_OPENVINO}_package_${pyversion} HIDDEN)
 
-    install(DIRECTORY ${python_package_prefix}/
-            DESTINATION ${CMAKE_INSTALL_PREFIX}
+    install(DIRECTORY ${ov_python_package_prefix}/ ${telemetry_python_package_prefix}/
+            DESTINATION .
             COMPONENT ${OV_CPACK_COMP_PYTHON_OPENVINO_PACKAGE}_${pyversion}
             ${OV_CPACK_COMP_PYTHON_OPENVINO_PACKAGE_EXCLUDE_ALL}
             USE_SOURCE_PERMISSIONS)
@@ -395,6 +396,10 @@ if(ENABLE_TESTS)
     add_subdirectory(tests/mock/mock_py_frontend)
     add_subdirectory(tests/mock/pyngraph_fe_mock_api)
     install(FILES constraints.txt
+            DESTINATION tests/bindings/python
+            COMPONENT tests
+            EXCLUDE_FROM_ALL)
+    install(FILES requirements_test.txt
             DESTINATION tests/bindings/python
             COMPONENT tests
             EXCLUDE_FROM_ALL)

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,7 +7,6 @@
 #include "openvino/core/shape.hpp"
 #include "openvino/core/type/element_type.hpp"
 #include "openvino/core/type/element_type_traits.hpp"
-#include "openvino/runtime/allocator.hpp"
 #include "openvino/runtime/core.hpp"
 #include "openvino/runtime/tensor.hpp"
 
@@ -28,8 +27,7 @@ public:
                               const size_t blob_idx,
                               float threshold,
                               float abs_threshold,
-                              bool legacy_compare,
-                              size_t actual_comparision_size);
+                              bool legacy_compare);
 
 protected:
     bool legacy_compare = false;
@@ -42,16 +40,15 @@ protected:
     std::vector<ov::Tensor> inputData;
     std::vector<ov::Tensor> refOutData;
     std::vector<ov::Tensor> actualOutData;
-    float threshold = 1e-2f;             // Relative diff
-    float abs_threshold = -1.f;          // Absolute diff (not used when negative)
-    size_t actual_comparision_size = 0;  // For ref output data is smaller than output blob size
+    float threshold = 1e-2f;     // Relative diff
+    float abs_threshold = -1.f;  // Absolute diff (not used when negative)
 };
 
 template <class T>
 ov::Tensor CreateTensor(const ov::element::Type& element_type, const std::vector<T>& values, size_t size = 0) {
     size_t real_size = size ? size : values.size() * sizeof(T) / element_type.size();
     ov::Tensor tensor{element_type, {real_size}};
-    std::memcpy(tensor.data(), values.data(), std::min(real_size * element_type.size(), sizeof(T) * values.size()));
+    std::memcpy(tensor.data(), values.data(), std::min(tensor.get_byte_size(), sizeof(T) * values.size()));
 
     return tensor;
 }

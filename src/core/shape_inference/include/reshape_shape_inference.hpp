@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #pragma once
@@ -239,6 +239,20 @@ void set_pattern_symbols(const Node* const op, TShape& shape) {
 template <class TShape, typename std::enable_if<!std::is_same<TShape, PartialShape>::value>::type* = nullptr>
 void set_pattern_symbols(const Node* const, TShape&) {}
 
+/** @brief Deducing symbol relations: number of elements in the tensor doesn't change after the Reshape operation. */
+template <class TDim,
+          typename std::enable_if<std::is_same<typename std::decay<TDim>::type, Dimension>::value>::type* = nullptr>
+void deduce_symbol_relations(const Product<TDim>& product) {
+    auto dyn_in = product.get_dynamic_in();
+    const auto& dyn_out = product.get_dynamic_out();
+    dyn_in.merge(dyn_in, dyn_in, dyn_out);
+}
+
+/** @brief Shapes other than PartialShape have no symbols. */
+template <class TDim,
+          typename std::enable_if<!std::is_same<typename std::decay<TDim>::type, Dimension>::value>::type* = nullptr>
+void deduce_symbol_relations(const Product<TDim>& product) {}
+
 }  // namespace reshape
 
 namespace v1 {
@@ -256,10 +270,7 @@ std::vector<TRShape> shape_infer(const Reshape* op,
     const auto input_rank = input_shape.rank();
     const auto pattern_shape_rank = pattern_shape.rank();
 
-    NODE_SHAPE_INFER_CHECK(op,
-                           input_shapes,
-                           pattern_shape_rank.compatible(0) || pattern_shape_rank.compatible(1),
-                           "Pattern shape must have rank 1 or be empty");
+    NODE_SHAPE_INFER_CHECK(op, input_shapes, pattern_shape_rank.compatible(1), "Pattern shape must have rank 1");
 
     auto output_shapes = std::vector<TRShape>(1);
     auto& output_shape = output_shapes[0];
@@ -270,13 +281,6 @@ std::vector<TRShape> shape_infer(const Reshape* op,
         const auto minus_one_idx = pattern_and_minus_one_idx.second;
 
         reshape::set_pattern_symbols(op, output_pattern);
-
-        if (pattern_shape_rank.get_max_length() == 0) {
-            NODE_VALIDATION_CHECK(op,
-                                  output_pattern[0] == 1,
-                                  "The value of scalar shape pattern should be equal to 1!");
-            output_pattern.resize(0);
-        }
 
         const auto special_zero = op->get_special_zero();
 
@@ -342,6 +346,10 @@ std::vector<TRShape> shape_infer(const Reshape* op,
                                       !dim::is_empty(minus_one_dim),
                                       "Non-'-1' output dimensions do not evenly divide the input dimensions");
             }
+        } else {
+            if (product.get_static_in() == product.get_static_out() && product.get_static_in() != 0) {
+                deduce_symbol_relations(product);
+            }
         }
 
         if (input_shape.is_static() && output_shape.is_static()) {
@@ -357,15 +365,8 @@ std::vector<TRShape> shape_infer(const Reshape* op,
                                    " is incompatible with input shape");
         }
     } else if (pattern_shape_rank.is_static()) {
-        if (pattern_shape_rank.get_length() == 0) {
-            NODE_SHAPE_INFER_CHECK(op,
-                                   input_shapes,
-                                   input_rank.compatible(0),
-                                   "Input must be scalar as pattern is scalar!");
-        } else {
-            output_shape =
-                PartialShape::dynamic(Rank(pattern_shape[0].get_min_length(), pattern_shape[0].get_max_length()));
-        }
+        output_shape =
+            PartialShape::dynamic(Rank(pattern_shape[0].get_min_length(), pattern_shape[0].get_max_length()));
     } else {
         output_shape = PartialShape::dynamic();
     }

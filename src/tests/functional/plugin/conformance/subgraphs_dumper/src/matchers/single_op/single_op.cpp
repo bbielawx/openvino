@@ -1,12 +1,15 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "openvino/op/ops.hpp"
 #include "matchers/single_op/single_op.hpp"
 #include "utils/node.hpp"
 #include "utils/attribute_visitor.hpp"
 #include "utils/model_comparator.hpp"
+#include "openvino/op/convolution.hpp"
+#include "openvino/op/group_conv.hpp"
+#include "openvino/op/convolution.hpp"
+#include "openvino/op/group_conv.hpp"
 
 using namespace ov::tools::subgraph_dumper;
 
@@ -41,7 +44,8 @@ bool SingleOpMatcher::match_inputs(const std::shared_ptr<ov::Node> &node,
     if (node->get_input_size() != ref->get_input_size()) {
         return false;
     }
-    const std::vector<size_t> &ignored_ports = get_config(node)->ignored_ports;
+    const auto &cfg = get_config(node);
+    const std::vector<size_t> &ignored_ports = cfg->ignored_ports;
 
     for (size_t port_id = 0; port_id < node->get_input_size(); ++port_id) {
         if (std::find(ignored_ports.begin(), ignored_ports.end(), port_id) != ignored_ports.end()) {

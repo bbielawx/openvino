@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 #
@@ -28,9 +28,9 @@ def unsqueeze(name : str, x, axes : list):
 
         outs = exe.run(
             feed={'x': x},
-            fetch_list=[out])             
+            fetch_list=[out])
 
-        saveModel(name, exe, feedkeys=['x'], fetchlist=[out], inputs=[x], outputs=[outs[0]], target_dir=sys.argv[1])
+        saveModel(name, exe, feed_vars=[node_x], fetchlist=[out], inputs=[x], outputs=[outs[0]], target_dir=sys.argv[1])
 
     return outs[0]
 

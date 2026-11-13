@@ -3,6 +3,8 @@
 #
 
 include(ExternalProject)
+include(ProcessorCount)
+ProcessorCount(PROCESSOR_COUNT)
 
 #
 # ov_native_compile_external_project(
@@ -11,11 +13,13 @@ include(ExternalProject)
 #      NATIVE_TARGETS <target1 target2 ..>
 #      [NATIVE_SOURCE_SUBDIR <subdir>]
 #      [CMAKE_ARGS <option1 option2 ...>]
+#      [BUILD_BYPRODUCTS <file1 file2 ...>]
 #   )
 #
 function(ov_native_compile_external_project)
     set(oneValueRequiredArgs NATIVE_INSTALL_DIR TARGET_NAME NATIVE_SOURCE_SUBDIR)
-    set(multiValueArgs CMAKE_ARGS NATIVE_TARGETS)
+    set(oneValueOptionalArgs EXTRA_COMPILE_FLAGS)
+    set(multiValueArgs CMAKE_ARGS NATIVE_TARGETS BUILD_BYPRODUCTS)
     cmake_parse_arguments(ARG "" "${oneValueRequiredArgs};${oneValueOptionalArgs}" "${multiValueArgs}" ${ARGN})
 
     if(YOCTO_AARCH64 OR EMSCRIPTEN)
@@ -62,8 +66,11 @@ function(ov_native_compile_external_project)
     endif()
 
     # compile flags
-    if(CMAKE_COMPILER_IS_GNUCXX)
-        set(compile_flags "-Wno-undef -Wno-error -Wno-deprecated-declarations")
+    if(ARG_EXTRA_COMPILE_FLAGS)
+        set(compile_flags "${ARG_EXTRA_COMPILE_FLAGS}")
+    endif()
+    if(CMAKE_COMPILER_IS_GNUCXX OR OV_COMPILER_IS_CLANG OR (OV_COMPILER_IS_INTEL_LLVM AND UNIX))
+        set(compile_flags "${compile_flags} -Wno-undef -Wno-error -Wno-deprecated-declarations")
     endif()
 
     if(ARG_NATIVE_SOURCE_SUBDIR)
@@ -71,7 +78,7 @@ function(ov_native_compile_external_project)
     endif()
 
     if(OV_GENERATOR_MULTI_CONFIG)
-        if(CMAKE_GENERATOR MATCHES "^Ninja Multi-Config$")
+        if(CMAKE_GENERATOR STREQUAL "Ninja Multi-Config")
             list(APPEND ARG_CMAKE_ARGS "-DCMAKE_CONFIGURATION_TYPES=${CMAKE_DEFAULT_BUILD_TYPE}")
             list(APPEND ARG_CMAKE_ARGS "-DCMAKE_DEFAULT_BUILD_TYPE=${CMAKE_DEFAULT_BUILD_TYPE}")
         endif()
@@ -124,8 +131,9 @@ function(ov_native_compile_external_project)
             "${NATIVE_CMAKE_COMMAND}"
                 --build "${CMAKE_CURRENT_BINARY_DIR}/build"
                 --config Release
-                --parallel
+                --parallel ${PROCESSOR_COUNT}
                 -- ${ARG_NATIVE_TARGETS}
+        BUILD_BYPRODUCTS ${ARG_BUILD_BYPRODUCTS}
         # Test Step Options:
         TEST_EXCLUDE_FROM_MAIN ON
         # Target Options:

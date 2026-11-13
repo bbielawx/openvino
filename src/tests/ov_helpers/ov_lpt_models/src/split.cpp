@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,6 +11,8 @@
 #include "ov_lpt_models/common/builders.hpp"
 #include "ov_lpt_models/common/dequantization_operations.hpp"
 #include "common_test_utils/node_builders/fake_quantize.hpp"
+#include "openvino/op/split.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
 
 namespace ov {
 namespace builder {
@@ -70,7 +72,6 @@ std::shared_ptr<ov::Model> SplitFunction::getReference(
     const ov::PartialShape& inputShape,
     const ov::element::Type inputPrecision,
     const ov::builder::subgraph::DequantizationOperations& dequantizationBefore,
-    const ov::element::Type precisionAfterOperation,
     const std::vector<ov::builder::subgraph::DequantizationOperations>& dequantizationAfter,
     const int64_t splitedAxis,
     const size_t numSplit) {

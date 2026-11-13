@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,22 +15,9 @@ namespace ov {
 namespace test {
 
 std::string MatMulLayerCPUTest::getTestCaseName(const testing::TestParamInfo<MatMulLayerCPUTestParamSet>& obj) {
-    MatMulLayerTestParamsSet basicParamsSet;
-    MatMulNodeType nodeType;
-    fusingSpecificParams fusingParams;
-    CPUSpecificParams cpuParams;
-
-    std::tie(basicParamsSet, nodeType, fusingParams, cpuParams) = obj.param;
-
-    ElementType netType;
-    ElementType inType, outType;
-    ShapeRelatedParams shapeRelatedParams;
-    utils::InputLayerType secondaryInputType;
-    TargetDevice targetDevice;
-    ov::AnyMap additionalConfig;
-    std::tie(shapeRelatedParams, netType, inType, outType, secondaryInputType, targetDevice, additionalConfig) =
+    const auto& [basicParamsSet, nodeType, fusingParams, cpuParams] = obj.param;
+    const auto& [shapeRelatedParams, netType, inType, outType, secondaryInputType, targetDevice, additionalConfig] =
         basicParamsSet;
-
     std::ostringstream result;
     result << (nodeType == MatMulNodeType::MatMul ? "MatMul_" : "FullyConnected_");
     result << "IS=";
@@ -73,21 +60,13 @@ void MatMulLayerCPUTest::transpose(T& shape) {
 }
 
 void MatMulLayerCPUTest::SetUp() {
-    MatMulLayerTestParamsSet basicParamsSet;
-    MatMulNodeType nodeType;
-    fusingSpecificParams fusingParams;
-    CPUSpecificParams cpuParams;
-
-    std::tie(basicParamsSet, nodeType, fusingParams, cpuParams) = this->GetParam();
+    const auto& [basicParamsSet, nodeType, fusingParams, cpuParams] = this->GetParam();
     std::tie(inFmts, outFmts, priority, selectedType) = cpuParams;
-
-    ShapeRelatedParams shapeRelatedParams;
-    ElementType netType;
-    utils::InputLayerType secondaryInputType;
-    ov::AnyMap additionalConfig;
-
-    std::tie(shapeRelatedParams, netType, inType, outType, secondaryInputType, targetDevice, additionalConfig) = basicParamsSet;
-
+    const auto& [shapeRelatedParams, _netType, _inType, _outType, secondaryInputType, _targetDevice, additionalConfig] =
+        basicParamsSet;
+    inType = _inType;
+    outType = _outType;
+    targetDevice = _targetDevice;
     init_input_shapes(shapeRelatedParams.inputShapes);
 
     bool transpA = shapeRelatedParams.transpose.first;
@@ -118,13 +97,30 @@ void MatMulLayerCPUTest::SetUp() {
     configuration.insert(additionalConfig.begin(), additionalConfig.end());
 
     auto it = additionalConfig.find(ov::hint::inference_precision.name());
-    if (it != additionalConfig.end() && it->second.as<ov::element::Type>() == ov::element::bf16)
+    ov::element::Type inference_precision =
+        (it != additionalConfig.end()) ? it->second.as<ov::element::Type>() : ov::element::dynamic;
+    auto netType = _netType;
+    if (inference_precision == ov::element::bf16) {
         inType = outType = netType = ElementType::bf16;
-    else
+        rel_threshold = abs_threshold = 1e-2f;
+    } else if (inference_precision == ov::element::f16) {
+        inType = outType = netType = ElementType::f16;
+#if defined(OPENVINO_ARCH_ARM) || defined(OPENVINO_ARCH_ARM64)
+        // rel_threshold = abs_threshold = 1e-2f;
+        // Temporarily created the following rel_threshold because of this bug CVS-144523 and
+        // https://github.com/ARM-software/ComputeLibrary/issues/1112
+        rel_threshold = abs_threshold = 3e-1f;
+#else
+        rel_threshold = abs_threshold = 1e-4f;
+#endif
+    } else {
         inType = outType = netType;
+        rel_threshold = 1e-4f;
+        abs_threshold = 5e-4f;
+    }
 
     cpuNodeType = nodeType == MatMulNodeType::MatMul ? "MatMul" : "FullyConnected";
-    selectedType = makeSelectedTypeStr(selectedType, outType);
+    selectedType = makeSelectedTypeStr(selectedType, deduce_expected_precision(outType, configuration));
 
     ov::ParameterVector params{std::make_shared<ov::op::v0::Parameter>(netType, inShapeA)};
 
@@ -146,8 +142,42 @@ void MatMulLayerCPUTest::SetUp() {
     }
 
     auto matMul = std::make_shared<ov::op::v0::MatMul>(paramOuts[0], matrixB, transpA, transpB);
-    function = makeNgraphFunction(netType, params, matMul, cpuNodeType);
+    function = create_ov_model(netType, params, matMul, cpuNodeType);
     checkFusingPosition = false;
+}
+
+
+void MatMulLayerCPUTest::generate_inputs(const std::vector<ov::Shape>& targetInputStaticShapes) {
+    inputs.clear();
+    const auto& parameters = function->get_parameters();
+    for (size_t i = 0; i < parameters.size(); i++) {
+        const auto& parameter = parameters[i];
+        ov::Tensor tensor;
+        const auto& param_type = parameter->get_output_element_type(0);
+        const auto& static_shape = targetInputStaticShapes[i];
+        switch (i) {
+            case 0: {
+                    ov::test::utils::InputGenerateData in_data;
+                    in_data.start_from = -4;
+                    in_data.range = 8;
+                    in_data.resolution = 32;
+                    tensor = ov::test::utils::create_and_fill_tensor(param_type, static_shape, in_data);
+                break;
+            }
+            case 1: {
+                    ov::test::utils::InputGenerateData in_data;
+                    in_data.start_from = 0;
+                    in_data.range = 8;
+                    in_data.resolution = 32;
+                    tensor = ov::test::utils::create_and_fill_tensor(param_type, static_shape, in_data);
+                break;
+            }
+            default: {
+                throw std::runtime_error("Incorrect parameter number!");
+            }
+        }
+        inputs.insert({parameter, tensor});
+    }
 }
 
 TEST_P(MatMulLayerCPUTest, CompareWithRefs) {
@@ -164,6 +194,11 @@ TEST_P(MatMulLayerCPUTest, CompareWithRefs) {
     run();
     CheckPluginRelatedResults(compiledModel, cpuNodeType);
 }
+
+// On some architectures (e.g. RISC-V) filterCPUInfo filters out all backends
+// defined in filterSpecificParams(), producing empty INSTANTIATE_TEST_SUITE_P.
+// gtest >= 1.11 flags this as a failure unless explicitly allowed.
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(MatMulLayerCPUTest);
 
 namespace MatMul {
 const ov::AnyMap& emptyAdditionalConfig() {

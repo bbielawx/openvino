@@ -1,10 +1,11 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <gmock/gmock.h>
 
 #include "common_test_utils/test_assertions.hpp"
+#include "openvino/op/proposal.hpp"
 #include "utils.hpp"
 
 using namespace ov;
@@ -23,9 +24,9 @@ protected:
     }
 
     static size_t exp_out_size() {
-        if (std::is_same<op::v0::Proposal, TOp>::value) {
+        if (std::is_same_v<op::v0::Proposal, TOp>) {
             return 1;
-        } else if (std::is_same<op::v4::Proposal, TOp>::value) {
+        } else if (std::is_same_v<op::v4::Proposal, TOp>) {
             return 2;
         } else {
             return 0;
@@ -39,7 +40,7 @@ TYPED_TEST_P(ProposalTest, default_ctor) {
     this->op = this->make_op();
     this->op->set_attrs(this->make_attrs(10));
 
-    this->input_shapes = ShapeVector{{2, 3, 10, 10}, {2, 6, 10, 10}, {3}};
+    this->input_shapes = StaticShapeVector{{2, 3, 10, 10}, {2, 6, 10, 10}, {3}};
     this->output_shapes = shape_inference(this->op.get(), this->input_shapes);
 
     EXPECT_EQ(this->output_shapes.size(), this->exp_out_size());
@@ -53,7 +54,7 @@ TYPED_TEST_P(ProposalTest, all_inputs_dynamic_rank) {
 
     this->op = this->make_op(class_probs, class_bbox_deltas, image_shape, this->make_attrs(4));
 
-    this->input_shapes = ShapeVector{{2, 3, 10, 10}, {2, 6, 10, 10}, {3}};
+    this->input_shapes = StaticShapeVector{{2, 3, 10, 10}, {2, 6, 10, 10}, {3}};
     this->output_shapes = shape_inference(this->op.get(), this->input_shapes);
 
     EXPECT_EQ(this->output_shapes.size(), this->exp_out_size());
@@ -67,7 +68,7 @@ TYPED_TEST_P(ProposalTest, all_inputs_static_rank) {
 
     this->op = this->make_op(class_probs, class_bbox_deltas, image_shape, this->make_attrs(5));
 
-    this->input_shapes = ShapeVector{{3, 4, 10, 10}, {3, 8, 10, 10}, {4}};
+    this->input_shapes = StaticShapeVector{{3, 4, 10, 10}, {3, 8, 10, 10}, {4}};
     this->output_shapes = shape_inference(this->op.get(), this->input_shapes);
 
     EXPECT_EQ(this->output_shapes.size(), this->exp_out_size());
@@ -81,7 +82,7 @@ TYPED_TEST_P(ProposalTest, batch_size_not_compatible) {
 
     this->op = this->make_op(class_probs, class_bbox_deltas, image_shape, this->make_attrs(5));
 
-    this->input_shapes = ShapeVector{{3, 4, 10, 10}, {4, 8, 10, 10}, {3}};
+    this->input_shapes = StaticShapeVector{{3, 4, 10, 10}, {4, 8, 10, 10}, {3}};
     OV_EXPECT_THROW(shape_inference(this->op.get(), this->input_shapes),
                     NodeValidationFailure,
                     HasSubstr("Batch size inconsistent between class_probs"));
@@ -94,7 +95,7 @@ TYPED_TEST_P(ProposalTest, image_shape_input_not_compatible_shape) {
 
     this->op = this->make_op(class_probs, class_bbox_deltas, image_shape, this->make_attrs(5));
 
-    this->input_shapes = ShapeVector{{3, 4, 10, 10}, {3, 8, 10, 10}, {5}};
+    this->input_shapes = StaticShapeVector{{3, 4, 10, 10}, {3, 8, 10, 10}, {5}};
     OV_EXPECT_THROW(shape_inference(this->op.get(), this->input_shapes),
                     NodeValidationFailure,
                     HasSubstr("Image_shape must be 1-D tensor and has got 3 or 4 elements"));

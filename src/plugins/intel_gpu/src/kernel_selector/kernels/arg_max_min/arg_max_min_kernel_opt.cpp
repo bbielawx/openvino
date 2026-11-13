@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,6 +10,7 @@ ParamsKey ArgMaxMinKernelOpt::GetSupportedKey() const {
     k.EnableInputDataType(Datatype::F16);
     k.EnableInputDataType(Datatype::F32);
     k.EnableInputDataType(Datatype::INT8);
+    k.EnableInputDataType(Datatype::UINT8);
     k.EnableOutputDataType(Datatype::F32);
     k.EnableInputLayout(DataLayout::bfyx);
     k.EnableOutputLayout(DataLayout::bfyx);
@@ -44,10 +45,11 @@ KernelsData ArgMaxMinKernelOpt::GetKernelsData(const Params& params) const {
     KernelData kd = KernelData::Default<arg_max_min_params>(params, kernelAmount);
     for (int i = 0; i < kernelAmount; i++) {
         DataTensor input;
-        if (i == 0)
+        if (i == 0) {
             input = orgParams.inputs[0];
-        else
+        } else {
             input = orgParams.outputs[0];
+        }
 
         auto newParams = orgParams;
         newParams.inputs.resize(1);

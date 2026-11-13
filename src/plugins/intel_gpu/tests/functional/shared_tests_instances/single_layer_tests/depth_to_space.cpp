@@ -1,11 +1,10 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <vector>
 
 #include "common_test_utils/test_constants.hpp"
-#include "openvino/opsets/opset3.hpp"
 #include "single_op_tests/depth_to_space.hpp"
 
 namespace {
@@ -15,7 +14,7 @@ using ov::op::v0::DepthToSpace;
 const std::vector<ov::element::Type> inputPrecisions = {
         ov::element::f32,
         ov::element::u8,
-        ov::element::i16,
+        ov::element::f16,
 };
 
 const std::vector<DepthToSpace::DepthToSpaceMode> modes = {

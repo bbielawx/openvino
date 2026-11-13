@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -40,20 +40,21 @@ struct roi_pooling_impl : typed_primitive_impl_ocl<roi_pooling> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::roi_pooling_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<roi_pooling_impl>(*this);
+        return make_deep_copy<roi_pooling_impl, kernel_params_t>(*this);
     }
 
 protected:
     kernel_arguments_data get_arguments(const typed_primitive_inst<roi_pooling>& instance) const override {
         kernel_arguments_data args;
 
-        if (instance.get_typed_desc<roi_pooling>()->mode == pooling_mode::deformable_bilinear && !instance.get_typed_desc<roi_pooling>()->no_trans)
+        if (instance.get_typed_desc<roi_pooling>()->mode == pooling_mode::deformable_bilinear && !instance.get_typed_desc<roi_pooling>()->no_trans) {
             args.inputs = {
                 instance.input_memory_ptr(),
                 instance.rois_memory(),
                 instance.trans_memory()};
-        else
+        } else {
             args.inputs = {instance.input_memory_ptr(), instance.rois_memory()};
+        }
 
         args.outputs = { instance.output_memory_ptr() };
 
@@ -68,8 +69,9 @@ public:
         auto params = get_default_params<kernel_selector::roi_pooling_params>(impl_param);
 
         params.inputs.push_back(convert_data_tensor(rois_layout));
-        if (primitive->mode == pooling_mode::deformable_bilinear && !primitive->no_trans)
+        if (primitive->mode == pooling_mode::deformable_bilinear && !primitive->no_trans) {
             params.inputs.push_back(convert_data_tensor(impl_param.get_input_layout(2)));
+        }
         params.mode = cldnn_2_pool_type(primitive->mode);
         params.position_sensitive = primitive->position_sensitive;
         params.pooled_width = primitive->pooled_width;

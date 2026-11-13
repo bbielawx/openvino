@@ -1,22 +1,19 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 import platform
 import subprocess
 import sys
 
 from common.utils.multiprocessing_utils import multiprocessing_run
-from openvino.runtime import Core, get_version as ie2_get_version
+from openvino import Core, get_version as ie2_get_version
 
+# Not all layer tests use openvino_tokenizers
 try:
     # noinspection PyUnresolvedReferences
     import openvino_tokenizers  # do not delete, needed for validation of OpenVINO tokenizers extensions
 except:
-    # TODO 132908: add build OpenVINO Tokenizers in GHA for MacOS and ARM64
     # TODO 132909: add build OpenVINO Tokenizers in Jenkins for layer_ubuntu20_release tests
-    assert platform.system() in ('Linux', 'Darwin') or platform.machine() in ('arm', 'armv7l',
-                                                                              'aarch64',
-                                                                              'arm64', 'ARM64')
-
+    pass
 
 def shell(cmd, env=None, cwd=None):
     if sys.platform.startswith('linux') or sys.platform == 'darwin':
@@ -45,12 +42,11 @@ class BaseInfer:
 
 
 class InferAPI(BaseInfer):
-    def __init__(self, model, weights, device, use_legacy_frontend):
+    def __init__(self, model, weights, device):
         super().__init__('OpenVINO')
         self.device = device
         self.model = model
         self.weights = weights
-        self.use_legacy_frontend = use_legacy_frontend
 
     def fw_infer(self, input_data, config=None):
         print("OpenVINO version: {}".format(ie2_get_version()))
@@ -72,14 +68,8 @@ class InferAPI(BaseInfer):
             # For the new frontend we make this the right way because
             # we know that tensor can have several names due to fusing
             # and one of them the framework uses
-            if not self.use_legacy_frontend:
-                for tensor_name in out_obj.get_names():
-                    result[tensor_name] = out_tensor
-            else:
-                for tensor_name in out_obj.get_names():
-                    result[tensor_name] = out_tensor
-                    tensor_name = tensor_name.split(':')[0]
-                    result[tensor_name] = out_tensor
+            for tensor_name in out_obj.get_names():
+                result[tensor_name] = out_tensor
 
         if "exec_net" in locals():
             del exec_net

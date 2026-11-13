@@ -1,15 +1,19 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "openvino/op/fake_quantize.hpp"
-#include "openvino/pass/graph_rewrite.hpp"
+#include <memory>
+#include <vector>
 
-namespace ov {
-namespace snippets {
-namespace pass {
+#include "openvino/core/model.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/op/fake_quantize.hpp"
+#include "openvino/pass/matcher_pass.hpp"
+#include "openvino/pass/pass.hpp"
+
+namespace ov::snippets::pass {
 
 /**
  * @interface FakeQuantizeDecomposition
@@ -37,7 +41,8 @@ namespace pass {
  *
  * Some optimizations (example for scalars):
  * 1. If output element type of FQ is U8 and il = 0, ish = 0, osc = 1, osh = 0, there is enough expression: x * isc
- * 2. If output element type of FQ is I8 and ish ~= 128, osc = 1, osh ~= -128, il * isc ~= -128, ih * isc ~= 127 there is enough expression: x * isc
+ * 2. If output element type of FQ is I8 and ish ~= 128, osc = 1, osh ~= -128, il * isc ~= -128, ih * isc ~= 127 there
+ * is enough expression: x * isc
  * 3. If osc = 1, osh = 0, there isn't dequantization
  * 4. If there isn't dequantization and output element type of FQ isn't FP32, there isn't rounding
  *
@@ -49,6 +54,7 @@ namespace pass {
 
 class FakeQuantizeDecomposition : public ov::pass::MatcherPass {
 public:
+    OPENVINO_MATCHER_PASS_RTTI("snippets::pass::FakeQuantizeDecomposition");
     FakeQuantizeDecomposition();
 
     static bool getScalesAndShifts(const std::shared_ptr<const ov::op::v0::FakeQuantize>& fq_node,
@@ -77,13 +83,13 @@ public:
  *          2. ConstantFolding
  *          3. Validate
  */
-class CommonFakeQuantizeDecomposition: public ov::pass::ModelPass {
+class CommonFakeQuantizeDecomposition : public ov::pass::ModelPass {
 public:
+    OPENVINO_MODEL_PASS_RTTI("snippets::pass::CommonFakeQuantizeDecomposition");
+
     bool run_on_model(const std::shared_ptr<ov::Model>& m) override;
 
     static bool is_supported_fq(const std::shared_ptr<const ov::op::v0::FakeQuantize>& fq);
 };
 
-}  // namespace pass
-}  // namespace snippets
-}  // namespace ov
+}  // namespace ov::snippets::pass

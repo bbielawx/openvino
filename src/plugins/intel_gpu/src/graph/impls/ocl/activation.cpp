@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -28,12 +28,12 @@ struct activation_impl : typed_primitive_impl_ocl<activation> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::activation_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<activation_impl>(*this);
+        return make_deep_copy<activation_impl, kernel_params_t>(*this);
     }
 
     void load(BinaryInputBuffer& ib) override {
         parent::load(ib);
-        if (is_dynamic()) {
+        if (is_dynamic() && !_kernel_data.kernelName.empty()) {
             auto& kernel_selector = kernel_selector_t::Instance();
             auto kernel_impl = kernel_selector.GetImplementation(_kernel_data.kernelName);
             kernel_impl->GetUpdateDispatchDataFunc(_kernel_data);
@@ -56,14 +56,14 @@ struct activation_impl : typed_primitive_impl_ocl<activation> {
 
         convert_new_activation_func(*primitive, params.activations);
 
-        bool is_parameterized = !primitive->additional_params_input.empty();
+        bool is_parameterized = primitive->additional_params_input.is_valid();
         if (is_parameterized) {
             const auto& slope_layout = impl_param.input_layouts[1];
             const auto& output_layout = impl_param.get_output_layout();
 
             if (!impl_param.is_dynamic()) {
                 const auto params_num = kernel_selector::GetActivationAdditionalParamsNumber(params.activations[0].function);
-                OPENVINO_ASSERT(slope_layout.count() >= static_cast<size_t>(output_layout.feature() * params_num),
+                OPENVINO_ASSERT(slope_layout.count() == 1 || slope_layout.count() >= static_cast<size_t>(output_layout.feature() * params_num),
                                 "[GPU] Invalid slope size in ", primitive->id);
             }
             params.inputActivationParams.push_back(convert_data_tensor(slope_layout));
@@ -73,8 +73,13 @@ struct activation_impl : typed_primitive_impl_ocl<activation> {
     }
 
     void update_dispatch_data(const kernel_impl_params& impl_param) override {
-        auto kernel_params = get_kernel_params(impl_param, true);
-        (_kernel_data.update_dispatch_data_func)(kernel_params, _kernel_data);
+        // If model loaded from cache, params are not initialized, so we create a new object and reuse it in the future
+        if (_kernel_data.params == nullptr) {
+            _kernel_data.params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true));
+        }
+
+        update_shapes(*_kernel_data.params, impl_param);
+        (_kernel_data.update_dispatch_data_func)(*_kernel_data.params, _kernel_data);
     }
 };
 
@@ -84,6 +89,7 @@ attach_activation_impl::attach_activation_impl() {
      auto types = {
         data_types::f32,
         data_types::f16,
+        data_types::bf16,
         data_types::i8,
         data_types::u8,
         data_types::i32
@@ -91,6 +97,7 @@ attach_activation_impl::attach_activation_impl() {
 
     auto dyn_formats = {
         format::bfyx,
+        format::byxf,
         format::bfzyx,
         format::bfwzyx,
         format::bfuwzyx,
@@ -115,6 +122,7 @@ attach_activation_impl::attach_activation_impl() {
 
     auto keys = implementation_map<activation>::combine(types, static_formats);
     keys.emplace(data_types::f16, format::fs_b_yx_fsv32);
+    keys.emplace(data_types::bf16, format::fs_b_yx_fsv32);
 
     implementation_map<activation>::add(impl_types::ocl,
                                         shape_types::dynamic_shape,

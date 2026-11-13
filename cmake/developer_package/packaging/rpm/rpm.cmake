@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -11,7 +11,6 @@ include(GNUInstallDirs)
 #
 macro(ov_rpm_cpack_set_dirs)
     # override default locations for RPM
-    set(OV_CPACK_TOOLSDIR ${CMAKE_INSTALL_BINDIR}) # only C++ tools are here
     set(OV_CPACK_INCLUDEDIR ${CMAKE_INSTALL_INCLUDEDIR})
     set(OV_CPACK_LIBRARYDIR ${CMAKE_INSTALL_LIBDIR})
     set(OV_CPACK_RUNTIMEDIR ${CMAKE_INSTALL_LIBDIR})
@@ -33,7 +32,7 @@ macro(ov_rpm_cpack_set_dirs)
     unset(OV_CPACK_SHAREDIR)
 
     # skipped during rpm packaging
-    set(OV_CPACK_WHEELSDIR "tools")
+    set(OV_CPACK_WHEELSDIR "wheels")
 endmacro()
 
 ov_rpm_cpack_set_dirs()
@@ -51,6 +50,9 @@ macro(ov_override_component_names)
     # merge all C / C++ samples as a single samples component
     set(OV_CPACK_COMP_CPP_SAMPLES "samples")
     set(OV_CPACK_COMP_C_SAMPLES "${OV_CPACK_COMP_CPP_SAMPLES}")
+    # merge links and pkgconfig with dev component
+    set(OV_CPACK_COMP_LINKS "${OV_CPACK_COMP_CORE_DEV}")
+    set(OV_CPACK_COMP_PKG_CONFIG "${OV_CPACK_COMP_CORE_DEV}")
 endmacro()
 
 ov_override_component_names()
@@ -70,6 +72,8 @@ macro(ov_define_component_include_rules)
     # tbb
     set(OV_CPACK_COMP_TBB_EXCLUDE_ALL EXCLUDE_FROM_ALL)
     set(OV_CPACK_COMP_TBB_DEV_EXCLUDE_ALL EXCLUDE_FROM_ALL)
+    # openmp
+    set(OV_CPACK_COMP_OPENMP_EXCLUDE_ALL EXCLUDE_FROM_ALL)
     # licensing
     set(OV_CPACK_COMP_LICENSING_EXCLUDE_ALL EXCLUDE_FROM_ALL)
     # samples
@@ -82,12 +86,12 @@ macro(ov_define_component_include_rules)
     endif()
     # python
     if(ENABLE_PYTHON_PACKAGING)
-        # pack artifacts of setup.py install
+        # pack artifacts of pip install
         unset(OV_CPACK_COMP_PYTHON_OPENVINO_PACKAGE_EXCLUDE_ALL)
     else()
         set(OV_CPACK_COMP_PYTHON_OPENVINO_PACKAGE_EXCLUDE_ALL EXCLUDE_FROM_ALL)
     endif()
-    # we don't pack python components itself, we pack artifacts of setup.py install
+    # we don't pack python components itself, we pack artifacts of pip install
     set(OV_CPACK_COMP_PYTHON_OPENVINO_EXCLUDE_ALL EXCLUDE_FROM_ALL)
     set(OV_CPACK_COMP_BENCHMARK_APP_EXCLUDE_ALL ${OV_CPACK_COMP_PYTHON_OPENVINO_EXCLUDE_ALL})
     set(OV_CPACK_COMP_OVC_EXCLUDE_ALL ${OV_CPACK_COMP_PYTHON_OPENVINO_EXCLUDE_ALL})
@@ -97,11 +101,15 @@ macro(ov_define_component_include_rules)
     set(OV_CPACK_COMP_OPENVINO_REQ_FILES_EXCLUDE_ALL EXCLUDE_FROM_ALL)
     # nodejs
     set(OV_CPACK_COMP_NPM_EXCLUDE_ALL EXCLUDE_FROM_ALL)
-    # tools
-    set(OV_CPACK_COMP_OPENVINO_DEV_REQ_FILES_EXCLUDE_ALL EXCLUDE_FROM_ALL)
     # scripts
     set(OV_CPACK_COMP_INSTALL_DEPENDENCIES_EXCLUDE_ALL EXCLUDE_FROM_ALL)
     set(OV_CPACK_COMP_SETUPVARS_EXCLUDE_ALL EXCLUDE_FROM_ALL)
+    # pkgconfig
+    set(OV_CPACK_COMP_PKG_CONFIG_EXCLUDE_ALL ${OV_CPACK_COMP_CORE_DEV_EXCLUDE_ALL})
+    # symbolic links
+    set(OV_CPACK_COMP_LINKS_EXCLUDE_ALL ${OV_CPACK_COMP_CORE_DEV_EXCLUDE_ALL})
+    # npu internal tools
+    set(OV_CPACK_COMP_NPU_INTERNAL_EXCLUDE_ALL EXCLUDE_FROM_ALL)
 endmacro()
 
 ov_define_component_include_rules()
@@ -132,6 +140,8 @@ macro(ov_rpm_specific_settings)
     set(CPACK_RPM_FILE_NAME "RPM-DEFAULT")
     # need to update this version once we rebuild the same package with additional fixes
     set(CPACK_RPM_PACKAGE_RELEASE "1")
+    # append distribution-specific release tag (e.g. .el8, .el9) using rpm's native %{?dist} macro
+    set(CPACK_RPM_PACKAGE_RELEASE_DIST ON)
     # enable this if someday we change the version scheme
     # set(CPACK_RPM_PACKAGE_EPOCH "2")
 
@@ -220,7 +230,29 @@ function(ov_rpm_add_rpmlint_suppression comp)
         message(FATAL_ERROR "RPM: Unsupported architecture ${CMAKE_SYSTEM_PROCESSOR}")
     endif()
 
-    set(package_file_name "${package_name}-${CPACK_PACKAGE_VERSION}-1.${arch}.rpm")
+    # resolve rpm's native distribution release tag (e.g. .el8, .el9) once, so the computed
+    # rpmlint override file name matches the actual RPM file name produced by CPack
+    if(CPACK_RPM_PACKAGE_RELEASE_DIST AND NOT DEFINED OV_RPM_DIST_TAG)
+        find_program(rpm_PROGRAM NAMES rpm)
+        if(rpm_PROGRAM)
+            execute_process(COMMAND "${rpm_PROGRAM}" --eval "%{?dist}"
+                             OUTPUT_VARIABLE rpm_dist_tag
+                             OUTPUT_STRIP_TRAILING_WHITESPACE)
+        else()
+            message(FATAL_ERROR
+                "RPM: cannot determine %{?dist}: rpmbuild was not found. "
+                "Set OV_RPM_DIST_TAG explicitly or disable distribution tagging.")
+        endif()
+        set(OV_RPM_DIST_TAG "${rpm_dist_tag}" CACHE INTERNAL "RPM distribution release tag (%{?dist})")
+    endif()
+    set(package_release "${CPACK_RPM_PACKAGE_RELEASE}${OV_RPM_DIST_TAG}")
+
+    # some package names (e.g. python bindings) embed cpack_full_ver, which itself
+    # contains a literal '%{?dist}' macro to keep RPM dependencies consistent with the
+    # real package EVR; replace it here with the already resolved dist tag as well
+    string(REPLACE "%{?dist}" "${OV_RPM_DIST_TAG}" package_name "${package_name}")
+
+    set(package_file_name "${package_name}-${CPACK_PACKAGE_VERSION}-${package_release}.${arch}.rpm")
     set(rpmlint_override_file "${OpenVINO_BINARY_DIR}/_CPack_Packages/rpmlint/${package_file_name}.rpmlintrc")
     file(REMOVE ${rpmlint_override_file})
     file(WRITE ${rpmlint_override_file} ${content})

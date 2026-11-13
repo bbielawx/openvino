@@ -1,16 +1,28 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <gtest/gtest.h>
+#include <cstddef>
+#include <memory>
 #include <regex>
 
 #include "cpu_test_utils.hpp"
 
+#include "cpu_shape.h"
 #include "openvino/core/type/element_type.hpp"
+#include "openvino/pass/manager.hpp"
+#include "openvino/runtime/infer_request.hpp"
+#include "openvino/runtime/system_conf.hpp"
 #include "transformations/rt_info/primitives_priority_attribute.hpp"
 #include "utils/general_utils.h"
+#include "utils/quantization_utils.hpp"
 #include "utils/rt_info/memory_formats_attribute.hpp"
+#include "utils/transformations/insert_fake_quantize.hpp"
+#include "utils/transformations/insert_requantize.hpp"
+#if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64)
+#    include <xbyak/xbyak_util.h>
+#endif
 
 namespace CPUTestUtils {
 const char* CPUTestsBase::any_type = "any_type";
@@ -43,6 +55,22 @@ const char* CPUTestsBase::cpu_fmt2str(cpu_memory_format_t v) {
     assert(!"unknown fmt");
     return "undef";
 }
+
+#if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64)
+static Xbyak::util::Cpu& get_cpu_info() {
+    static Xbyak::util::Cpu cpu;
+    return cpu;
+}
+bool with_cpu_x86_avx2_vnni_2() {
+    return get_cpu_info().has(Xbyak::util::Cpu::tAVX2 | Xbyak::util::Cpu::tAVX_VNNI) &&
+           get_cpu_info().has(Xbyak::util::Cpu::tAVX_VNNI_INT8) &&
+           get_cpu_info().has(Xbyak::util::Cpu::tAVX_NE_CONVERT);
+}
+#else  // OPENVINO_ARCH_X86 || OPENVINO_ARCH_X86_64
+bool with_cpu_x86_avx2_vnni_2() {
+    return false;
+}
+#endif  // OPENVINO_ARCH_X86 || OPENVINO_ARCH_X86_64
 
 cpu_memory_format_t CPUTestsBase::cpu_str2fmt(const char* str) {
 #define CASE(_fmt)                                              \
@@ -109,7 +137,8 @@ std::string CPUTestsBase::fmts2str(const std::vector<cpu_memory_format_t>& fmts,
 ov::PrimitivesPriority CPUTestsBase::impls2primProiority(const std::vector<std::string>& priority) {
     std::string str;
     for (auto& impl : priority) {
-        ((str += "cpu:") += impl) += ",";
+        if (!impl.empty())
+            ((str += "cpu:") += impl) += ",";
     }
     if (!str.empty()) {
         str.pop_back();
@@ -223,7 +252,9 @@ void CPUTestsBase::CheckPluginRelatedResultsImpl(const std::shared_ptr<const ov:
 }
 
 bool CPUTestsBase::primTypeCheck(std::string primType) const {
-    std::cout << "selectedType: " << selectedType << std::endl;
+#ifndef NDEBUG
+    std::cout << "selectedType: " << selectedType << ", primType: " << primType << std::endl;
+#endif
     if (selectedType.find("FP") != std::string::npos)
         return selectedType.find(CPUTestsBase::any_type) != std::string::npos ||
                std::regex_match(primType,
@@ -232,13 +263,9 @@ bool CPUTestsBase::primTypeCheck(std::string primType) const {
         return selectedType.find(CPUTestsBase::any_type) != std::string::npos ||
                std::regex_match(primType, std::regex(selectedType, std::regex::icase));
 }
-
-std::string CPUTestsBase::getTestCaseName(CPUSpecificParams params) {
+std::string CPUTestsBase::getTestCaseName(const CPUSpecificParams& params) {
+    const auto& [inFmts, outFmts, priority, selectedType] = params;
     std::ostringstream result;
-    std::vector<cpu_memory_format_t> inFmts, outFmts;
-    std::vector<std::string> priority;
-    std::string selectedType;
-    std::tie(inFmts, outFmts, priority, selectedType) = params;
     if (!inFmts.empty()) {
         auto str = fmts2str(inFmts, "");
         std::replace(str.begin(), str.end(), ',', '.');
@@ -254,7 +281,6 @@ std::string CPUTestsBase::getTestCaseName(CPUSpecificParams params) {
     }
     return result.str();
 }
-
 CPUTestsBase::CPUInfo CPUTestsBase::getCPUInfo() const {
     return makeCPUInfo(inFmts, outFmts, priority);
 }
@@ -295,21 +321,6 @@ std::string CPUTestsBase::getISA(bool skip_amx) const {
     return isaType;
 }
 
-static std::string setToString(const std::unordered_set<std::string> s) {
-    if (s.empty())
-        return {};
-
-    std::string result;
-    result.append("{");
-    for (const auto& str : s) {
-        result.append(str);
-        result.append(",");
-    }
-    result.append("}");
-
-    return result;
-}
-
 CPUTestsBase::CPUInfo CPUTestsBase::makeCPUInfo(const std::vector<cpu_memory_format_t>& inFmts,
                                                 const std::vector<cpu_memory_format_t>& outFmts,
                                                 const std::vector<std::string>& priority) {
@@ -326,23 +337,45 @@ CPUTestsBase::CPUInfo CPUTestsBase::makeCPUInfo(const std::vector<cpu_memory_for
     if (!priority.empty()) {
         cpuInfo.emplace(ov::PrimitivesPriority::get_type_info_static(), impls2primProiority(priority));
     }
-
     cpuInfo.insert({"enforceBF16evenForGraphTail", true});
 
     return cpuInfo;
 }
 
-std::shared_ptr<ov::Model> CPUTestsBase::makeNgraphFunction(const ov::element::Type& ngPrc,
-                                                            ov::ParameterVector& params,
-                                                            const std::shared_ptr<ov::Node>& lastNode,
-                                                            std::string name) {
+static void quantize(const std::shared_ptr<ov::Model>& model, const QuantizationInfo& qinfo) {
+    ov::pass::Manager manager;
+
+    for (const auto& [inputId, qData] : qinfo.inputs) {
+        manager.register_pass<InsertFakeQuantize>(inputId,
+                                                  qData);
+    }
+
+    for (const auto& [outputId, qData] : qinfo.outputs) {
+        manager.register_pass<InsertRequantize>(outputId,
+                                                qData);
+    }
+
+    manager.run_passes(model);
+}
+
+std::shared_ptr<ov::Model> CPUTestsBase::create_ov_model(const ov::element::Type& ngPrc,
+                                                         ov::ParameterVector& params,
+                                                         const std::shared_ptr<ov::Node>& lastNode,
+                                                         std::string name,
+                                                         const QuantizationInfo& qinfo) {
     auto newLastNode = modifyGraph(ngPrc, params, lastNode);
     ov::ResultVector results;
 
     for (size_t i = 0; i < newLastNode->get_output_size(); i++)
         results.push_back(std::make_shared<ov::op::v0::Result>(newLastNode->output(i)));
 
-    return std::make_shared<ov::Model>(results, params, name);
+    auto model = std::make_shared<ov::Model>(results, params, name);
+
+    if (!qinfo.empty()) {
+        quantize(model, qinfo);
+    }
+
+    return model;
 }
 
 std::shared_ptr<ov::Node> CPUTestsBase::modifyGraph(const ov::element::Type& ngPrc,
@@ -407,66 +440,128 @@ void CPUTestsBase::updateSelectedType(const std::string& primitiveType,
     selectedType += execType.get_type_name();
 }
 
-std::vector<CPUSpecificParams> filterCPUSpecificParams(const std::vector<CPUSpecificParams>& paramsVector) {
-    auto adjustBlockedFormatByIsa = [](std::vector<cpu_memory_format_t>& formats) {
-        for (auto& format : formats) {
-            if (format == nCw16c)
-                format = nCw8c;
-            if (format == nChw16c)
-                format = nChw8c;
-            if (format == nCdhw16c)
-                format = nCdhw8c;
+// deduce the actual precision of the operation given the ngraph level operation precision and the plugin config
+ov::element::Type
+CPUTestsBase::deduce_expected_precision(const ov::element::Type& opPrecision,
+                                        const ov::AnyMap& configuration) {
+#if defined(OPENVINO_ARCH_ARM) || defined(OPENVINO_ARCH_ARM64)
+    return opPrecision;
+#endif
+#if defined(OPENVINO_ARCH_RISCV64)
+    return opPrecision;
+#endif
+#if defined(OPENVINO_ARCH_X86_64)
+    // if is not float
+    if (!opPrecision.is_real()) {
+        return opPrecision;
+    }
+    ov::element::Type inferencePrecision = ov::element::f32;
+    bool inferencePrecisionSetExplicitly = false;
+    const std::string precisionKey = ov::hint::inference_precision.name();
+    const auto& it = configuration.find(precisionKey);
+    if (it != configuration.end()) {
+        auto inferencePrecisionConfig = it->second.as<ov::element::Type>();
+        inferencePrecisionSetExplicitly = true;
+        if ((inferencePrecisionConfig == ov::element::bf16 &&
+             (ov::with_cpu_x86_avx512_core() || with_cpu_x86_avx2_vnni_2())) ||
+            (inferencePrecisionConfig == ov::element::f16 &&
+             (ov::with_cpu_x86_avx512_core_fp16() || with_cpu_x86_avx2_vnni_2())) ||
+            (inferencePrecisionConfig == ov::element::f32) || (inferencePrecisionConfig == ov::element::dynamic)) {
+            inferencePrecision = inferencePrecisionConfig;
         }
-    };
-
-    std::vector<CPUSpecificParams> filteredParamsVector = paramsVector;
-
-    if (!ov::with_cpu_x86_avx512f()) {
-        for (auto& param : filteredParamsVector) {
-            adjustBlockedFormatByIsa(std::get<0>(param));
-            adjustBlockedFormatByIsa(std::get<1>(param));
+    }
+    if (!inferencePrecisionSetExplicitly) {
+        const std::string executionModeKey = ov::hint::execution_mode.name();
+        const auto& configIt = configuration.find(executionModeKey);
+        if (configIt != configuration.end() && configIt->second.as<ov::hint::ExecutionMode>() == ov::hint::ExecutionMode::PERFORMANCE) {
+            inferencePrecision = ov::element::f32;
+            if (ov::with_cpu_x86_bfloat16()) {
+                inferencePrecision = ov::element::bf16;
+            }
+        } else {
+            inferencePrecision = ov::element::dynamic;
         }
     }
 
-    return filteredParamsVector;
-}
-
-inline void CheckNumberOfNodesWithTypeImpl(std::shared_ptr<const ov::Model> function,
-                                           const std::unordered_set<std::string>& nodeTypes,
-                                           size_t expectedCount) {
-    ASSERT_NE(nullptr, function);
-    size_t actualNodeCount = 0;
-    for (const auto& node : function->get_ops()) {
-        const auto& rtInfo = node->get_rt_info();
-        auto getExecValue = [&rtInfo](const std::string& paramName) -> std::string {
-            auto it = rtInfo.find(paramName);
-            OPENVINO_ASSERT(rtInfo.end() != it);
-            return it->second.as<std::string>();
-        };
-
-        if (nodeTypes.count(getExecValue(ov::exec_model_info::LAYER_TYPE))) {
-            actualNodeCount++;
-        }
+    ov::element::Type deducedType = opPrecision;
+    // enforceInferPrecision stage
+    if (inferencePrecision == ov::element::bf16) {
+        deducedType =
+            (ov::with_cpu_x86_avx512_core() || with_cpu_x86_avx2_vnni_2()) ? ov::element::bf16 : ov::element::f32;
     }
 
-    ASSERT_EQ(expectedCount, actualNodeCount)
-        << "Unexpected count of the node types '" << setToString(nodeTypes) << "' ";
+    // ngraph transform pipeline stage
+    if (inferencePrecision == ov::element::f16) {
+        if (deducedType == ov::element::f32) {
+            deducedType = ov::element::f16;
+        }
+    }
+    if (deducedType == ov::element::bf16) {
+        deducedType =
+            (ov::with_cpu_x86_avx512_core() || with_cpu_x86_avx2_vnni_2()) ? ov::element::bf16 : ov::element::f32;
+    } else if (deducedType == ov::element::f16) {
+        if (inferencePrecision != ov::element::f16 && inferencePrecision != ov::element::dynamic) {
+            deducedType = ov::element::f32;
+        }
+    } else {
+        deducedType = ov::element::f32;
+    }
+
+    return deducedType;
+#endif
 }
 
-void CheckNumberOfNodesWithTypes(const ov::CompiledModel& compiledModel,
-                                 const std::unordered_set<std::string>& nodeTypes,
-                                 size_t expectedCount) {
-    if (!compiledModel)
-        return;
-
-    std::shared_ptr<const ov::Model> function = compiledModel.get_runtime_model();
-
-    CheckNumberOfNodesWithTypeImpl(function, nodeTypes, expectedCount);
+bool containsNonSupportedFormat(const std::vector<cpu_memory_format_t>& formats, const std::vector<cpu_memory_format_t>& non_supported_f) {
+    for (const auto& format : formats) {
+        if (std::find(non_supported_f.begin(), non_supported_f.end(), format) != non_supported_f.end()) {
+            return true;
+        }
+    }
+    return false;
 }
 
-void CheckNumberOfNodesWithType(const ov::CompiledModel& compiledModel,
-                                const std::string& nodeType,
-                                size_t expectedCount) {
-    CheckNumberOfNodesWithTypes(compiledModel, {nodeType}, expectedCount);
+bool containsSupportedFormatsOnly(const std::vector<cpu_memory_format_t>& formats, const std::vector<cpu_memory_format_t>& supported_f) {
+    for (const auto& format : formats) {
+        if (std::find(supported_f.begin(), supported_f.end(), format) == supported_f.end()) {
+            return false;
+        }
+    }
+    return true;
 }
+
+InputGenerateDataMap updateInputRanges(const QuantizationInfo& quantizationInfo,
+                                       size_t numParams) {
+    if (quantizationInfo.empty()) {
+        return {};  // default will be used
+    }
+
+    InputGenerateDataMap inputGenerateData;
+
+    for (const auto& [inputId, qData] : quantizationInfo.inputs) {
+        inputGenerateData[inputId] =
+            ov::test::utils::InputGenerateData{qData.il, static_cast<uint32_t>(qData.ih - qData.il), 32};
+    }
+
+    return inputGenerateData;
+}
+
+static bool areAllElementsEqual(const void* data, size_t element_size, size_t n) {
+    // empty or single element -> true; else compare block [1..n-1] to [0..n-2]
+    return n < 2 ||
+        0 == std::memcmp(static_cast<const char*>(data) + element_size, // start at element 1
+                         data,                                          // start at element 0
+                         element_size * (n - 1));                       // compare (n-1) elements
+}
+
+void checkAllElementsAreEqual(ov::InferRequest& inferRequest, size_t numOutputs) {
+    for (size_t i = 0; i < numOutputs; ++i) {
+        const auto& tensor = inferRequest.get_output_tensor(i);
+        // @todo add proper comparison for the real numbers if necessary
+        ASSERT_FALSE(areAllElementsEqual(tensor.data(), tensor.get_element_type().size(), tensor.get_size()))
+            << "All output values are the same."
+            "This may indicate that the quantization parameters are not set correctly"
+            "and accuracy cannot be properly validated";
+    }
+}
+
 }  // namespace CPUTestUtils

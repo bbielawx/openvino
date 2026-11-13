@@ -1,19 +1,25 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <map>
+
 #include "openvino/core/node.hpp"
 #include "openvino/frontend/decoder.hpp"
+#include "openvino/frontend/node_context.hpp"
+#include "openvino/frontend/pytorch/visibility.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
+namespace ov::frontend::pytorch {
+
+using DecoderRTInfo = std::unordered_map<std::string, ov::Any>;
 
 /// Plays a role of node, block and module decoder (kind of temporary fat API)
-class TorchDecoder : public IDecoder {
+class PYTORCH_FRONTEND_API TorchDecoder : public IDecoder {
 public:
+    ~TorchDecoder() override;
+
     // Do not search for input in tensor map; try to access it as a constant of specified type T and return its value
     // Using Any here is an easy way to avoid template definition, returned object is supposed to be of one of the
     // fundamental types like int, float etc.
@@ -37,23 +43,23 @@ public:
     // Return signature name of the input tensor
     virtual const std::string& get_input_signature_name(size_t index) const = 0;
 
-    // Return shape if inputs has torch::Tensor type in the original model, otherwise returns the shape [] of a scalar
+    // Return shape if input has torch::Tensor type in the original model, otherwise returns the shape [] of a scalar
     virtual PartialShape get_input_shape(size_t index) const = 0;
 
-    // Return strides if inputs has torch::Tensor type in original model, otherwise return [].
+    // Return strides if input has torch::Tensor type in original model, otherwise return [].
     virtual const std::vector<size_t>& get_input_strides(size_t index) const = 0;
 
-    // Return element::Type when it the original type can be represented, otherwise returns PT-specific data type object
+    // Return element::Type when the original type can be represented, otherwise returns PT-specific data type object
     // (see custom_type.hpp)
     virtual Any get_input_type(size_t index) const = 0;
 
-    // Return debug name of the input tensor
+    // Return debug name of the output tensor
     virtual const std::string& get_output_debug_name(size_t index) const = 0;
 
-    // Return shape if inputs has torch::Tensor type in the original model, otherwise returns the shape [] of a scalar
+    // Return shape if output has torch::Tensor type in the original model, otherwise returns the shape [] of a scalar
     virtual PartialShape get_output_shape(size_t index) const = 0;
 
-    // Return element::Type when it the original type can be represented, otherwise returns PT-specific data type object
+    // Return element::Type when the original type can be represented, otherwise returns PT-specific data type object
     // (see custom_type.hpp)
     virtual Any get_output_type(size_t index) const = 0;
     // ------------------------------
@@ -63,12 +69,12 @@ public:
 
     virtual OutputVector try_decode_get_attr() const = 0;
 
-    // Work for natural constant nodes, e.g. for prim::Constant; don't know other nodes kinds that fit
+    // Works for natural constant nodes, e.g. for prim::Constant; don't know other nodes kinds that fit
     // TODO: why OutputVector instead of just single output?
     virtual OutputVector as_constant() const = 0;
 
-    // Get string from constant. Work for natural constant nodes, e.g. for prim::Constant; don't know other nodes kinds
-    // that fit
+    // Get string from constant. Works for natural constant nodes, e.g. for prim::Constant; don't know other nodes
+    // kinds that fit
     virtual const std::string& as_string() const = 0;
 
     // Returns PT node kind as a string mnemonics for native type uint32_t Symbol in Torch
@@ -81,6 +87,10 @@ public:
 
     // TODO: use canonical name output_size
     virtual size_t num_of_outputs() const = 0;
+
+    // If the node output is a list of getitem nodes, returns the size of the list
+    // If the node output is not a list of getitem nodes, returns 0
+    virtual size_t output_list_size() const = 0;
 
     // Return a vector of output IDs
     virtual const std::vector<size_t>& outputs() const = 0;
@@ -107,13 +117,12 @@ public:
     /// \brief Returns if output may contain alias of input in AliasDB
     virtual bool may_produce_alias(size_t in_index, size_t out_index) const = 0;
 
-    /// Returns new nodes for inputs inlined in the op itself
-    // Used in Torch.FX decoder
-    virtual OutputVector inlined_input(size_t index) const = 0;
-
     /// Returns if input is inlined
     // Used in Torch.FX decoder
     virtual bool is_input_inlined(size_t index) const = 0;
+
+    /// Return decoder for inlined input
+    virtual std::shared_ptr<TorchDecoder> get_inlined_input_decoder(size_t index) const = 0;
 
     /// Returns named attribute as Any. For example kwargs input for FX graph
     virtual ov::Any get_attribute(const std::string& name) const = 0;
@@ -123,8 +132,25 @@ public:
 
     /// Returns the id of the decoder type ("fx": TorchFX, "ts": TorchScript)
     virtual const std::string& decoder_type_name() const = 0;
+
+    /// \brief Returns the rt_info for the element
+    virtual DecoderRTInfo get_rt_info() const = 0;
+
+    /// \brief Returns if node has a custom converter that should be used instead (if any) of the default converter
+    /// registered in front-end If this method returns true, `convert` method should be used as a conversion extension
+    /// for this node instead of (any) default converter Such node may not have implemented other methods, like
+    /// `get_op_type` that usually are implemented for "normal" nodes.
+    virtual bool has_converter() const = 0;
+
+    /// \brief Converts the node if `has_converter` returns true
+    virtual OutputVector convert(const ov::frontend::NodeContext* context) const = 0;
+
+    using InputSequences = std::map<size_t, std::vector<size_t>>;
+
+    // Sequence input indices mapped to their ordered element output indices; empty when unknown.
+    virtual InputSequences get_input_sequences() const {
+        return {};
+    }
 };
 
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch

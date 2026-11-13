@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include "test_utils.h"
@@ -49,7 +49,7 @@ TEST(crop_gpu, basic_in2x3x2x2_crop_all) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
@@ -95,9 +95,8 @@ TEST(crop_gpu, basic_in2x2x2x3_crop_all) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
-    printf("Results:\n");
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
             for (int y = 0; y < crop_y_size; ++y) { //Y
@@ -145,7 +144,7 @@ TEST(crop_gpu, basic_i32_in2x3x2x2_crop_all) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
@@ -194,7 +193,7 @@ TEST(crop_gpu, basic_i64_in2x3x2x2_crop_all) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<int64_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int64_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
@@ -243,7 +242,7 @@ TEST(crop_gpu, basic_in2x3x2x2_crop_all_bfyx) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
     std::vector<float> a;
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
@@ -293,7 +292,7 @@ TEST(crop_gpu, basic_i32_in2x3x2x2_crop_all_bfyx) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr(output, get_test_stream());
     std::vector<int32_t> a;
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
@@ -343,7 +342,7 @@ TEST(crop_gpu, basic_i64_in2x3x2x2_crop_all_bfyx) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<int64_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int64_t, mem_lock_type::read> output_ptr(output, get_test_stream());
     std::vector<int64_t> a;
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
@@ -393,7 +392,7 @@ TEST(crop_gpu, basic_in2x3x2x2_crop_all_fyxb) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
             for (int y = 0; y < crop_y_size; ++y) { //Y
@@ -441,7 +440,7 @@ TEST(crop_gpu, basic_i32_in2x3x2x2_crop_all_fyxb) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr(output, get_test_stream());
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
             for (int y = 0; y < crop_y_size; ++y) { //Y
@@ -489,7 +488,7 @@ TEST(crop_gpu, basic_i64_in2x3x2x2_crop_all_fyxb) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<int64_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int64_t, mem_lock_type::read> output_ptr(output, get_test_stream());
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
             for (int y = 0; y < crop_y_size; ++y) { //Y
@@ -553,7 +552,7 @@ TEST(crop_gpu, basic_in2x3x2x2_crop_offsets) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
@@ -618,7 +617,7 @@ TEST(crop_gpu, basic_i32_in2x3x2x2_crop_offsets) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
@@ -683,7 +682,7 @@ TEST(crop_gpu, basic_i64_in2x3x2x2_crop_offsets) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<int64_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int64_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
@@ -761,14 +760,13 @@ TEST(crop_gpu, basic_in1x4x1x1_split) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop1").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < out1.size();i++)
         ASSERT_EQ(output_ptr[i], out1[i]);
 
-    std::cout << std::endl;
     auto output_2 = outputs.at("crop2").get_memory();
-    cldnn::mem_lock<float> output_ptr_2(output_2, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr_2(output_2, get_test_stream());
 
     for (size_t i = 0; i < out2.size();i++)
         ASSERT_EQ(output_ptr_2[i], out2[i]);
@@ -808,7 +806,7 @@ TEST(crop_gpu, basic_in1x4x1x1_crop_pad) {
     auto outputs = network.execute();
 
     auto output = outputs.at("out_reorder").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < out1.size();i++)
         ASSERT_EQ(output_ptr[i], out1[i]);
@@ -877,13 +875,13 @@ TEST(crop_gpu, basic_i32_in1x4x1x1_split) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop1").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < out1.size(); i++)
         ASSERT_EQ(output_ptr[i], out1[i]);
 
     auto output_2 = outputs.at("crop2").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr_2(output_2, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr_2(output_2, get_test_stream());
 
     for (size_t i = 0; i < out2.size(); i++)
         ASSERT_EQ(output_ptr_2[i], out2[i]);
@@ -952,13 +950,13 @@ TEST(crop_gpu, basic_i64_in1x4x1x1_split) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop1").get_memory();
-    cldnn::mem_lock<int64_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int64_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < out1.size(); i++)
         ASSERT_EQ(output_ptr[i], out1[i]);
 
     auto output_2 = outputs.at("crop2").get_memory();
-    cldnn::mem_lock<int64_t> output_ptr_2(output_2, get_test_stream());
+    cldnn::mem_lock<int64_t, mem_lock_type::read> output_ptr_2(output_2, get_test_stream());
 
     for (size_t i = 0; i < out2.size(); i++)
         ASSERT_EQ(output_ptr_2[i], out2[i]);
@@ -1030,7 +1028,7 @@ TEST(crop_gpu, basic_in1x4x1x1_split_w_relu) {
     auto outputs = network.execute();
 
     auto output = outputs.at("relu1").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     // check if crop has been executed in place
     auto in_place = engine->is_the_same_buffer(*network.get_output_memory("crop1"), *network.get_output_memory("relu"));
@@ -1040,7 +1038,7 @@ TEST(crop_gpu, basic_in1x4x1x1_split_w_relu) {
         ASSERT_EQ(output_ptr[i], out1[i]);
 
     auto output_2 = outputs.at("relu2").get_memory();
-    cldnn::mem_lock<float> output_ptr_2(output_2, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr_2(output_2, get_test_stream());
 
     for (size_t i = 0; i < out2.size();i++)
         ASSERT_EQ(output_ptr_2[i], out2[i]);
@@ -1082,7 +1080,7 @@ TEST(crop_gpu, basic_in3x1x2x2x1_crop_all_bfzyx) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
             for (int z = 0; z < crop_z_size; ++z) { //Z
@@ -1139,7 +1137,7 @@ TEST(crop_gpu, basic_in3x1x3x2x2x1_crop_all_bfwzyx) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
             for (int w = 0; w < crop_w_size; ++w) { //W
@@ -1222,7 +1220,7 @@ TEST_P(crop_gpu, pad_test) {
     auto outputs = network->execute();
 
     auto output = outputs.at("out").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < res.size(); i++)
         ASSERT_EQ(output_ptr[i], res[i]);
@@ -1305,7 +1303,7 @@ TEST_P(crop_gpu_dynamic, i32_in2x3x2x2_crop_offsets) {
     network1.set_input_data("input", input);
     auto outputs1 = network1.execute();
     auto output1 = outputs1.at("crop").get_memory();
-    cldnn::mem_lock<float> output1_ptr(output1, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output1_ptr(output1, get_test_stream());
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
             for (int y = 0; y < crop_y_size; ++y) { //Y
@@ -1317,12 +1315,11 @@ TEST_P(crop_gpu_dynamic, i32_in2x3x2x2_crop_offsets) {
             }
         }
     }
-    config2.set_property(ov::intel_gpu::use_only_static_kernels_for_dynamic_shape(true));
     network network2(engine, topology, config2); // run with static kernel
     network2.set_input_data("input", input);
     auto outputs2 = network2.execute();
     auto output2 = outputs2.at("crop").get_memory();
-    cldnn::mem_lock<float> output2_ptr(output2, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output2_ptr(output2, get_test_stream());
     for (int b = 0; b < crop_batch_num; ++b) { //B
         for (int f = 0; f < crop_feature_num; ++f) { //F
             for (int y = 0; y < crop_y_size; ++y) { //Y
@@ -1342,41 +1339,392 @@ INSTANTIATE_TEST_SUITE_P(crop_test, crop_gpu_dynamic,
                                 ::testing::ValuesIn(impls)
                                 ));
 
-TEST(crop_gpu, dynamic_in1x4x1x1_split) {
+TEST(crop_cpu, basic_in2x3x2x2_crop_all_bfyx_disable_usm) {
+    //  Reference  : 3x1x2x2
+    //  Input      : 6x2x4x3
+    //  Output     : 3x1x2x2
+
+    tests::random_generator rg(GET_SUITE_NAME);
+    auto engine = create_test_engine(engine_types::ocl, runtime_types::ocl, false);
+
+    auto batch_num = 6;
+    auto feature_num = 2;
+    auto x_size = 4;
+    auto y_size = 3;
+
+    auto crop_batch_num = batch_num - 3;
+    auto crop_feature_num = feature_num - 1;
+    auto crop_x_size = x_size - 2;
+    auto crop_y_size = y_size - 1;
+
+    auto input = engine->allocate_memory({ data_types::f32,format::bfyx,{ batch_num, feature_num, x_size, y_size } });
+
+    topology topology;
+    topology.add(input_layout("input", input->get_layout()));
+    topology.add(crop("crop", input_info("input"), { crop_batch_num, crop_feature_num, crop_x_size, crop_y_size }, {0, 0, 0, 0} ));
+
+    std::vector<float> input_vec = rg.generate_random_1d<float>(input->count(), -10, 10);
+    set_values(input, input_vec);
+
+    ExecutionConfig config = get_test_default_config(*engine);
+    config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{ {"crop", {format::bfyx, "", impl_types::cpu}} }));
+
+    network network(*engine, topology, config);
+
+    network.set_input_data("input", input);
+
+    auto outputs = network.execute();
+
+    auto output = outputs.at("crop").get_memory();
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
+    std::vector<float> a;
+    for (int b = 0; b < crop_batch_num; ++b) { //B
+        for (int f = 0; f < crop_feature_num; ++f) { //F
+            for (int y = 0; y < crop_y_size; ++y) { //Y
+                for (int x = 0; x < crop_x_size; ++x) { //X
+                    int linear_id = x + x_size * (y + y_size * (f + feature_num * b));
+                    int output_linear_id = x + crop_x_size * (y + crop_y_size * (f + crop_feature_num * b));
+                    a.push_back(output_ptr[output_linear_id]);
+                    ASSERT_EQ(output_ptr[output_linear_id], input_vec[linear_id]);
+                }
+            }
+        }
+    }
+}
+
+TEST(crop_gpu, basic_in1x176x52x52_crop_b_fs_yx_fsv16) {
+    tests::random_generator rg(GET_SUITE_NAME);
+    auto& engine = get_test_engine();
+
+    auto batch_num = 1;
+    auto feature_num = 176;
+    auto y_size = 52;
+    auto x_size = 52;
+    auto F_BLOCK = 16;
+    auto fs_num = feature_num / F_BLOCK;
+    auto feature_num_half = feature_num / 2;
+    auto feature_offset = feature_num_half;
+    auto feature_blocks = (feature_num_half + F_BLOCK - 1) / F_BLOCK;
+
+    auto test_dt = data_types::f16;
+    auto test_format = format::b_fs_yx_fsv16;
+    using test_data_type = ov::float16;
+
+    layout input0_layout = { test_dt, test_format, { batch_num, feature_num, x_size, y_size } };
+    auto input0 = engine.allocate_memory(input0_layout);
+
+    auto data_input = rg.generate_random_5d<test_data_type>(batch_num, fs_num, y_size, x_size, F_BLOCK, -1, 1);
+    auto data_input_flat = flatten_5d(format::bfzyx, data_input);
+    set_values<test_data_type>(input0, data_input_flat);
+
+    topology topology(
+            input_layout("input0", input0_layout),
+            crop("crop1", input_info("input0"), {batch_num, feature_num_half, x_size, y_size }, {0, 0, 0, 0}),
+            crop("crop2", input_info("input0"), {batch_num, feature_num_half, x_size, y_size }, {0, feature_offset, 0, 0})
+    );
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    config.set_property(ov::intel_gpu::custom_outputs(topology.get_primitives_ids()));
+
+    network network(engine, topology, config);
+    network.set_input_data("input0", input0);
+    auto outputs = network.execute();
+
+    auto output = outputs.at("crop1").get_memory();
+    cldnn::mem_lock<test_data_type, mem_lock_type::read> output_ptr(output, get_test_stream());
+
+    auto offset = 0;
+    for (auto b = 0; b < batch_num; b++) {
+        for (auto fs = 0; fs < feature_blocks; fs++) {
+            for (auto y = 0; y < y_size; y++) {
+                for (auto x = 0; x < x_size; x++) {
+                    for (auto fsv = 0; fsv < F_BLOCK; fsv++) {
+                        offset = b * feature_blocks * y_size * x_size * F_BLOCK +
+                                 fs * y_size * x_size * F_BLOCK +
+                                 y * x_size * F_BLOCK +
+                                 x * F_BLOCK +
+                                 fsv;
+                        if (fs == feature_blocks -1 && fsv >= F_BLOCK / 2) {
+                            ASSERT_EQ(output_ptr[offset], 0);
+                        } else {
+                            ASSERT_EQ(output_ptr[offset], data_input_flat[offset]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    auto output_2 = outputs.at("crop2").get_memory();
+    cldnn::mem_lock<test_data_type, mem_lock_type::read> output_ptr_2(output_2, get_test_stream());
+
+    auto f = 0, fs_orig = 0, fsv_orig = 0, offset_orig = 0;
+    for (auto b = 0; b < batch_num; b++) {
+        for (auto fs = 0; fs < feature_blocks; fs++) {
+            for (auto y = 0; y < y_size; y++) {
+                for (auto x = 0; x < x_size; x++) {
+                    for (auto fsv = 0; fsv < F_BLOCK; fsv++) {
+                        offset = b * feature_blocks * y_size * x_size * F_BLOCK +
+                                 fs * y_size * x_size * F_BLOCK +
+                                 y * x_size * F_BLOCK +
+                                 x * F_BLOCK +
+                                 fsv;
+
+                        f = fs * F_BLOCK + fsv;
+                        fs_orig = (f + feature_offset) / F_BLOCK;
+                        fsv_orig = (f + feature_offset) % F_BLOCK;
+                        offset_orig = b * feature_blocks * y_size * x_size * F_BLOCK +
+                                 fs_orig * y_size * x_size * F_BLOCK +
+                                 y * x_size * F_BLOCK +
+                                 x * F_BLOCK +
+                                 fsv_orig;
+
+                        if (fs == feature_blocks -1 && fsv >= F_BLOCK / 2) {
+                            ASSERT_EQ(output_ptr_2[offset], 0);
+                        } else {
+                            ASSERT_EQ(output_ptr_2[offset], data_input_flat[offset_orig]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+namespace {
+void run_static_ref_zeros_dirty_feature_padding_fsv16(format output_format,
+                                                      const padding& output_padding,
+                                                      size_t feature_pad_before,
+                                                      size_t feature_pad_after,
+                                                      size_t spatial_size) {
+    constexpr size_t input_feature_count = 170;
+    constexpr size_t output_feature_count = 85;
+    constexpr size_t feature_block_size = 16;
+    const bool is_5d = output_format == format::b_fs_zyx_fsv16;
+    const size_t depth_size = is_5d ? 2 : 1;
+    const size_t padded_feature_count = feature_pad_before + output_feature_count + feature_pad_after;
+    const size_t physical_feature_count = (padded_feature_count + feature_block_size - 1) / feature_block_size * feature_block_size;
+
+    auto& engine = get_test_engine();
+    const auto input_size =
+        is_5d ? tensor(1, input_feature_count, spatial_size, spatial_size, depth_size) : tensor(1, input_feature_count, spatial_size, spatial_size);
+    const layout input_layout{data_types::f16, output_format, input_size};
+    auto input = engine.allocate_memory(input_layout);
+    set_values(input, std::vector<ov::float16>(input_layout.get_linear_size(), ov::float16(1.0f)));
+
+    const auto output_size =
+        is_5d ? tensor(1, output_feature_count, spatial_size, spatial_size, depth_size) : tensor(1, output_feature_count, spatial_size, spatial_size);
+    const auto offsets = is_5d ? tensor(0, output_feature_count, 0, 0, 0) : tensor(0, output_feature_count, 0, 0);
+    auto crop_primitive = crop("crop", input_info("input"), output_size, offsets);
+    crop_primitive.output_paddings = {output_padding};
+    topology topology(cldnn::input_layout("input", input_layout), crop_primitive);
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{
+        {"crop", {output_format, "generic_eltwise_ref", impl_types::ocl}},
+    }));
+
+    network network(engine, topology, config);
+    network.set_input_data("input", input);
+
+    auto crop_inst = network.get_primitive("crop");
+    ASSERT_NE(crop_inst->get_impl(), nullptr);
+    ASSERT_NE(network.get_primitive_info("crop").find("generic_eltwise_ref"), std::string::npos);
+
+    auto crop_output = crop_inst->output_memory_ptr();
+    ASSERT_NE(crop_output, nullptr);
+    ASSERT_EQ(crop_output->get_layout().get_linear_size(), physical_feature_count * depth_size * spatial_size * spatial_size);
+    set_values(crop_output,
+               std::vector<ov::float16>(crop_output->get_layout().get_linear_size(), ov::float16(7.0f)));
+
+    auto outputs = network.execute();
+    auto output = outputs.at("crop").get_memory();
+    ASSERT_TRUE(engine.is_the_same_buffer(*crop_output, *output));
+    cldnn::mem_lock<ov::float16, mem_lock_type::read> output_ptr(output, get_test_stream());
+
+    const auto get_offset = [&](size_t physical_feature, size_t z, size_t y, size_t x) {
+        return (((physical_feature / feature_block_size * depth_size + z) * spatial_size + y) * spatial_size + x) * feature_block_size +
+               physical_feature % feature_block_size;
+    };
+
+    for (size_t z = 0; z < depth_size; ++z) {
+        for (size_t y = 0; y < spatial_size; ++y) {
+            for (size_t x = 0; x < spatial_size; ++x) {
+                for (size_t physical_feature = 0; physical_feature < physical_feature_count; ++physical_feature) {
+                    ov::float16 expected = ov::float16(7.0f);
+                    if (physical_feature >= feature_pad_before && physical_feature < feature_pad_before + output_feature_count) {
+                        expected = ov::float16(1.0f);
+                    } else if (physical_feature >= padded_feature_count) {
+                        expected = ov::float16(0.0f);
+                    }
+                    ASSERT_EQ(output_ptr[get_offset(physical_feature, z, y, x)], expected)
+                        << "physical feature " << physical_feature << ", z " << z << ", y " << y << ", x " << x;
+                }
+            }
+        }
+    }
+}
+}  // namespace
+
+TEST(crop_gpu, static_ref_zeros_dirty_feature_padding_fsv16) {
+    run_static_ref_zeros_dirty_feature_padding_fsv16(format::b_fs_yx_fsv16, padding{}, 0, 0, 80);
+}
+
+TEST(crop_gpu, static_ref_zeros_dirty_feature_padding_with_explicit_padding_fsv16) {
+    run_static_ref_zeros_dirty_feature_padding_fsv16(format::b_fs_yx_fsv16, padding({0, 1, 0, 0}, {0, 2, 0, 0}), 1, 2, 4);
+}
+
+TEST(crop_gpu, static_ref_zeros_dirty_feature_padding_zyx_fsv16) {
+    run_static_ref_zeros_dirty_feature_padding_fsv16(format::b_fs_zyx_fsv16, padding{}, 0, 0, 4);
+}
+
+TEST(crop_gpu, basic_in1x176x52x52_crop_bf16_b_fs_yx_fsv16) {
+    tests::random_generator rg(GET_SUITE_NAME);
+    auto& engine = get_test_engine();
+
+    auto batch_num = 1;
+    auto feature_num = 176;
+    auto y_size = 52;
+    auto x_size = 52;
+    auto F_BLOCK = 16;
+    auto fs_num = feature_num / F_BLOCK;
+    auto feature_num_half = feature_num / 2;
+    auto feature_offset = feature_num_half;
+    auto feature_blocks = (feature_num_half + F_BLOCK - 1) / F_BLOCK;
+
+    auto test_dt = data_types::bf16;
+    auto test_format = format::b_fs_yx_fsv16;
+    using test_data_type = ov::bfloat16;
+
+    layout input0_layout = { test_dt, test_format, { batch_num, feature_num, x_size, y_size } };
+    auto input0 = engine.allocate_memory(input0_layout);
+
+    auto data_input = rg.generate_random_5d<test_data_type>(batch_num, fs_num, y_size, x_size, F_BLOCK, -1, 1);
+    auto data_input_flat = flatten_5d(format::bfzyx, data_input);
+    set_values<test_data_type>(input0, data_input_flat);
+
+    topology topology(
+            input_layout("input0", input0_layout),
+            crop("crop1", input_info("input0"), {batch_num, feature_num_half, x_size, y_size }, {0, 0, 0, 0}),
+            crop("crop2", input_info("input0"), {batch_num, feature_num_half, x_size, y_size }, {0, feature_offset, 0, 0})
+    );
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    config.set_property(ov::intel_gpu::custom_outputs(topology.get_primitives_ids()));
+
+    network network(engine, topology, config);
+    network.set_input_data("input0", input0);
+    auto outputs = network.execute();
+
+    auto output = outputs.at("crop1").get_memory();
+    cldnn::mem_lock<test_data_type, mem_lock_type::read> output_ptr(output, get_test_stream());
+
+    auto offset = 0;
+    for (auto b = 0; b < batch_num; b++) {
+        for (auto fs = 0; fs < feature_blocks; fs++) {
+            for (auto y = 0; y < y_size; y++) {
+                for (auto x = 0; x < x_size; x++) {
+                    for (auto fsv = 0; fsv < F_BLOCK; fsv++) {
+                        offset = b * feature_blocks * y_size * x_size * F_BLOCK +
+                                 fs * y_size * x_size * F_BLOCK +
+                                 y * x_size * F_BLOCK +
+                                 x * F_BLOCK +
+                                 fsv;
+                        if (fs == feature_blocks -1 && fsv >= F_BLOCK / 2) {
+                            ASSERT_EQ(output_ptr[offset], 0);
+                        } else {
+                            ASSERT_EQ(output_ptr[offset], data_input_flat[offset]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    auto output_2 = outputs.at("crop2").get_memory();
+    cldnn::mem_lock<test_data_type, mem_lock_type::read> output_ptr_2(output_2, get_test_stream());
+
+    auto f = 0, fs_orig = 0, fsv_orig = 0, offset_orig = 0;
+    for (auto b = 0; b < batch_num; b++) {
+        for (auto fs = 0; fs < feature_blocks; fs++) {
+            for (auto y = 0; y < y_size; y++) {
+                for (auto x = 0; x < x_size; x++) {
+                    for (auto fsv = 0; fsv < F_BLOCK; fsv++) {
+                        offset = b * feature_blocks * y_size * x_size * F_BLOCK +
+                                 fs * y_size * x_size * F_BLOCK +
+                                 y * x_size * F_BLOCK +
+                                 x * F_BLOCK +
+                                 fsv;
+
+                        f = fs * F_BLOCK + fsv;
+                        fs_orig = (f + feature_offset) / F_BLOCK;
+                        fsv_orig = (f + feature_offset) % F_BLOCK;
+                        offset_orig = b * feature_blocks * y_size * x_size * F_BLOCK +
+                                 fs_orig * y_size * x_size * F_BLOCK +
+                                 y * x_size * F_BLOCK +
+                                 x * F_BLOCK +
+                                 fsv_orig;
+
+                        if (fs == feature_blocks -1 && fsv >= F_BLOCK / 2) {
+                            ASSERT_EQ(output_ptr_2[offset], 0);
+                        } else {
+                            ASSERT_EQ(output_ptr_2[offset], data_input_flat[offset_orig]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct crop_dynamic_split_params {
+    format::type input_format;
+    int32_t y_size;
+    std::vector<float> input;
+    std::vector<float> out1;
+    std::vector<float> out2;
+};
+
+class crop_gpu_dynamic_split : public ::testing::TestWithParam<crop_dynamic_split_params> {};
+
+TEST_P(crop_gpu_dynamic_split, in1x4xYx1_split) {
+    const auto& p = GetParam();
     auto& engine = get_test_engine();
 
     auto batch_num = 1;
     auto feature_num = 4;
     auto x_size = 1;
-    auto y_size = 1;
+    auto y_size = p.y_size;
 
     auto crop_batch_num = 1;
     auto crop_feature_num_1 = 2;
     auto crop_feature_num_2 = 2;
     auto crop_x_size = 1;
-    auto crop_y_size = 1;
+    auto crop_y_size = y_size;
     auto feature_offset_1 = 0;
     auto feature_offset_2 = 2;
+    auto axis = 1;
 
-    auto input_dyn_layout    = layout{ ov::PartialShape{ov::Dimension(1, 10), feature_num, y_size, x_size}, data_types::f32, format::bfyx };
-    auto input_actual_layout = layout{ ov::PartialShape{batch_num, feature_num, y_size, x_size}, data_types::f32, format::bfyx };
+    auto input_dyn_layout    = layout{ ov::PartialShape{ov::Dimension(1, 10), feature_num, y_size, x_size}, data_types::f32, p.input_format };
+    auto input_actual_layout = layout{ ov::PartialShape{batch_num, feature_num, y_size, x_size}, data_types::f32, p.input_format };
 
     auto input_mem = engine.allocate_memory(input_actual_layout);
     auto data_mem = engine.allocate_memory({ {}, data_types::i64, format::bfyx });
-    set_values(data_mem, {1});
+    set_values<int64_t>(data_mem, {axis});
 
     cldnn::crop_ngraph_op_mode op_mode = cldnn::crop_ngraph_op_mode::split;
     size_t num_splits = 2;
     topology topology;
     topology.add(input_layout("input", input_dyn_layout));
     topology.add(data("data", data_mem));
-    topology.add(crop("crop1", { input_info("input"), input_info("data") }, tensor(batch(crop_batch_num), spatial(crop_x_size, crop_y_size), feature(crop_feature_num_1)), { tensor(feature(feature_offset_1), spatial(0,0),batch(0)) }, op_mode, 0, num_splits));
-    topology.add(crop("crop2", { input_info("input"), input_info("data") }, tensor(batch(crop_batch_num), spatial(crop_x_size, crop_y_size), feature(crop_feature_num_2)), { tensor(feature(feature_offset_2), spatial(0,0),batch(0)) }, op_mode, 1, num_splits));
+    topology.add(crop("crop1", { input_info("input"), input_info("data") }, tensor(batch(crop_batch_num), spatial(crop_x_size, crop_y_size), feature(crop_feature_num_1)), { tensor(feature(feature_offset_1), spatial(0,0),batch(0)) }, op_mode, 0, axis, num_splits));
+    topology.add(crop("crop2", { input_info("input"), input_info("data") }, tensor(batch(crop_batch_num), spatial(crop_x_size, crop_y_size), feature(crop_feature_num_2)), { tensor(feature(feature_offset_2), spatial(0,0),batch(0)) }, op_mode, 1, axis, num_splits));
 
-    std::vector<float> input_vec = { -1.0f, 2.0f, -3.0f, 4.0f };
-    std::vector<float> out1 = { -1.0f, 2.0f };
-    std::vector<float> out2 = { -3.0f, 4.0f };
-    set_values(input_mem, input_vec);
+    const auto& out1 = p.out1;
+    const auto& out2 = p.out2;
+    set_values(input_mem, p.input);
     ExecutionConfig config = get_test_default_config(engine);
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     config.set_property(ov::intel_gpu::optimize_data(true));
@@ -1394,17 +1742,39 @@ TEST(crop_gpu, dynamic_in1x4x1x1_split) {
     ASSERT_TRUE(impl2->is_dynamic());
 
     auto output1 = outputs.at("crop1").get_memory();
-    cldnn::mem_lock<float> output_ptr_1(output1, get_test_stream());
+    ASSERT_EQ(output1->get_layout().format, p.input_format);
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr_1(output1, get_test_stream());
 
+    ASSERT_EQ(output_ptr_1.size(), out1.size());
     for (size_t i = 0; i < out1.size(); i++)
         ASSERT_EQ(output_ptr_1[i], out1[i]);
 
     auto output_2 = outputs.at("crop2").get_memory();
-    cldnn::mem_lock<float> output_ptr_2(output_2, get_test_stream());
+    ASSERT_EQ(output_2->get_layout().format, p.input_format);
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr_2(output_2, get_test_stream());
 
+    ASSERT_EQ(output_ptr_2.size(), out2.size());
     for (size_t i = 0; i < out2.size(); i++)
         ASSERT_EQ(output_ptr_2[i], out2[i]);
 }
+
+INSTANTIATE_TEST_SUITE_P(crop_gpu,
+                         crop_gpu_dynamic_split,
+                         ::testing::Values(crop_dynamic_split_params{format::bfyx,
+                                                                     1,
+                                                                     {-1.0f, 2.0f, -3.0f, 4.0f},
+                                                                     {-1.0f, 2.0f},
+                                                                     {-3.0f, 4.0f}},
+                                           // byxf buffer order: y0: f0..f3, y1: f0..f3
+                                           crop_dynamic_split_params{format::byxf,
+                                                                     2,
+                                                                     {-1.0f, 2.0f, -3.0f, 4.0f, 5.0f, -6.0f, 7.0f, -8.0f},
+                                                                     {-1.0f, 2.0f, 5.0f, -6.0f},
+                                                                     {-3.0f, 4.0f, 7.0f, -8.0f}}),
+                         [](const ::testing::TestParamInfo<crop_dynamic_split_params>& info) {
+                             return format(info.param.input_format).to_string();
+                         });
+
 
 TEST(crop_gpu, dynamic_in1x4x1x1_varaidic_split) {
     auto& engine = get_test_engine();
@@ -1421,6 +1791,7 @@ TEST(crop_gpu, dynamic_in1x4x1x1_varaidic_split) {
     auto crop_y_size = 1;
     auto feature_offset_1 = 0;
     auto feature_offset_2 = 3;
+    auto axis = 1;
 
     auto input_dyn_layout    = layout{ ov::PartialShape{ov::Dimension(1, 10), feature_num, y_size, x_size}, data_types::f32, format::bfyx };
     auto input_actual_layout = layout{ ov::PartialShape{batch_num, feature_num, y_size, x_size}, data_types::f32, format::bfyx };
@@ -1434,8 +1805,8 @@ TEST(crop_gpu, dynamic_in1x4x1x1_varaidic_split) {
     topology.add(input_layout("input", input_dyn_layout));
     topology.add(data("axis", axis_mem));
     topology.add(data("splits_length", splits_length_mem));
-    topology.add(crop("crop1", { input_info("input"), input_info("axis"), input_info("splits_length") }, tensor(batch(crop_batch_num), spatial(crop_x_size, crop_y_size), feature(crop_feature_num_1)), { tensor(feature(feature_offset_1), spatial(0,0),batch(0)) }, op_mode, 0));
-    topology.add(crop("crop2", { input_info("input"), input_info("axis"), input_info("splits_length") }, tensor(batch(crop_batch_num), spatial(crop_x_size, crop_y_size), feature(crop_feature_num_2)), { tensor(feature(feature_offset_2), spatial(0,0),batch(0)) }, op_mode, 1));
+    topology.add(crop("crop1", { input_info("input"), input_info("axis"), input_info("splits_length") }, tensor(batch(crop_batch_num), spatial(crop_x_size, crop_y_size), feature(crop_feature_num_1)), { tensor(feature(feature_offset_1), spatial(0,0),batch(0)) }, op_mode, 0, axis));
+    topology.add(crop("crop2", { input_info("input"), input_info("axis"), input_info("splits_length") }, tensor(batch(crop_batch_num), spatial(crop_x_size, crop_y_size), feature(crop_feature_num_2)), { tensor(feature(feature_offset_2), spatial(0,0),batch(0)) }, op_mode, 1, axis));
 
     std::vector<float> input_vec = { -1.0f, 2.0f, -3.0f, 4.0f };
     std::vector<float> out1 = { -1.0f, 2.0f, -3.0f };
@@ -1443,7 +1814,7 @@ TEST(crop_gpu, dynamic_in1x4x1x1_varaidic_split) {
     std::vector<int64_t> splits_vec = {3, 1};
 
     set_values(input_mem, input_vec);
-    set_values(axis_mem, {1});
+    set_values<int64_t>(axis_mem, {axis});
     set_values(splits_length_mem, splits_vec);
 
     ExecutionConfig config = get_test_default_config(engine);
@@ -1463,16 +1834,106 @@ TEST(crop_gpu, dynamic_in1x4x1x1_varaidic_split) {
     ASSERT_TRUE(impl2->is_dynamic());
 
     auto output = outputs.at("crop1").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < out1.size(); i++)
         ASSERT_EQ(output_ptr[i], out1[i]);
 
     auto output_2 = outputs.at("crop2").get_memory();
-    cldnn::mem_lock<float> output_ptr_2(output_2, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr_2(output_2, get_test_stream());
 
     for (size_t i = 0; i < out2.size(); i++)
         ASSERT_EQ(output_ptr_2[i], out2[i]);
+}
+
+TEST(crop_gpu, dynamic_input_padding_varaidic_split) {
+    tests::random_generator rg(GET_SUITE_NAME);
+    auto& engine = get_test_engine();
+
+    auto batch_num = 1;
+    auto feature_num = 4;
+    auto y_size = 128;
+    auto x_size = 4;
+
+    auto split_axis = 2;
+    auto data_y_pad_axis = 2;
+    auto data_x_pad_axis = 3;
+    auto input_y_pad_before = 64;
+    auto input_y_pad_after = 32;
+    auto input_x_pad_before = 8;
+    auto input_x_pad_after = 2;
+
+    auto input_dyn_layout = layout{ ov::PartialShape{-1, feature_num, y_size, x_size}, data_types::f32, format::bfyx };
+    input_dyn_layout.data_padding._dynamic_dims_mask[data_y_pad_axis] = 1;
+    input_dyn_layout.data_padding._lower_size[data_x_pad_axis] = input_x_pad_before;
+    input_dyn_layout.data_padding._upper_size[data_x_pad_axis] = input_x_pad_after;
+
+    auto input_actual_layout = layout{ ov::PartialShape{batch_num, feature_num, y_size, x_size}, data_types::f32, format::bfyx };
+    input_actual_layout.data_padding._lower_size[data_y_pad_axis] = input_y_pad_before;
+    input_actual_layout.data_padding._upper_size[data_y_pad_axis] = input_y_pad_after;
+    input_actual_layout.data_padding._lower_size[data_x_pad_axis] = input_x_pad_before;
+    input_actual_layout.data_padding._upper_size[data_x_pad_axis] = input_x_pad_after;
+
+    auto input_mem = engine.allocate_memory(input_actual_layout);
+    auto axis_mem = engine.allocate_memory({ {}, data_types::i64, format::bfyx });
+    auto splits_length_mem = engine.allocate_memory({ {2}, data_types::i64, format::bfyx });
+
+    auto elements_count = input_mem->size() / sizeof(float);
+    auto input_data = rg.generate_random_1d<float>(elements_count, -10, 10);
+
+    cldnn::crop_ngraph_op_mode op_mode = cldnn::crop_ngraph_op_mode::variadic_split;
+    topology topology;
+    topology.add(input_layout("input", input_dyn_layout));
+    topology.add(data("split_axis", axis_mem));
+    topology.add(data("splits_length", splits_length_mem));
+    topology.add(crop("variadic_split.out0", { input_info("input"), input_info("split_axis"), input_info("splits_length") }, tensor(1), tensor(0), op_mode, 0, split_axis));
+    topology.add(crop("variadic_split.out1", { input_info("input"), input_info("split_axis"), input_info("splits_length") }, tensor(1), tensor(0), op_mode, 1, split_axis));
+
+    std::vector<int64_t> splits_vec = { 64, 64 };
+
+    set_values(input_mem, input_data);
+    set_values(splits_length_mem, splits_vec);
+    set_values<int64_t>(axis_mem, {split_axis});
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    config.set_property(ov::intel_gpu::custom_outputs(topology.get_primitives_ids()));
+
+    network network(engine, topology, config);
+    network.set_input_data("input", input_mem);
+
+    auto check_output = [&](size_t output_idx, cldnn::network_output output) {
+        auto y_start = std::accumulate(splits_vec.begin(), splits_vec.begin() + output_idx, 0);
+        auto y_size_output = splits_vec[output_idx];
+
+        auto output_layout = output.get_layout();
+        auto output_mem = output.get_memory();
+        cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output_mem, get_test_stream());
+        for (size_t b = 0; b < static_cast<size_t>(batch_num); b++) {
+            for (size_t f = 0; f < static_cast<size_t>(feature_num); f++) {
+                for (size_t y = 0; y < static_cast<size_t>(y_size_output); y++) {
+                    for (size_t x = 0; x < static_cast<size_t>(x_size); x++) {
+                        auto input_offset = input_actual_layout.get_linear_offset(cldnn::tensor(static_cast<int32_t>(b),
+                                                                                                static_cast<int32_t>(f),
+                                                                                                static_cast<int32_t>(x),
+                                                                                                static_cast<int32_t>(y + y_start), 0, 0));
+                        auto output_offset = output_layout.get_linear_offset(cldnn::tensor(static_cast<int32_t>(b),
+                                                                                           static_cast<int32_t>(f),
+                                                                                           static_cast<int32_t>(x),
+                                                                                           static_cast<int32_t>(y), 0, 0));
+
+                        ASSERT_EQ(input_data[input_offset], output_ptr[output_offset]);
+                    }
+                }
+            }
+        }
+    };
+
+    auto outputs = network.execute();
+
+    check_output(0, outputs.at("variadic_split.out0"));
+    check_output(1, outputs.at("variadic_split.out1"));
 }
 
 TEST(crop_gpu, static_split_batch) {
@@ -1508,19 +1969,19 @@ TEST(crop_gpu, static_split_batch) {
     auto outputs = network.execute();
 
     auto output = outputs.at("crop1").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < out1.size(); i++)
         ASSERT_EQ(output_ptr[i], out1[i]);
 
     auto output_2 = outputs.at("crop2").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr_2(output_2, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr_2(output_2, get_test_stream());
 
     for (size_t i = 0; i < out2.size(); i++)
         ASSERT_EQ(output_ptr_2[i], out2[i]);
 
     auto output_3 = outputs.at("crop3").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr_3(output_3, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr_3(output_3, get_test_stream());
 
     for (size_t i = 0; i < out3.size(); i++)
         ASSERT_EQ(output_ptr_3[i], out3[i]);
@@ -1550,8 +2011,8 @@ TEST(crop_gpu, optimized_out_crop) {
 
     topology topology;
     topology.add(input_layout("input", input_actual_layout));
-    topology.add(crop("crop1", { input_info("input") }, tensor(5, 5, 1, 1), { tensor(0, 0, 0, 0) }, padding({0, 0, 0, 0}, {0, 0, 0, 0})));
-    topology.add(crop("crop2", { input_info("crop1") }, tensor(5, 4, 1, 1), { tensor(0, 0, 0, 0) }, padding({0, 0, 0, 0}, {0, 0, 0, 0})));
+    topology.add(crop("crop1", { input_info("input") }, tensor(5, 5, 1, 1), { tensor(0, 0, 0, 0) }));
+    topology.add(crop("crop2", { input_info("crop1") }, tensor(5, 4, 1, 1), { tensor(0, 0, 0, 0) }));
     topology.add(reorder("reorder_out", input_info("crop2"), layout{ ov::PartialShape{5, 4, 1, 1}, data_types::f32, format::bfyx }));
 
     ExecutionConfig config = get_test_default_config(engine);
@@ -1562,14 +2023,13 @@ TEST(crop_gpu, optimized_out_crop) {
     auto outputs = network.execute();
 
     auto output = outputs.at("reorder_out").get_memory();
-    cldnn::mem_lock<int32_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int32_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     for (size_t i = 0; i < out_vec.size(); i++)
         ASSERT_EQ(output_ptr[i], out_vec[i]);
 
-    auto all_primitives = network.get_all_primitives();
-    ASSERT_TRUE(all_primitives["crop1"] == "_optimized_");
-    ASSERT_TRUE(all_primitives["crop2"] == "_optimized_");
+    ASSERT_TRUE(network.get_primitive("crop1")->can_be_optimized());
+    ASSERT_TRUE(network.get_primitive("crop2")->can_be_optimized());
 }
 
 TEST(crop_single_axis, simple_Baxis) {
@@ -1597,7 +2057,7 @@ TEST(crop_single_axis, simple_Baxis) {
 
     auto outputs = network.execute();
     auto output = outputs.at("reorder").get_memory();
-    cldnn::mem_lock<int8_t> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<int8_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     std::vector<int8_t> expected_results = {
         5, 6, 7, 8
@@ -1623,6 +2083,81 @@ TEST(crop_single_axis, simple_Baxis) {
     ASSERT_EQ(crop_prim->can_be_optimized(), true);
 }
 
+TEST(crop_single_axis, simple_Xaxis) {
+    auto& engine = get_test_engine();
+
+    auto input0 = engine.allocate_memory({ data_types::f32, format::bfyx, tensor{ 3, 2, 3, 1 } });
+
+    set_values(input0, {
+        1.f, 2.f, 3.f, 4.f, 5.f, 6.f,
+        7.f, 8.f, 9.f, 10.f, 11.f, 12.f,
+        13.f, 14.f, 15.f, 16.f, 17.f, 18.f,
+    });
+
+    topology topology;
+    topology.add(input_layout("Input", input0->get_layout()));
+    topology.add(crop("crop", input_info("Input"), tensor{3, 2, 1, 1}, tensor(0, 0, 1, 0)));
+    topology.add(reorder("reorder", input_info("crop"), format::bfyx, data_types::i32));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    network network(engine, topology, config);
+
+    network.set_input_data("Input", input0);
+
+    auto outputs = network.execute();
+    auto output = outputs.at("reorder").get_memory();
+    cldnn::mem_lock<int, mem_lock_type::read> output_ptr(output, get_test_stream());
+
+    std::vector<int> expected_results = {
+        2, 5, 8, 11, 14, 17,
+    };
+
+    for (size_t i = 0; i < expected_results.size(); i++) {
+        ASSERT_EQ(output_ptr[i], expected_results[i]);
+    }
+
+    auto crop_prim = network.get_primitive("crop");
+    ASSERT_EQ(crop_prim->can_be_optimized(), true);
+}
+
+TEST(crop_single_axis, simple_all_axis) {
+    auto& engine = get_test_engine();
+
+    auto input0 = engine.allocate_memory({ data_types::f32, format::bfyx, tensor{ 3, 3, 3, 3 } });
+
+    std::vector<float> input0_vals;
+    for (uint32_t i = 0; i < 81; ++i)
+        input0_vals.push_back(i);
+
+    set_values(input0, input0_vals);
+
+    topology topology;
+    topology.add(input_layout("Input", input0->get_layout()));
+    topology.add(crop("crop", input_info("Input"), tensor{1, 1, 1, 1}, tensor(1, 1, 1, 1)));
+    topology.add(reorder("reorder", input_info("crop"), format::bfyx, data_types::i32));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    network network(engine, topology, config);
+
+    network.set_input_data("Input", input0);
+
+    auto outputs = network.execute();
+    auto output = outputs.at("reorder").get_memory();
+    cldnn::mem_lock<int, mem_lock_type::read> output_ptr(output, get_test_stream());
+
+    std::vector<int> expected_results = {
+        40,
+    };
+
+    for (size_t i = 0; i < expected_results.size(); i++) {
+        ASSERT_EQ(output_ptr[i], expected_results[i]);
+    }
+
+    auto crop_prim = network.get_primitive("crop");
+    ASSERT_EQ(crop_prim->can_be_optimized(), true);
+}
 
 struct crop_input_test_params {
     data_types  input_type;
@@ -1673,6 +2208,9 @@ public:
         case data_types::f16:
             fill_random_typed<ov::float16>(mem, -127, 127, 2);
             break;
+        case data_types::bf16:
+            fill_random_typed<ov::bfloat16>(mem, -127, 127, 2);
+            break;
         case data_types::i8:
             fill_random_typed<int8_t>(mem, -127, 127, 1);
             break;
@@ -1712,7 +2250,7 @@ public:
         net.set_input_data("input", in_mem);
         auto result = net.execute();
         auto output = result.at("out_reorder").get_memory();
-        cldnn::mem_lock<float_t> output_ptr(output, get_test_stream());
+        cldnn::mem_lock<float_t, mem_lock_type::read> output_ptr(output, get_test_stream());
 
         // blocked format
         cldnn::topology topo_blocked;
@@ -1730,7 +2268,7 @@ public:
         net_blk.set_input_data("input_blk", in_mem);
         auto result_blk = net_blk.execute();
         auto output_blk = result_blk.at("out_blk_reorder").get_memory();
-        cldnn::mem_lock<float_t> output_blk_ptr(output_blk, get_test_stream());
+        cldnn::mem_lock<float_t, mem_lock_type::read> output_blk_ptr(output_blk, get_test_stream());
         if (is_checking) {
             for (size_t i = 0; i < output_ptr.size(); ++i) {
                 ASSERT_EQ(output_ptr[i], output_blk_ptr[i]);
@@ -1749,17 +2287,28 @@ INSTANTIATE_TEST_SUITE_P(batching_test,
                         crop_batching_input_test,
                         ::testing::ValuesIn(std::vector<crop_input_test_params>{
                             crop_input_test_params{ data_types::f16, {3, 4, 2, 2},     {1, 4, 2, 2},     format::b_fs_yx_fsv4 },
+                            crop_input_test_params{ data_types::bf16, {3, 4, 2, 2},     {1, 4, 2, 2},     format::b_fs_yx_fsv4 },
                             crop_input_test_params{ data_types::f16, {3, 16, 2, 2},    {1, 16, 2, 2},    format::b_fs_yx_fsv16 },
+                            crop_input_test_params{ data_types::bf16, {3, 16, 2, 2},    {1, 16, 2, 2},    format::b_fs_yx_fsv16 },
                             crop_input_test_params{ data_types::f16, {3, 20, 2, 2},    {1, 20, 2, 2},    format::b_fs_yx_fsv16 },
+                            crop_input_test_params{ data_types::bf16, {3, 20, 2, 2},    {1, 20, 2, 2},    format::b_fs_yx_fsv16 },
                             crop_input_test_params{ data_types::i8,  {3, 8, 2, 2},     {1, 8, 2, 2},     format::b_fs_yx_fsv32 },
                             crop_input_test_params{ data_types::f16, {3, 4, 2, 3, 2},  {1, 4, 2, 3, 2},  format::b_fs_zyx_fsv4 },
+                            crop_input_test_params{ data_types::bf16, {3, 4, 2, 3, 2},  {1, 4, 2, 3, 2},  format::b_fs_zyx_fsv4 },
                             crop_input_test_params{ data_types::f16, {3, 16, 3, 2, 2}, {1, 16, 3, 2, 2}, format::b_fs_zyx_fsv16 },
+                            crop_input_test_params{ data_types::bf16, {3, 16, 3, 2, 2}, {1, 16, 3, 2, 2}, format::b_fs_zyx_fsv16 },
                             crop_input_test_params{ data_types::u8,  {3, 32, 1, 2, 2}, {1, 32, 1, 2, 2}, format::b_fs_zyx_fsv32 },
                             crop_input_test_params{ data_types::f16, {3, 20, 3, 2, 2}, {1, 16, 3, 2, 2}, format::b_fs_zyx_fsv16 },
+                            crop_input_test_params{ data_types::bf16, {3, 20, 3, 2, 2}, {1, 16, 3, 2, 2}, format::b_fs_zyx_fsv16 },
                             crop_input_test_params{ data_types::f16, {3, 4, 4, 2, 2},  {1, 4, 4, 2, 2},  format::b_fs_zyx_fsv32 },
+                            crop_input_test_params{ data_types::bf16, {3, 4, 4, 2, 2},  {1, 4, 4, 2, 2},  format::b_fs_zyx_fsv32 },
                             crop_input_test_params{ data_types::f16, {64, 16, 2, 2},   {32, 16, 2, 2},   format::bs_fs_yx_bsv32_fsv16 },
+                            crop_input_test_params{ data_types::bf16, {64, 16, 2, 2},   {32, 16, 2, 2},   format::bs_fs_yx_bsv32_fsv16 },
                             crop_input_test_params{ data_types::f16, {3, 16, 2, 2},    {1, 16, 2, 2},    format::bs_fs_yx_bsv32_fsv16 },
+                            crop_input_test_params{ data_types::bf16, {3, 16, 2, 2},    {1, 16, 2, 2},    format::bs_fs_yx_bsv32_fsv16 },
                             crop_input_test_params{ data_types::f16, {3, 32, 2, 2},    {1, 32, 2, 2},    format::bs_fs_yx_bsv16_fsv16 },
+                            crop_input_test_params{ data_types::bf16, {3, 32, 2, 2},    {1, 32, 2, 2},    format::bs_fs_yx_bsv16_fsv16 },
                             crop_input_test_params{ data_types::f16, {3, 16, 3, 2, 2}, {1, 16, 3, 2, 2}, format::bs_fs_zyx_bsv32_fsv16 },
+                            crop_input_test_params{ data_types::bf16, {3, 16, 3, 2, 2}, {1, 16, 3, 2, 2}, format::bs_fs_zyx_bsv32_fsv16 },
                             crop_input_test_params{ data_types::i8,  {3, 32, 1, 2, 2}, {1, 32, 1, 2, 2}, format::bs_fs_zyx_bsv16_fsv32 },
                         }));

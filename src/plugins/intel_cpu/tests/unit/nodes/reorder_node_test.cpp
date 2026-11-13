@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include <common/blocked_desc_creator.h>
@@ -14,7 +14,9 @@
 #include <dnnl.hpp>
 
 #include "common_test_utils/common_utils.hpp"
+#include "memory_control.hpp"
 #include "nodes/input.h"
+#include "thread_pool_imp.hpp"
 
 using namespace ov::intel_cpu;
 namespace ReorderCPUTest {
@@ -109,17 +111,14 @@ public:
         auto context = std::make_shared<GraphContext>(conf,
                                                       std::make_shared<WeightsSharing>(),
                                                       false);
+
         const dnnl::engine cpuEngine = context->getEngine();
 
-        inputNode = std::make_shared<ov::intel_cpu::node::Input>(inputDesc.clone(),
-                                                                      "Reorder_Input",
-                                                                      "Parameter",
-                                                                      context);
+        inputNode =
+            std::make_shared<ov::intel_cpu::node::Input>(inputDesc.clone(), "Reorder_Input", "Parameter", context);
         reorderNode = std::make_shared<ov::intel_cpu::node::Reorder>(inputDesc, outputDesc, "Reorder", context);
-        outputNode = std::make_shared<ov::intel_cpu::node::Input>(outputDesc.clone(),
-                                                                       "Reorder_Output",
-                                                                       "Result",
-                                                                       context);
+        outputNode =
+            std::make_shared<ov::intel_cpu::node::Input>(outputDesc.clone(), "Reorder_Output", "Result", context);
 
         parentEdge = std::make_shared<ov::intel_cpu::Edge>(inputNode, reorderNode, 0, 0);
         childEdge = std::make_shared<ov::intel_cpu::Edge>(reorderNode, outputNode, 0, 0);
@@ -141,7 +140,7 @@ public:
             n->initSupportedPrimitiveDescriptors();
             n->selectPrimitiveDescriptorByIndex(0);
         }
-        stream = dnnl::stream{cpuEngine};
+        stream = ov::intel_cpu::make_stream(cpuEngine, context->getCpuParallel()->get_thread_pool());
     }
 
 protected:
@@ -154,7 +153,7 @@ protected:
     ov::element::Type prec;
 };
 
-}// namespace ReorderCPUTest
+}  // namespace ReorderCPUTest
 
 using namespace ReorderCPUTest;
 
@@ -305,8 +304,8 @@ INSTANTIATE_TEST_SUITE_P(smoke_ReorderTestCustomStrideWithFactor,
  * ReorderCPUTest to test the CPU plugin-in dynamism and RT cache
  */
 class ReorderDynamismCPUTest : public ::testing::Test,
-                       public ::testing::WithParamInterface<ReorderCPUTestParamSet>,
-                       public ::ReorderCPUTest::ReorderCPUTestGraph {
+                               public ::testing::WithParamInterface<ReorderCPUTestParamSet>,
+                               public ::ReorderCPUTest::ReorderCPUTestGraph {
 public:
     static std::string getTestCaseName(const testing::TestParamInfo<ReorderCPUTestParamSet>& obj) {
         ReorderCPUTestParamSet p = obj.param;

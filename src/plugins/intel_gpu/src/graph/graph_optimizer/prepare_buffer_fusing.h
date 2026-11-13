@@ -1,11 +1,12 @@
-// copyright (c) 2023 intel corporation
-// spdx-license-identifier: apache-2.0
+// Copyright (C) 2018-2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
 //
 
 #include "pass_manager.h"
 #include "program_helpers.h"
 
 #include "concatenation_inst.h"
+#include "crop_inst.h"
 
 #include <utility>
 #include <list>
@@ -21,7 +22,6 @@ struct concat_noop_optimization : pattern_match_optimization_typed<concat_noop_o
     bool match(concatenation_node& node);
     bool optimize(concatenation_node& node);
 };
-
 struct concat_in_place_optimization : pattern_match_optimization_typed<concat_in_place_optimization, concatenation> {
     // Performs in-place concat optimization.
     // Padding of predecessors is updated to use single buffer by all, which is output from concatenation.
@@ -40,8 +40,8 @@ struct concat_in_place_optimization : pattern_match_optimization_typed<concat_in
                                  bool is_runtime);
     bool match(concatenation_node& node);
     static bool match(const program_node& concat_node,
-                      kernel_impl_params concat_params,
-                      std::vector<kernel_impl_params> pred_params,
+                      kernel_impl_params& concat_params,
+                      std::vector<kernel_impl_params>& pred_params,
                       bool is_runtime = false);
     bool optimize(concatenation_node& node) {
         std::list<concatenation_node*> need_reopt;
@@ -49,14 +49,54 @@ struct concat_in_place_optimization : pattern_match_optimization_typed<concat_in
         while (!need_reopt.empty()) {
             auto& prop = *need_reopt.front();
             need_reopt.pop_front();
-            if (match(prop))
+            if (match(prop)) {
                 optimize_cascade(prop, need_reopt);
-            else
+            } else {
                 // TODO: Revert extra padding when cascade adjustment failed.
                 prop.can_be_optimized(false);
+            }
         }
         return false;  // node not invalidated
     }
+};
+
+struct crop_in_place_optimization : pattern_match_optimization_typed<crop_in_place_optimization, crop> {
+    // Performs in-place crop optimization.
+    using base = pattern_match_optimization_typed<crop_in_place_optimization, crop>;
+    using base::base;
+
+    static bool can_crop_be_optimized_along_feature(const layout& crop_layout,
+                                                    const layout& input_layout);
+    static bool can_crop_be_optimized_simple_data_format(const layout& crop_layout,
+                                                         const layout& input_layout);
+    bool match(crop_node& node);
+    static bool match(const program_node& node,
+                      kernel_impl_params& crop_params,
+                      layout& input_layout,
+                      bool is_runtime = false);
+    bool optimize(crop_node& node);
+    // user_info.first: the reshape user program_node (or nullptr if the crop
+    //                  has no propagatable reshape user). When non-null, the
+    //                  helper writes the propagated padding into
+    //                  user_info.second so the caller can install it on the
+    //                  reshape's runtime output layout. Passing user_info
+    //                  aligns the along-feature helper with
+    //                  update_in_place_crop_padding_simple_data_format and
+    //                  avoids relying on reshape's calc_output_layouts (which
+    //                  resets padding to empty for reshape_mode::base).
+    static bool update_in_place_crop_padding_along_feature(const program_node& node,
+                                                           layout& crop_layout,
+                                                           layout& pred_layout,
+                                                           std::pair<const program_node*, layout>& user_info,
+                                                           const tensor offsets,
+                                                           size_t crop_axis,
+                                                           bool is_runtime);
+    static bool update_in_place_crop_padding_simple_data_format(layout& crop_layout,
+                                                                layout& pred_layout,
+                                                                std::pair<const program_node*, layout>& user_info,
+                                                                const tensor offsets,
+                                                                size_t crop_axis,
+                                                                bool is_runtime);
 };
 
 } // namespace cldnn

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -27,6 +27,10 @@ class Plugin {
 
 public:
     Plugin() = default;
+    Plugin(const Plugin&) = default;
+    Plugin& operator=(const Plugin&) = default;
+    Plugin(Plugin&&) = default;
+    Plugin& operator=(Plugin&&) = default;
 
     ~Plugin();
 
@@ -45,7 +49,8 @@ public:
     SoPtr<ov::ICompiledModel> compile_model(const std::shared_ptr<const ov::Model>& model,
                                             const ov::AnyMap& properties) const;
 
-    SoPtr<ov::ICompiledModel> compile_model(const std::string& model_path, const ov::AnyMap& properties) const;
+    SoPtr<ov::ICompiledModel> compile_model(const std::filesystem::path& model_path,
+                                            const ov::AnyMap& properties) const;
 
     SoPtr<ov::ICompiledModel> compile_model(const std::shared_ptr<const ov::Model>& model,
                                             const ov::SoPtr<ov::IRemoteContext>& context,
@@ -53,9 +58,15 @@ public:
 
     ov::SupportedOpsMap query_model(const std::shared_ptr<const ov::Model>& model, const ov::AnyMap& properties) const;
 
+    SoPtr<ov::ICompiledModel> import_model(const ov::Tensor& model, const ov::AnyMap& properties) const;
+
+    SoPtr<ov::ICompiledModel> import_model(const ov::Tensor& model,
+                                           const ov::SoPtr<ov::IRemoteContext>& context,
+                                           const ov::AnyMap& config) const;
+
     SoPtr<ov::ICompiledModel> import_model(std::istream& model, const ov::AnyMap& properties) const;
 
-    SoPtr<ov::ICompiledModel> import_model(std::istream& networkModel,
+    SoPtr<ov::ICompiledModel> import_model(std::istream& model,
                                            const ov::SoPtr<ov::IRemoteContext>& context,
                                            const ov::AnyMap& config) const;
 
@@ -74,8 +85,9 @@ public:
     T get_property(const ov::Property<T, M>& property, const AnyMap& arguments) const {
         return get_property(property.name(), arguments).template as<T>();
     }
-    bool supports_model_caching() const;
+    bool supports_model_caching(const AnyMap& arguments = {}) const;
+
+    bool is_property_supported(const std::string& name, const ov::AnyMap& arguments = {}) const;
 };
 
 }  // namespace ov
-

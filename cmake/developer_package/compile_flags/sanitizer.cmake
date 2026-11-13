@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -9,28 +9,42 @@ if (ENABLE_SANITIZER)
         # the flag is available since MSVC 2019 16.9
         # see https://learn.microsoft.com/en-us/cpp/build/reference/fsanitize?view=msvc-160
         check_cxx_compiler_flag("/fsanitize=address" SANITIZE_ADDRESS_SUPPORTED)
-        if (SANITIZE_ADDRESS_SUPPORTED)
+
+        if(SANITIZE_ADDRESS_SUPPORTED)
             set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} /fsanitize=address")
         else()
             message(FATAL_ERROR "Address sanitizer is not supported by current compiler.\n"
             "Please, check requirements:\n"
             "https://github.com/openvinotoolkit/openvino/wiki/AddressSanitizer-and-LeakSanitizer")
         endif()
-    elseif(CMAKE_COMPILER_IS_GNUCXX OR OV_COMPILER_IS_CLANG)
-        set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fsanitize=address -fsanitize-blacklist=${OpenVINO_SOURCE_DIR}/tests/asan/ignore.txt")
+    elseif(OV_COMPILER_IS_CLANG)
+        set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fsanitize=address -fsanitize-blacklist=${OpenVINO_SOURCE_DIR}/tests/sanitizers/asan/ignore.txt")
+
         if(BUILD_SHARED_LIBS)
             set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -shared-libasan")
         endif()
 
         check_cxx_compiler_flag("-fsanitize-recover=address" SANITIZE_RECOVER_ADDRESS_SUPPORTED)
-        if (SANITIZE_RECOVER_ADDRESS_SUPPORTED)
+
+        if(SANITIZE_RECOVER_ADDRESS_SUPPORTED)
             set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fsanitize-recover=address")
         endif()
 
-        set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -fsanitize=address -fsanitize-blacklist=${OpenVINO_SOURCE_DIR}/tests/asan/ignore.txt")
+        set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -fsanitize=address -fsanitize-blacklist=${OpenVINO_SOURCE_DIR}/tests/sanitizers/asan/ignore.txt")
+
         if(BUILD_SHARED_LIBS)
             set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -shared-libasan")
         endif()
+    elseif(CMAKE_COMPILER_IS_GNUCXX)
+        set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fsanitize=address")
+
+        check_cxx_compiler_flag("-fsanitize-recover=address" SANITIZE_RECOVER_ADDRESS_SUPPORTED)
+
+        if(SANITIZE_RECOVER_ADDRESS_SUPPORTED)
+            set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fsanitize-recover=address")
+        endif()
+
+        set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -fsanitize=address")
     else()
         message(WARNING "Unsupported CXX compiler ${CMAKE_CXX_COMPILER_ID}")
     endif()
@@ -56,6 +70,7 @@ if(ENABLE_UB_SANITIZER)
     #   Samples cases:
     #       load of value 4294967295, which is not a valid value for type 'const (anonymous namespace)::onnx::Field'
     set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fsanitize=undefined -fno-sanitize=null -fno-sanitize=alignment -fno-sanitize=bool -fno-sanitize=enum")
+
     if(OV_COMPILER_IS_CLANG)
         set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fno-sanitize=function")
     endif()
@@ -64,12 +79,18 @@ if(ENABLE_UB_SANITIZER)
         # TODO: Remove -Wno-maybe-uninitialized after CVS-61143 is fixed
         set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -Wno-maybe-uninitialized")
     endif()
+
     check_cxx_compiler_flag("-fsanitize-recover=undefined" SANITIZE_RECOVER_UNDEFINED_SUPPORTED)
+
     if(SANITIZE_RECOVER_UNDEFINED_SUPPORTED)
         set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fsanitize-recover=undefined")
     endif()
 
-    set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -fsanitize=undefined")
+    if(OV_COMPILER_IS_CLANG)
+        set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -lubsan")
+    else()
+        set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -fsanitize=undefined")
+    endif()
 endif()
 
 if(ENABLE_THREAD_SANITIZER)
@@ -78,6 +99,15 @@ if(ENABLE_THREAD_SANITIZER)
     elseif(CMAKE_COMPILER_IS_GNUCXX OR OV_COMPILER_IS_CLANG)
         set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fsanitize=thread")
         set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -fsanitize=thread")
+
+        # clang does not provide rpath if -shared-libasan is used (see asan for similar impl)
+        if(BUILD_SHARED_LIBS AND OV_COMPILER_IS_CLANG)
+            set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -shared-libsan")
+            set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -shared-libsan")
+            execute_process(COMMAND ${CMAKE_CXX_COMPILER} --print-runtime-dir
+                OUTPUT_VARIABLE LIBTSAN_DIRNAME OUTPUT_STRIP_TRAILING_WHITESPACE)
+            set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -Wl,-rpath=${LIBTSAN_DIRNAME}")
+        endif()
     else()
         message(WARNING "Unsupported CXX compiler ${CMAKE_CXX_COMPILER_ID}")
     endif()
@@ -90,11 +120,13 @@ if(DEFINED SANITIZER_COMPILER_FLAGS)
         set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} /Oy-")
     elseif(CMAKE_COMPILER_IS_GNUCXX OR OV_COMPILER_IS_CLANG)
         set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -g -fno-omit-frame-pointer")
-        if(CMAKE_COMPILER_IS_GNUCXX)
+
+        if(CMAKE_COMPILER_IS_GNUCXX AND NOT ENABLE_CLANG_TIDY)
             # GPU plugin tests compilation is slow with -fvar-tracking-assignments on GCC.
             # Clang has no var-tracking-assignments.
             set(SANITIZER_COMPILER_FLAGS "${SANITIZER_COMPILER_FLAGS} -fno-var-tracking-assignments")
         endif()
+
         # prevent unloading libraries at runtime, so sanitizer can resolve their symbols
         if(NOT OV_COMPILER_IS_APPLECLANG)
             set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS} -Wl,-z,nodelete")
@@ -102,7 +134,10 @@ if(DEFINED SANITIZER_COMPILER_FLAGS)
             # clang does not provide rpath if -shared-libasan is used
             # https://stackoverflow.com/questions/68571138/asan-dynamic-runtime-is-missing-on-ubuntu-18, https://bugs.llvm.org/show_bug.cgi?id=51271
             if(BUILD_SHARED_LIBS AND ENABLE_SANITIZER AND OV_COMPILER_IS_CLANG)
-                set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS},-rpath=$(dirname $($CXX --print-file-name libclang_rt.asan-x86_64.so))")
+                execute_process(COMMAND ${CMAKE_CXX_COMPILER} --print-file-name libclang_rt.asan-x86_64.so
+                    OUTPUT_VARIABLE OV_LIBASAN_FILEPATH)
+                get_filename_component(LIBASAN_DIRNAME ${OV_LIBASAN_FILEPATH} PATH)
+                set(SANITIZER_LINKER_FLAGS "${SANITIZER_LINKER_FLAGS},-rpath=${LIBASAN_DIRNAME}")
             endif()
 
             if(OV_COMPILER_IS_CLANG AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 8.0)

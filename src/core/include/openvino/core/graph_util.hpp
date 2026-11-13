@@ -1,10 +1,11 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <list>
 #include <memory>
@@ -220,7 +221,21 @@ void replace_nodes(const std::shared_ptr<Model>& f,
                        parameter_replacement_map,
                    const std::unordered_map<std::shared_ptr<Node>, std::shared_ptr<Node>>& body_replacement_map);
 
-/// Topological sort of nodes needed to compute root_nodes
+/// \brief Performs a topological sort on a graph of nodes.
+///
+/// \tparam T A container type (e.g., std::vector, std::deque) of shared_ptr<Node> or Node*.
+/// \param root_nodes The starting nodes from which to begin the topological sort traversal.
+///
+/// \return A vector of nodes sorted in topological order, where dependencies come before dependents.
+///
+/// \details
+/// This function performs a depth-first traversal of the computation graph starting from the given root nodes.
+/// It produces an ordering where each node appears after all of its input dependencies.
+///
+/// \note If a circular dependency is detected (a node is visited more than twice during traversal),
+///       the function throws an OPENVINO_THROW exception with details about the loop source.
+///
+/// \warning The caller is responsible for clean-up the model connections when circular dependencies are present.
 template <typename T>
 std::vector<std::shared_ptr<Node>> topological_sort(T root_nodes) {
     std::stack<Node*, std::vector<Node*>> nodes_to_do;
@@ -235,13 +250,14 @@ std::vector<std::shared_ptr<Node>> topological_sort(T root_nodes) {
         Node* node = nodes_to_do.top();
         if (nodes_done.count(node) == 0) {
             bool can_add = true;
-            if (++nodes_visited[node] > 2)
+            if (++nodes_visited[node] > 2) {
                 // Node may be at the top of `nodes_to_do` not more than twice before it's added to `nodes_done` -
                 // when visited and placed in `nodes_to_do` and after the subtree traversal is finished.
                 // Otherwise it's a loop.
                 OPENVINO_THROW("Loop detected during topological sort starting from '",
                                node->get_friendly_name(),
                                "' node.");
+            }
 
             size_t arg_count = node->get_input_size();
             for (size_t i = 0; i < arg_count; ++i) {
@@ -277,6 +293,9 @@ OPENVINO_API
 bool replace_output_update_name(Output<Node> node, const Output<Node>& node_input);
 
 OPENVINO_API
+bool replace_outputs_update_name(OutputVector nodes, const OutputVector& node_inputs);
+
+OPENVINO_API
 bool replace_node_update_name(const std::shared_ptr<Node>& target, const std::shared_ptr<Node>& replacement);
 
 /// \brief Serialize given model into IR. The generated .xml and .bin files will be saved into provided paths.
@@ -288,20 +307,34 @@ bool replace_node_update_name(const std::shared_ptr<Node>& target, const std::sh
 /// \param bin_path Path where .bin file will be saved (optional).
 ///                 The same name as for xml_path will be used by default.
 /// \param version Version of the generated IR (optional).
+/// \{
 OPENVINO_API
 void serialize(const std::shared_ptr<const ov::Model>& m,
-               const std::string& xml_path,
-               const std::string& bin_path = "",
+               const std::filesystem::path& xml_path,
+               const std::filesystem::path& bin_path = {},
                ov::pass::Serialize::Version version = ov::pass::Serialize::Version::UNSPECIFIED);
+/// \}
 
 /// \brief Save given model into IR. Floating point weights are compressed to FP16 by default.
 /// This method saves a model to IR applying all necessary transformations that usually applied
-/// in model conversion flow provided by mo tool. Paricularly, floatting point weights are compressed to FP16.
+/// in model conversion flow provided by OVC tool. Particularly, floating point weights are compressed to
+/// FP16.
 /// \param model Model which will be converted to IR representation.
-/// \param output_model Path to the output model file, must have extension .xml
-/// \param compress_to_fp16 Whether to compress floatting point weights to FP16 (true by default)
+/// \param output_model Path to the output model file, must have extension .xml.
+/// \param compress_to_fp16 Whether to compress floating point weights to FP16 (true by default).
+/// /// \{
 OPENVINO_API
 void save_model(const std::shared_ptr<const ov::Model>& model,
-                const std::string& output_model,
+                const std::filesystem::path& output_model,
                 bool compress_to_fp16 = true);
+
+#if defined(OPENVINO_ENABLE_UNICODE_PATH_SUPPORT)
+OPENVINO_API
+void save_model(const std::shared_ptr<const ov::Model>& model,
+                const std::wstring& output_model,
+                bool compress_to_fp16 = true);
+#endif
+
+/// \}
+
 }  // namespace ov

@@ -1,5 +1,3 @@
-.. {#openvino_docs_ops_movement_GatherElements_6}
-
 GatherElements
 ==============
 
@@ -101,7 +99,11 @@ Example 3 ``indices`` has lesser (than ``data``) shape:
 
 * **1**:  Tensor of type *T*. This is a tensor of a ``rank >= 1``. **Required.**
 * **2**:  Tensor of type *T_IND* with the same rank as the input. All index values are expected to be
-  within bounds ``[0, s-1]``, where ``s`` is size along ``axis`` dimension of the ``data`` tensor. **Required.**
+  within bounds ``[-s, s-1]``, where ``s`` is size along ``axis`` dimension of the ``data`` tensor. **Required.**
+
+.. note::
+
+    Behavior before 2025.3 OpenVINO release: Negative indices were not supported.
 
 **Outputs**:
 

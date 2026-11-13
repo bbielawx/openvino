@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -57,8 +57,8 @@ void InterpolateBase::validate_and_infer_types() {
     NODE_VALIDATION_CHECK(this,
                           input_et == element::f32 || input_et == element::f16 || input_et == element::i8 ||
                               input_et == element::bf16 || input_et == element::u8 || input_et == element::i64 ||
-                              input_et == element::i32 || input_et == element::dynamic,
-                          "Input element type must be f32, f16, bf16, i8, u8, i64, i32");
+                              input_et == element::i32 || input_et == element::f64 || input_et == element::dynamic,
+                          "Input element type must be f32, f16, i8, bf16, u8, i64, i32, f64");
 }
 
 void InterpolateBase::validate_scales_element_type(const element::Type& et) const {
@@ -129,6 +129,11 @@ EnumNames<op::util::InterpolateBase::NearestMode>::get() {
          {"simple", op::util::InterpolateBase::NearestMode::SIMPLE}});
     return enum_names;
 }
+
+AttributeAdapter<op::util::InterpolateBase::InterpolateMode>::~AttributeAdapter() = default;
+AttributeAdapter<op::util::InterpolateBase::CoordinateTransformMode>::~AttributeAdapter() = default;
+AttributeAdapter<op::util::InterpolateBase::NearestMode>::~AttributeAdapter() = default;
+AttributeAdapter<op::util::InterpolateBase::ShapeCalcMode>::~AttributeAdapter() = default;
 
 std::ostream& operator<<(std::ostream& s, const op::util::InterpolateBase::InterpolateMode& type) {
     return s << as_string(type);

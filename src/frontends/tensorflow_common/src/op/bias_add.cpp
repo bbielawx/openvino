@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,10 +11,7 @@
 using namespace std;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_bias_add_op(const NodeContext& node) {
     default_op_checks(node, 2, {"BiasAdd"}, true);
@@ -23,12 +20,12 @@ OutputVector translate_bias_add_op(const NodeContext& node) {
 
     auto complex_type_mark_value = as_type_ptr<ComplexTypeMark>(value.get_node_shared_ptr());
     auto complex_type_mark_bias = as_type_ptr<ComplexTypeMark>(bias.get_node_shared_ptr());
-    auto complex_type_inputs = (complex_type_mark_value || complex_type_mark_bias) ? true : false;
+    auto complex_type_inputs = (complex_type_mark_value && complex_type_mark_bias) ? true : false;
     // validations prior to processing
     if (complex_type_inputs) {
         // extractions for complex processing
-        bias = complex_type_mark_bias->input_value(0);
-        value = complex_type_mark_value->input_value(0);
+        bias = complex_type_mark_bias->get_data();
+        value = complex_type_mark_value->get_data();
     }
 
     // retrieve optional attributes
@@ -69,7 +66,4 @@ OutputVector translate_bias_add_op(const NodeContext& node) {
     }
     return res->outputs();
 }
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

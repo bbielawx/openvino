@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -77,6 +77,34 @@ OPENVINO_RUNTIME_API int get_number_of_blocked_cores();
 OPENVINO_RUNTIME_API bool with_cpu_x86_sse42();
 
 /**
+ * @brief      Checks whether CPU supports ARM NEON FP16 capability
+ * @ingroup    ov_dev_api_system_conf
+ * @return     `True` is ARM NEON FP16 instructions are available, `false` otherwise
+ */
+OPENVINO_RUNTIME_API bool with_cpu_neon_fp16();
+
+/**
+ * @brief      Checks whether CPU supports ARM Dot Product capability
+ * @ingroup    ov_dev_api_system_conf
+ * @return     `True` is ARM Dot Product instructions are available, `false` otherwise
+ */
+OPENVINO_RUNTIME_API bool with_cpu_arm_dotprod();
+
+/**
+ * @brief      Checks whether CPU supports ARM Int8 MM capability
+ * @ingroup    ov_dev_api_system_conf
+ * @return     `True` is ARM Int8 MM instructions are available, `false` otherwise
+ */
+OPENVINO_RUNTIME_API bool with_cpu_arm_i8mm();
+
+/**
+ * @brief      Checks whether CPU supports ARM SVE capability
+ * @ingroup    ov_dev_api_system_conf
+ * @return     `True` if ARM SVE instructions are available, `false` otherwise
+ */
+OPENVINO_RUNTIME_API bool with_cpu_sve();
+
+/**
  * @brief      Checks whether CPU supports AVX capability
  * @ingroup    ov_dev_api_system_conf
  * @return     `True` is AVX instructions are available, `false` otherwise
@@ -96,6 +124,13 @@ OPENVINO_RUNTIME_API bool with_cpu_x86_avx2();
  * @return     `True` is AVX2_VNNI instructions are available, `false` otherwise
  */
 OPENVINO_RUNTIME_API bool with_cpu_x86_avx2_vnni();
+
+/**
+ * @brief      Checks whether CPU supports AVX2_VNNI_2 capability
+ * @ingroup    ov_dev_api_system_conf
+ * @return     `True` is AVX2_VNNI_2 instructions are available, `false` otherwise
+ */
+OPENVINO_RUNTIME_API bool with_cpu_x86_avx2_vnni_2();
 
 /**
  * @brief      Checks whether CPU supports AVX 512 capability
@@ -147,18 +182,18 @@ OPENVINO_RUNTIME_API bool with_cpu_x86_avx512_core_amx_int8();
 OPENVINO_RUNTIME_API bool with_cpu_x86_avx512_core_amx_bf16();
 
 /**
+ * @brief      Checks whether CPU supports AMX fp16 capability
+ * @ingroup    ov_dev_api_system_conf
+ * @return     `True` is tAMX_FP16 instructions are available, `false` otherwise
+ */
+OPENVINO_RUNTIME_API bool with_cpu_x86_avx512_core_amx_fp16();
+
+/**
  * @brief      Checks whether CPU supports AMX capability
  * @ingroup    ov_dev_api_system_conf
  * @return     `True` is tAMX_INT8 or tAMX_BF16 instructions are available, `false` otherwise
  */
 OPENVINO_RUNTIME_API bool with_cpu_x86_avx512_core_amx();
-
-/**
- * @brief      Checks whether cpu_mapping Available
- * @ingroup    ov_dev_api_system_conf
- * @return     `True` is CPU mapping is available, `false` otherwise
- */
-OPENVINO_RUNTIME_API bool is_cpu_map_available();
 
 /**
  * @brief      Get number of numa nodes
@@ -173,6 +208,13 @@ OPENVINO_RUNTIME_API int get_num_numa_nodes();
  * @return     Number of sockets
  */
 OPENVINO_RUNTIME_API int get_num_sockets();
+
+/**
+ * @brief      Get numa node id of cpu_id
+ * @ingroup    ov_dev_api_system_conf
+ * @return     Numa node id
+ */
+OPENVINO_RUNTIME_API int get_numa_node_id(int cpu_id);
 
 /**
  * @brief      Returns a table of number of processor types on Linux/Windows
@@ -199,6 +241,13 @@ OPENVINO_RUNTIME_API std::vector<std::vector<int>> get_proc_type_table();
 OPENVINO_RUNTIME_API int get_current_socket_id();
 
 /**
+ * @brief      Returns the numa node ID in cpu mapping table of the currently running thread.
+ * @ingroup    ov_dev_api_system_conf
+ * @return     numa node ID in cpu mapping
+ */
+OPENVINO_RUNTIME_API int get_current_numa_node_id();
+
+/**
  * @brief      Returns a table of original number of processor types without filtering other plugins occupying CPU
  * resources. The difference from get_proc_type_table: This is used to get the configuration of current machine. For
  * example, GPU plugin occupies all Pcores, there is only one type core in proc_type_table from get_proc_type_table().
@@ -216,26 +265,27 @@ OPENVINO_RUNTIME_API std::vector<std::vector<int>> get_org_proc_type_table();
  * The following are two example of processor type table.
  *  1. Processor table of 4 numa nodes and 2 socket server
  *
- *  ALL_PROC | MAIN_CORE_PROC | EFFICIENT_CORE_PROC | HYPER_THREADING_PROC | PROC_NUMA_NODE_ID | PROC_SOCKET_ID
- *     96            48                 0                       48                  -1                 -1
- *     24            12                 0                       12                   0                  0
- *     24            12                 0                       12                   1                  0
- *     24            12                 0                       12                   2                  1
- *     24            12                 0                       12                   3                  1
+ *  ALL_PROC | MAIN_CORE | EFFICIENT_CORE | LP_EFFICIENT_CORE | HYPER_THREADING | NUMA_NODE_ID | SOCKET_ID
+ *     96         48            0                  0                   48              -1           -1
+ *     24         12            0                  0                   12               0            0
+ *     24         12            0                  0                   12               1            0
+ *     24         12            0                  0                   12               2            1
+ *     24         12            0                  0                   12               3            1
  *
  * 2. Processor table of 1 numa node desktop
  *
- *  ALL_PROC | MAIN_CORE_PROC | EFFICIENT_CORE_PROC | HYPER_THREADING_PROC | PROC_NUMA_NODE_ID | PROC_SOCKET_ID
- *     32            8                 16                       8                   -1                 -1
+ *  ALL_PROC | MAIN_CORE | EFFICIENT_CORE | LP_EFFICIENT_CORE | HYPER_THREADING | NUMA_NODE_ID | SOCKET_ID
+ *     16          4            8                  4                   0                0            0
  */
 enum ColumnOfProcessorTypeTable {
-    ALL_PROC = 0,              //!< All processors, regardless of backend cpu
-    MAIN_CORE_PROC = 1,        //!< Processor based on physical core of Intel Performance-cores
-    EFFICIENT_CORE_PROC = 2,   //!< Processor based on Intel Efficient-cores
-    HYPER_THREADING_PROC = 3,  //!< Processor based on logical core of Intel Performance-cores
-    PROC_NUMA_NODE_ID = 4,     //!< Numa node id of processors in this row
-    PROC_SOCKET_ID = 5,        //!< Socket id of processors in this row
-    PROC_TYPE_TABLE_SIZE = 6   //!< Size of processor type table
+    ALL_PROC = 0,                //!< All processors, regardless of backend cpu
+    MAIN_CORE_PROC = 1,          //!< Processor based on physical core of Intel Performance-cores
+    EFFICIENT_CORE_PROC = 2,     //!< Processor based on Intel Efficient-cores
+    LP_EFFICIENT_CORE_PROC = 3,  //!< Processor based on Intel Low Power Efficient-cores
+    HYPER_THREADING_PROC = 4,    //!< Processor based on logical core of Intel Performance-cores
+    PROC_NUMA_NODE_ID = 5,       //!< Numa node id of processors in this row
+    PROC_SOCKET_ID = 6,          //!< Socket id of processors in this row
+    PROC_TYPE_TABLE_SIZE = 7     //!< Size of processor type table
 };
 
 /**
@@ -266,14 +316,6 @@ OPENVINO_RUNTIME_API void reserve_available_cpus(const std::vector<std::vector<i
  * @param[in]  used update CPU_MAP_USED_FLAG of cpu_mapping with this flag bit
  */
 OPENVINO_RUNTIME_API void set_cpu_used(const std::vector<int>& cpu_ids, const int used);
-
-/**
- * @brief      Get socket id by current numa node id
- * @ingroup    ov_dev_api_system_conf
- * @param[in]  numa_node_id numa node id
- * @return     socket id
- */
-OPENVINO_RUNTIME_API int get_socket_by_numa_node(int numa_node_id);
 
 /**
  * @brief      Get original socket id by current socket id, the input socket id is recalculated after filtering (like

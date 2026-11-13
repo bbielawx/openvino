@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,14 +11,14 @@
 #include "openvino/op/convert_like.hpp"
 #include "openvino/op/divide.hpp"
 #include "openvino/op/exp.hpp"
+#include "openvino/op/reduce_max.hpp"
 #include "openvino/op/reduce_sum.hpp"
 #include "openvino/op/sigmoid.hpp"
+#include "openvino/op/squeeze.hpp"
+#include "openvino/op/subtract.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -77,7 +77,7 @@ OutputVector translate_log10(const NodeContext& context) {
 };
 
 OutputVector translate_logsumexp(const NodeContext& context) {
-    num_inputs_check(context, 1, 2);
+    num_inputs_check(context, 1, 3);
     auto input = context.get_input(0);
     ov::Output<ov::Node> dim;
     if (!context.input_is_none(1)) {
@@ -85,10 +85,25 @@ OutputVector translate_logsumexp(const NodeContext& context) {
     } else {
         dim = context.mark_node(get_axes_range(context, 0));
     }
-    auto exp = context.mark_node(std::make_shared<v0::Exp>(input));
-    auto sum = context.mark_node(std::make_shared<v1::ReduceSum>(exp, dim, false));
+    bool keepdim = false;
+    if (!context.input_is_none(2)) {
+        keepdim = context.const_input<bool>(2);
+    }
+    // for numerical stability and avoiding exponent explosion,
+    // apply the following formula:
+    // ln (e^x1 + ... +e^xn) = ln (e^k (e^(x1-k) + ... +e^(xn-k))) =
+    // = k + ln (e^(x1-k) + ... +e^(xn-k)), where k = max (x1, ..., xn)
+    // by this trick, we reach exponent degree <= 0
+    auto k = context.mark_node(std::make_shared<v1::ReduceMax>(input, dim, true));
+    auto input_minus_k = context.mark_node(std::make_shared<v1::Subtract>(input, k));
+    auto exp = context.mark_node(std::make_shared<v0::Exp>(input_minus_k));
+    auto sum = context.mark_node(std::make_shared<v1::ReduceSum>(exp, dim, keepdim));
     auto log = context.mark_node(std::make_shared<v0::Log>(sum));
-    return {log};
+    if (!keepdim) {
+        k = context.mark_node(std::make_shared<v0::Squeeze>(k, dim));
+    }
+    auto logsumexp = context.mark_node(std::make_shared<v1::Add>(k, log));
+    return {logsumexp};
 };
 
 OutputVector translate_log1p(const NodeContext& context) {
@@ -102,7 +117,4 @@ OutputVector translate_log1p(const NodeContext& context) {
     return {log};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

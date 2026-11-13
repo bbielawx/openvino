@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,6 +6,7 @@
 
 #include "shared_test_classes/base/ov_subgraph.hpp"
 #include "utils/cpu_test_utils.hpp"
+#include "openvino/op/batch_to_space.hpp"
 
 using namespace CPUTestUtils;
 
@@ -28,10 +29,10 @@ class BatchToSpaceCPULayerTest : public testing::WithParamInterface<BatchToSpace
                                  public CPUTestsBase {
 public:
     static std::string getTestCaseName(const testing::TestParamInfo<BatchToSpaceLayerTestCPUParams>& obj) {
-        std::vector<InputShape> inputShapes;
-        ov::element::Type model_type;
-        CPUSpecificParams cpuParams;
-        std::tie(inputShapes, blockShape, cropsBegin, cropsEnd, model_type, cpuParams) = obj.param;
+        const auto& [inputShapes, _blockShape, _cropsBegin, _cropsEnd, model_type, cpuParams] = obj.param;
+        blockShape = _blockShape;
+        cropsBegin = _cropsBegin;
+        cropsEnd = _cropsEnd;
         std::ostringstream result;
         if (inputShapes.front().first.size() != 0) {
             result << "IS=(";
@@ -77,7 +78,11 @@ public:
                 tensor = ov::Tensor(param_type, static_shape, blockShape.data());
                 break;
             }
-            case 2:
+            case 2: {
+                ASSERT_EQ(ov::shape_size(static_shape), cropsBegin.size());
+                tensor = ov::Tensor(param_type, static_shape, cropsBegin.data());
+                break;
+            }
             case 3: {
                 ASSERT_EQ(ov::shape_size(static_shape), cropsEnd.size());
                 tensor = ov::Tensor(param_type, static_shape, cropsEnd.data());
@@ -94,11 +99,10 @@ public:
 protected:
     void SetUp() override {
         targetDevice = ov::test::utils::DEVICE_CPU;
-
-        std::vector<InputShape> inputShapes;
-        ov::element::Type model_type;
-        CPUSpecificParams cpuParams;
-        std::tie(inputShapes, blockShape, cropsBegin, cropsEnd, model_type, cpuParams) = this->GetParam();
+        const auto& [inputShapes, _blockShape, _cropsBegin, _cropsEnd, model_type, cpuParams] = this->GetParam();
+        blockShape = _blockShape;
+        cropsBegin = _cropsBegin;
+        cropsEnd = _cropsEnd;
         std::tie(inFmts, outFmts, priority, selectedType) = cpuParams;
         init_input_shapes(inputShapes);
 
@@ -400,6 +404,52 @@ INSTANTIATE_TEST_SUITE_P(smoke_DynamicBatchToSpaceCPULayerTestCase2_5D,
 INSTANTIATE_TEST_SUITE_P(smoke_DynamicBatchToSpaceCPULayerTestCaseWithBlocked2_5D,
                          BatchToSpaceCPULayerTest,
                          dynamicBatchToSpaceParamsWithBlockedSet5D2,
+                         BatchToSpaceCPULayerTest::getTestCaseName);
+
+std::vector<InputShape> dynamicInputShapesZeroDimOutput = {
+    {{-1, -1, -1, -1, -1}, {{2, 16, 1, 5, 5}}},
+    {{5}, {{5}, {5}, {5}}},
+    {{5}, {{5}, {5}, {5}}},
+    {{5}, {{5}, {5}, {5}}}
+};
+
+const std::vector<int64_t> blockShapeZeroDimOutput = {1, 1, 2, 1, 1};
+const std::vector<int64_t> cropsBeginZeroDimOutput = {0, 0, 0, 0, 0};
+const std::vector<int64_t> cropsEndZeroDimOutput = {0, 0, 2, 0, 0};
+
+const auto dynamicBatchToSpaceParamsSetZeroDimOutput = ::testing::Combine(::testing::Values(dynamicInputShapesZeroDimOutput),
+                                                                          ::testing::Values(blockShapeZeroDimOutput),
+                                                                          ::testing::Values(cropsBeginZeroDimOutput),
+                                                                          ::testing::Values(cropsEndZeroDimOutput),
+                                                                          ::testing::Values(ov::element::Type_t::f32),
+                                                                          ::testing::ValuesIn(cpuParams_5D));
+
+INSTANTIATE_TEST_SUITE_P(smoke_DynamicBatchToSpaceCPULayerTestCaseZeroDimOutput,
+                         BatchToSpaceCPULayerTest,
+                         dynamicBatchToSpaceParamsSetZeroDimOutput,
+                         BatchToSpaceCPULayerTest::getTestCaseName);
+
+std::vector<InputShape> dynamicInputShapesOutputDimOne = {
+    {{-1, -1, -1, -1, -1}, {{2, 16, 1, 5, 5}}},
+    {{5}, {{5}, {5}, {5}}},
+    {{5}, {{5}, {5}, {5}}},
+    {{5}, {{5}, {5}, {5}}}
+};
+
+const std::vector<int64_t> blockShapeOutputDimOne = {1, 1, 2, 1, 1};
+const std::vector<int64_t> cropsBeginOutputDimOne = {0, 0, 0, 0, 0};
+const std::vector<int64_t> cropsEndOutputDimOne = {0, 0, 1, 0, 0};
+
+const auto dynamicBatchToSpaceParamsSetOutputDimOne = ::testing::Combine(::testing::Values(dynamicInputShapesOutputDimOne),
+                                                                         ::testing::Values(blockShapeOutputDimOne),
+                                                                         ::testing::Values(cropsBeginOutputDimOne),
+                                                                         ::testing::Values(cropsEndOutputDimOne),
+                                                                         ::testing::Values(ov::element::Type_t::f32),
+                                                                         ::testing::ValuesIn(cpuParams_5D));
+
+INSTANTIATE_TEST_SUITE_P(smoke_DynamicBatchToSpaceCPULayerTestCaseOutputDimOne,
+                         BatchToSpaceCPULayerTest,
+                         dynamicBatchToSpaceParamsSetOutputDimOne,
                          BatchToSpaceCPULayerTest::getTestCaseName);
 
 }  // namespace

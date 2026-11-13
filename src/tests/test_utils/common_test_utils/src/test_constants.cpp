@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,7 +11,7 @@ namespace utils {
 const char* DEVICE_AUTO = "AUTO";
 const char* DEVICE_CPU = "CPU";
 const char* DEVICE_GPU = "GPU";
-const char* DEVICE_KEEMBAY = "NPU";
+const char* DEVICE_NPU = "NPU";
 const char* DEVICE_BATCH = "BATCH";
 const char* DEVICE_MULTI = "MULTI";
 const char* DEVICE_TEMPLATE = "TEMPLATE";

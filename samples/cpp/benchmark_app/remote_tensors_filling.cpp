@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,12 +11,15 @@
 #include <utility>
 #include <vector>
 
-#ifdef HAVE_DEVICE_MEM_SUPPORT
+#ifdef HAVE_GPU_DEVICE_MEM_SUPPORT
 #    include <openvino/runtime/intel_gpu/ocl/ocl.hpp>
 #    include <openvino/runtime/intel_gpu/ocl/ocl_wrapper.hpp>
 #endif
 
-namespace gpu {
+#include <openvino/runtime/intel_npu/level_zero/level_zero.hpp>
+#include <openvino/runtime/intel_npu/remote_properties.hpp>
+
+namespace {
 
 template <typename T>
 using uniformDistribution = typename std::conditional<
@@ -66,6 +69,9 @@ void fill_buffer(void* inputBuffer, size_t elementsNum, const ov::element::Type&
         OPENVINO_THROW("Requested type is not supported");
     }
 }
+}  // namespace
+
+namespace gpu {
 
 std::map<std::string, ov::TensorVector> get_remote_input_tensors(
     const std::map<std::string, std::vector<std::string>>& inputFiles,
@@ -73,7 +79,7 @@ std::map<std::string, ov::TensorVector> get_remote_input_tensors(
     const ov::CompiledModel& compiledModel,
     std::vector<BufferType>& clBuffer,
     size_t num_requests) {
-#ifdef HAVE_DEVICE_MEM_SUPPORT
+#ifdef HAVE_GPU_DEVICE_MEM_SUPPORT
     slog::info << "Device memory will be used for input and output blobs" << slog::endl;
     if (inputFiles.size()) {
         slog::warn << "Device memory supports only random data at this moment, input images will be ignored"
@@ -82,6 +88,22 @@ std::map<std::string, ov::TensorVector> get_remote_input_tensors(
 
     std::map<std::string, ov::TensorVector> remoteTensors;
     auto context = compiledModel.get_context();
+
+    // use GPU with OCL runtime or driver supporting LEO (OCL/ZE interoperability)
+    const auto& context_params = context.get_params();
+    if (context_params.count(ov::intel_gpu::context_type.name()) > 0) {
+        const auto context_type =
+            context_params.at(ov::intel_gpu::context_type.name()).as<ov::intel_gpu::ContextType>();
+        // when ZE runtime and interoperability is available, the context is set to OCL
+        // otherwise remote device memory is not enabled
+        OPENVINO_ASSERT(context_type != ov::intel_gpu::ContextType::ZE,
+                        "[GPU] OCL context is required for remote device memory. "
+                        "Driver needs to support LEO to enable OCL/ZE interoperability.");
+    } else {
+        OPENVINO_THROW("[GPU] OCL context is required for remote device memory. "
+                       "No context type is set.");
+    }
+
     auto& oclContext = static_cast<ov::intel_gpu::ocl::ClContext&>(context);
     auto oclInstance = std::make_shared<gpu::OpenCL>(oclContext.get());
 
@@ -156,7 +178,7 @@ ov::Shape get_static_shape(const ov::Output<const ov::Node>& compiled_output) {
 
 std::map<std::string, ov::Tensor> get_remote_output_tensors(const ov::CompiledModel& compiledModel,
                                                             std::map<std::string, ::gpu::BufferType>& clBuffer) {
-#ifdef HAVE_DEVICE_MEM_SUPPORT
+#ifdef HAVE_GPU_DEVICE_MEM_SUPPORT
     std::map<std::string, ov::Tensor> outputTensors;
     std::shared_ptr<const ov::Model> runtime_model = nullptr;
     for (auto& output : compiledModel.outputs()) {
@@ -189,3 +211,47 @@ std::map<std::string, ov::Tensor> get_remote_output_tensors(const ov::CompiledMo
 #endif
 }
 }  // namespace gpu
+
+namespace npu {
+
+std::map<std::string, ov::TensorVector> get_remote_input_tensors(
+    const std::map<std::string, std::vector<std::string>>& inputFiles,
+    const std::vector<benchmark_app::InputsInfo>& app_inputs_info,
+    const ov::CompiledModel& compiledModel,
+    size_t num_requests) {
+    slog::info << "Device memory will be used for input blobs" << slog::endl;
+
+    std::map<std::string, ov::TensorVector> remoteTensors;
+    auto context = compiledModel.get_context();
+    auto& zeroContext = static_cast<ov::intel_npu::level_zero::ZeroContext&>(context);
+
+    for (size_t i = 0; i < num_requests; i++) {
+        for (auto& inputs_info : app_inputs_info) {
+            for (auto& input : inputs_info) {
+                auto tensor = zeroContext.create_l0_host_tensor(input.second.type,
+                                                                input.second.dataShape,
+                                                                ov::intel_npu::TensorType::INPUT);
+                remoteTensors[input.first].push_back(tensor);
+
+                if (inputFiles.empty()) {
+                    // Filling in random data
+                    slog::info << "Prepare remote blob for input '" << input.first << "' with random values ("
+                               << std::string((input.second.is_image() ? "image" : "some binary data"))
+                               << " is expected)" << slog::endl;
+
+                    auto elementsNum = std::accumulate(begin(input.second.dataShape),
+                                                       end(input.second.dataShape),
+                                                       1,
+                                                       std::multiplies<size_t>());
+
+                    fill_buffer(tensor.get(), elementsNum, input.second.type);
+                } else {
+                    OPENVINO_THROW(
+                        "[NPU] Device memory supports only random data at this moment, input images will be ignored");
+                }
+            }
+        }
+    }
+    return remoteTensors;
+}
+}  // namespace npu

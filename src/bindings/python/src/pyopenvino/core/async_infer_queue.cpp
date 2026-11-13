@@ -1,5 +1,6 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
+//
 
 #include "pyopenvino/core/async_infer_queue.hpp"
 
@@ -15,6 +16,7 @@
 
 #include "pyopenvino/core/common.hpp"
 #include "pyopenvino/core/infer_request.hpp"
+#include "pyopenvino/utils/utils.hpp"
 
 namespace py = pybind11;
 
@@ -40,7 +42,13 @@ public:
     }
 
     ~AsyncInferQueue() {
-        m_requests.clear();
+        try {
+            // Release the GIL before destroying requests. m_requests.clear() triggers a C++ destructor chain that
+            // eventually joins plugin executor threads (via CoreImpl dtor).
+            py::gil_scoped_release release;
+            m_requests.clear();
+        } catch (...) {
+        }
     }
 
     bool _is_ready() {
@@ -110,14 +118,17 @@ public:
     }
 
     void set_custom_callbacks(py::function f_callback) {
+        // need to acquire GIL before py::function deletion
+        auto callback_sp = Common::utils::wrap_pyfunction(std::move(f_callback));
+
         for (size_t handle = 0; handle < m_requests.size(); handle++) {
-            m_requests[handle].m_request.set_callback([this, f_callback, handle](std::exception_ptr exception_ptr) {
+            m_requests[handle].m_request.set_callback([this, callback_sp, handle](std::exception_ptr exception_ptr) {
                 *m_requests[handle].m_end_time = Time::now();
                 if (exception_ptr == nullptr) {
-                    // Acquire GIL, execute Python function
+                    // For free-threaded Python, gil_scoped_acquire still ensures thread is attached
                     py::gil_scoped_acquire acquire;
                     try {
-                        f_callback(m_requests[handle], m_user_ids[handle]);
+                        (*callback_sp)(m_requests[handle], m_user_ids[handle]);
                     } catch (const py::error_already_set& py_error) {
                         // This should behave the same as assert(!PyErr_Occurred())
                         // since constructor for pybind11's error_already_set is
@@ -162,7 +173,7 @@ public:
 
 void regclass_AsyncInferQueue(py::module m) {
     py::class_<AsyncInferQueue, std::shared_ptr<AsyncInferQueue>> cls(m, "AsyncInferQueue");
-    cls.doc() = "openvino.runtime.AsyncInferQueue represents a helper that creates a pool of asynchronous"
+    cls.doc() = "openvino.AsyncInferQueue represents a helper that creates a pool of asynchronous"
                 "InferRequests and provides synchronization functions to control flow of a simple pipeline.";
 
     cls.def(py::init<ov::CompiledModel&, size_t>(),
@@ -172,11 +183,11 @@ void regclass_AsyncInferQueue(py::module m) {
                 Creates AsyncInferQueue.
 
                 :param model: Model to be used to create InferRequests in a pool.
-                :type model: openvino.runtime.CompiledModel
+                :type model: openvino.CompiledModel
                 :param jobs: Number of InferRequests objects in a pool. If 0, jobs number
                 will be set automatically to the optimal number. Default: 0
                 :type jobs: int
-                :rtype: openvino.runtime.AsyncInferQueue
+                :rtype: openvino.AsyncInferQueue
             )");
 
     // Overload for single input, it will throw error if a model has more than one input.
@@ -212,7 +223,7 @@ void regclass_AsyncInferQueue(py::module m) {
 
             :param inputs: Data to set on single input tensor of next available InferRequest from
             AsyncInferQueue's pool.
-            :type inputs: openvino.runtime.Tensor
+            :type inputs: openvino.Tensor
             :param userdata: Any data that will be passed to a callback
             :type userdata: Any
             :rtype: None
@@ -258,7 +269,7 @@ void regclass_AsyncInferQueue(py::module m) {
 
             :param inputs: Data to set on input tensors of next available InferRequest from
             AsyncInferQueue's pool.
-            :type inputs: dict[Union[int, str, openvino.runtime.ConstOutput] : openvino.runtime.Tensor]
+            :type inputs: dict[Union[int, str, openvino.ConstOutput] : openvino.Tensor]
             :param userdata: Any data that will be passed to a callback
             :rtype: None
 
@@ -324,7 +335,7 @@ void regclass_AsyncInferQueue(py::module m) {
         },
         R"(
         Number of InferRequests in the pool.
-        
+
         :rtype: int
     )");
 
@@ -344,7 +355,7 @@ void regclass_AsyncInferQueue(py::module m) {
         :param i: InferRequest id
         :type i: int
         :return: InferRequests from the pool with given id.
-        :rtype: openvino.runtime.InferRequest
+        :rtype: openvino.InferRequest
     )");
 
     cls.def_property_readonly(
@@ -353,8 +364,8 @@ void regclass_AsyncInferQueue(py::module m) {
             return self.m_user_ids;
         },
         R"(
-        :return: List of all passed userdata. List is filled with `None` if the data wasn't passed yet.
-        :rtype: List[Any]
+        :return: list of all passed userdata. list is filled with `None` if the data wasn't passed yet.
+        :rtype: list[Any]
     )");
 
     cls.def("__repr__", [](const AsyncInferQueue& self) {

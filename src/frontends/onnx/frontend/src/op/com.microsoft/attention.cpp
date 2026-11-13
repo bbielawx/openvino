@@ -1,10 +1,11 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/com.microsoft/attention.hpp"
+#include "utils/attention.hpp"
 
 #include "core/null_node.hpp"
+#include "core/operator_set.hpp"
 #include "openvino/frontend/exception.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/broadcast.hpp"
@@ -37,14 +38,10 @@
 #include "openvino/op/transpose.hpp"
 #include "openvino/op/unsqueeze.hpp"
 #include "utils/split.hpp"
-
 using namespace ov::op;
 using ov::Shape;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
+namespace ov::frontend::onnx::com_microsoft {
 namespace detail {
 namespace {
 ov::NodeVector split_to_QKV(const std::shared_ptr<v1::Add>& node,
@@ -70,7 +67,7 @@ std::shared_ptr<ov::Node> get_present_state(const std::shared_ptr<ov::Node>& K,
 }  // namespace
 }  // namespace detail
 
-namespace set_1 {
+namespace opset_1 {
 ov::OutputVector attention(const ov::frontend::onnx::Node& node) {
     auto nodes = node.get_ov_inputs();
     const auto& input = nodes[0];
@@ -115,20 +112,13 @@ ov::OutputVector attention(const ov::frontend::onnx::Node& node) {
 
     return {output, present};
 }
-}  // namespace set_1
+ONNX_OP("Attention", OPSET_SINCE(1), com_microsoft::opset_1::attention, MICROSOFT_DOMAIN);
+}  // namespace opset_1
 
 namespace detail {
 namespace {
 
-std::shared_ptr<ov::Node> get_dimensions(const std::shared_ptr<v3::ShapeOf>& shape, const std::vector<int>& dims) {
-    static const auto zero = v0::Constant::create(ov::element::i32, ov::Shape{}, {0});
-    const auto dims_const = v0::Constant::create(ov::element::i32, ov::Shape{dims.size()}, dims);
-    return std::make_shared<v8::Gather>(shape, dims_const, zero);
-}
-
-std::shared_ptr<ov::Node> get_dimensions(const std::shared_ptr<ov::Node>& node, const std::vector<int>& dims) {
-    return get_dimensions(std::make_shared<v3::ShapeOf>(node), dims);
-}
+using ov::frontend::onnx::attention::get_dimensions;
 
 std::shared_ptr<ov::Node> get_hidden_size(const std::shared_ptr<v3::ShapeOf>& node_shape) {
     // node has shape (batch_size, sequence_length, 3 * hidden_size)
@@ -560,7 +550,4 @@ std::shared_ptr<ov::Node> get_present_state(const std::shared_ptr<ov::Node>& K,
 }
 }  // namespace
 }  // namespace detail
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::onnx::com_microsoft

@@ -1,47 +1,77 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <cstdint>
+#include <vector>
+
 #include "jit_kernel_base.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/core/visibility.hpp"
 
 #if defined(OPENVINO_ARCH_X86_64)
+#    include <xbyak/xbyak.h>
 
-namespace ov {
-namespace intel_cpu {
-namespace kernel {
+#    include <common/utils.hpp>
+#    include <cpu/x64/cpu_isa_traits.hpp>
+#    include <cpu/x64/jit_generator.hpp>
 
-struct RandomUniformCompileParams {
+#    include "nodes/kernels/x64/registers_pool.hpp"
+
+namespace ov::intel_cpu::kernel::random_uniform {
+
+struct PhiloxGeneratorCompileParams {
     element::Type out_data_type = element::f32;
 };
 
-struct RandomUniformCallArgs {
-    void* dst_ptr;
-    const void* key_ptr;
-    const void* counter_ptr;
-    const void* n_ptr;
-    const void* min_ptr;
-    const void* range_ptr;
-    uint64_t work_amount = 0lu;
+struct MersenneTwisterGeneratorCompileParams {
+    element::Type out_data_type = element::f32;
+    bool optimized = false;
+};
+
+struct PhiloxGeneratorCallArgs {
+    void* dst_ptr = nullptr;
+    const void* key_ptr = nullptr;
+    const void* counter_ptr = nullptr;
+    const void* n_ptr = nullptr;
+    const void* min_ptr = nullptr;
+    const void* range_ptr = nullptr;
+    uint64_t work_amount = 0LU;
+};
+
+struct MersenneTwisterGeneratorCallArgs {
+    void* dst_ptr = nullptr;
+    void* state_ptr = nullptr;
+    const void* min_ptr = nullptr;
+    const void* range_ptr = nullptr;
+    uint64_t output_idx = 0;
+    uint64_t max_output_idx = 0;
+    uint64_t state_accesses_count = 0LU;
+    int64_t elements_to_generate = 0LU;
 };
 
 template <dnnl::impl::cpu::x64::cpu_isa_t isa>
-class RandomUniform : public JitKernel<RandomUniformCompileParams, RandomUniformCallArgs> {
+class PhiloxGenerator : public JitKernel<PhiloxGeneratorCompileParams, PhiloxGeneratorCallArgs> {
 public:
-    DECLARE_CPU_JIT_AUX_FUNCTIONS(RandomUniform)
+    DECLARE_CPU_JIT_AUX_FUNCTIONS(PhiloxGenerator)
 
-    explicit RandomUniform(const RandomUniformCompileParams& jcp);
+    explicit PhiloxGenerator(const PhiloxGeneratorCompileParams& jcp);
 
     void generate() override;
 
 private:
-    using Vmm   = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core, Xbyak::Zmm,
-                                                           isa == dnnl::impl::cpu::x64::sse41,       Xbyak::Xmm,
-                                                                                                     Xbyak::Ymm>::type;
-    using Vmask = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core, Xbyak::Opmask,
-                                                           isa == dnnl::impl::cpu::x64::sse41,       Xbyak::Xmm,
-                                                                                                     Xbyak::Ymm>::type;
+    using Vmm = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core,
+                                                         Xbyak::Zmm,
+                                                         isa == dnnl::impl::cpu::x64::sse41,
+                                                         Xbyak::Xmm,
+                                                         Xbyak::Ymm>::type;
+    using Vmask = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core,
+                                                           Xbyak::Opmask,
+                                                           isa == dnnl::impl::cpu::x64::sse41,
+                                                           Xbyak::Xmm,
+                                                           Xbyak::Ymm>::type;
 
     RegistersPool::Reg<Xbyak::Reg64> r64_dst;
     RegistersPool::Reg<Xbyak::Reg64> r64_work_amount;
@@ -74,26 +104,94 @@ private:
 
     void process();
 
-    void runPhilox(const std::vector<Vmm>& vmm_res, const Vmm& vmm_key, const Vmm& vmm_counter, const Vmm& vmm_n);
+    void runPhilox(const std::vector<Vmm>& vmm_dst, const Vmm& vmm_key, const Vmm& vmm_counter, const Vmm& vmm_n);
 
-    void calculateRound(const Vmm& vmm_k_0, const Vmm& vmm_k_1, const Vmm& vmm_c_0, const Vmm& vmm_c_1,
-                        const Vmm& vmm_n_0, const Vmm& vmm_n_1, const Vmm& vmm_aux_0, const Vmm& vmm_aux_1);
+    void calculateRound(const Vmm& vmm_k_0,
+                        const Vmm& vmm_k_1,
+                        const Vmm& vmm_c_0,
+                        const Vmm& vmm_c_1,
+                        const Vmm& vmm_n_0,
+                        const Vmm& vmm_n_1,
+                        const Vmm& vmm_aux_0,
+                        const Vmm& vmm_aux_1);
 
     void raiseKey(const Vmm& vmm_k_0, const Vmm& vmm_k_1);
 
-    void convert(const std::vector<Vmm>& vmm_dst, const std::vector<Vmm>& vmm_src);
+    void convert(const std::vector<Vmm>& v_dst, const std::vector<Vmm>& v_src);
 
     void tail(const std::vector<Vmm>& vmm_dst);
 
-    static constexpr uint64_t ROUNDS_NUMBER = 10lu;
+    static constexpr uint64_t ROUNDS_NUMBER = 10LU;
     static constexpr uint32_t CRUSH_RESISTANCE_CONST_LOWER_VALUE = 0x9E3779B9;
     static constexpr uint32_t CRUSH_RESISTANCE_CONST_UPPER_VALUE = 0xBB67AE85;
     static constexpr uint64_t STATISTIC_MAXIMIZING_MULTIPLIER_N = 0xD2511F53;
     static constexpr uint64_t STATISTIC_MAXIMIZING_MULTIPLIER_COUNTER = 0xCD9E8D57;
 };
 
-}   // namespace kernel
-}   // namespace intel_cpu
-}   // namespace ov
+template <dnnl::impl::cpu::x64::cpu_isa_t isa>
+class MersenneTwisterGenerator
+    : public JitKernel<MersenneTwisterGeneratorCompileParams, MersenneTwisterGeneratorCallArgs> {
+public:
+    DECLARE_CPU_JIT_AUX_FUNCTIONS(MersenneTwisterGenerator)
 
-#endif // OPENVINO_ARCH_X86_64
+    explicit MersenneTwisterGenerator(const MersenneTwisterGeneratorCompileParams& jcp);
+
+    void generate() override;
+
+private:
+    using Vmm = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core,
+                                                         Xbyak::Zmm,
+                                                         isa == dnnl::impl::cpu::x64::sse41,
+                                                         Xbyak::Xmm,
+                                                         Xbyak::Ymm>::type;
+    using Vmask = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::avx512_core,
+                                                           Xbyak::Opmask,
+                                                           isa == dnnl::impl::cpu::x64::sse41,
+                                                           Xbyak::Xmm,
+                                                           Xbyak::Ymm>::type;
+
+    RegistersPool::Reg<Xbyak::Reg64> r64_dst;
+    RegistersPool::Reg<Xbyak::Reg64> r64_state;
+    RegistersPool::Reg<Xbyak::Reg64> r64_state_accesses_count;
+    RegistersPool::Reg<Xbyak::Reg64> r64_elements_to_generate;
+    RegistersPool::Reg<Xbyak::Reg64> r64_storage_capacity;
+    RegistersPool::Reg<Xbyak::Reg64> r64_output_idx;
+    RegistersPool::Reg<Xbyak::Reg64> r64_max_output_idx;
+
+    const Xbyak::Reg64 r64_params = Xbyak::Reg64(dnnl::impl::cpu::x64::abi_param_regs[0]);
+
+    // Vector registers for input storage.
+    RegistersPool::Reg<Vmm> v_dst;
+    RegistersPool::Reg<Vmm> v_state;
+    RegistersPool::Reg<Vmm> v_min;
+    RegistersPool::Reg<Vmm> v_range;
+
+    // Vector registers for generation.
+    RegistersPool::Reg<Vmm> v_const_1;  // for MT_CONST_1
+    RegistersPool::Reg<Vmm> v_const_2;  // for MT_CONST_2
+
+    // Vector registers for conversion.
+    RegistersPool::Reg<Vmm> v_mask;
+    RegistersPool::Reg<Vmm> v_divisor;
+
+    // Output vector register
+    RegistersPool::Reg<Vmm> v_result;
+
+    void initVectors();
+
+    void process();
+
+    void generateRandomNumbers();
+
+    void convertToOutputTypeMersenne();
+
+    void storeResults();
+
+    // Mersenne Twister constants
+    static constexpr uint32_t MT_CONST_1 = 0x9D2C5680;
+    static constexpr uint32_t MT_CONST_2 = 0xEFC60000;
+};
+
+}  // namespace ov::intel_cpu::kernel::random_uniform
+
+#endif  // OPENVINO_ARCH_X86_64

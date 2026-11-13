@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,11 +8,12 @@
 #include "openvino/frontend/node_context.hpp"
 #include "openvino/frontend/visibility.hpp"
 
-namespace ov {
-namespace frontend {
+namespace ov::frontend {
 
-class FRONTEND_API ConversionExtensionBase : public ov::Extension {
+class FRONTEND_API ConversionExtensionBase : public Extension {
 public:
+    OPENVINO_RTTI("ConversionExtensionBase", "0", Extension);
+
     using Ptr = std::shared_ptr<ConversionExtensionBase>;
     explicit ConversionExtensionBase(const std::string& op_type) : m_op_type(op_type) {}
 
@@ -20,7 +21,7 @@ public:
         return m_op_type;
     }
 
-    ~ConversionExtensionBase() override = default;
+    ~ConversionExtensionBase() override;
 
 private:
     std::string m_op_type;
@@ -28,6 +29,8 @@ private:
 
 class FRONTEND_API ConversionExtension : public ConversionExtensionBase {
 public:
+    OPENVINO_RTTI("ConversionExtension", "", ConversionExtensionBase);
+
     using Ptr = std::shared_ptr<ConversionExtension>;
     ConversionExtension(const std::string& op_type, const CreatorFunction& converter)
         : ConversionExtensionBase(op_type),
@@ -61,5 +64,4 @@ private:
     CreatorFunctionNamedAndIndexed m_converter_named_and_indexed;
 };
 
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend

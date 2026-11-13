@@ -1,75 +1,86 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "intel_gpu/graph/fused_primitive_desc.hpp"
 #include "intel_gpu/graph/serialization/binary_buffer.hpp"
+#include "intel_gpu/primitives/primitive.hpp"
 #include "intel_gpu/runtime/engine.hpp"
 #include "intel_gpu/runtime/memory.hpp"
 #include "intel_gpu/runtime/stream.hpp"
-#include "intel_gpu/runtime/utils.hpp"
 #include "intel_gpu/runtime/tensor.hpp"
-#include "intel_gpu/primitives/primitive.hpp"
-
-#include "intel_gpu/graph/fused_primitive_desc.hpp"
-
-#include <cstdint>
-#include <string>
-#include <vector>
-#include <memory>
+#include "intel_gpu/runtime/utils.hpp"
 
 namespace cldnn {
 
 struct program;
 struct network;
 
+struct ExecutionFlags : public std::bitset<5> {
+    static const size_t SHAPE_CHANGED = 0;
+    static const size_t IMPL_CHANGED = 1;
+    static const size_t MEMORY_CHANGED = 2;
+    static const size_t ARG_UPDATE_REQUIRED = 3;
+    static const size_t SKIP = 4;
+};
 
-struct kernel_impl_params {
+struct kernel_impl_params final {
     struct Hasher {
-        size_t operator()(const kernel_impl_params &k) const {
+        size_t operator()(const kernel_impl_params& k) const {
             return k.hash();
         }
     };
 
-    bool has_runtime_layouts = false;
-    const program *prog;
+    const program* prog;
     cldnn::device_type dev_type;
     stream::ptr strm;
     std::shared_ptr<const primitive> desc;
     size_t unique_id;
     bool _can_be_optimized = false;
+    bool _runtime_skippable = false;
     std::vector<layout> input_layouts;
     std::vector<layout> output_layouts;
     std::vector<tensor> input_offsets;
     std::vector<cldnn::fused_primitive_desc> fused_desc;
 #ifdef ENABLE_ONEDNN_FOR_GPU
     std::vector<cldnn::fused_primitive_desc_onednn> fused_desc_onednn;
-#endif // ENABLE_ONEDNN_FOR_GPU
+    std::shared_ptr<dnnl::primitive_attr> attrs_onednn;
+#endif  // ENABLE_ONEDNN_FOR_GPU
 
-    optional_layout weights_layout = optional_layout();
+    std::vector<event::ptr> dep_events;
+    event::ptr out_event = nullptr;
 
-    optional_layout bias_layout = optional_layout();
-    optional_layout weights_zero_points_layout = optional_layout();
-    optional_layout activations_zero_points_layout = optional_layout();
-    optional_layout compensation_layout = optional_layout();
-    optional_layout state_layout = optional_layout();
+    ExecutionFlags flags;
 
-    std::map<size_t, memory::ptr> memory_deps = {};
+    optional_layout weights_layout;
+
+    optional_layout bias_layout;
+    optional_layout weights_zero_points_layout;
+    optional_layout activations_zero_points_layout;
+    optional_layout compensation_layout;
+    std::vector<layout> state_layouts;
+
+    std::map<size_t, memory::ptr> memory_deps;
     size_t primary_input_idx = 0;
-    std::vector<std::shared_ptr<program>> inner_progs = {};
-    std::vector<std::shared_ptr<network>> inner_nets = {};
-    std::vector<std::map<size_t, primitive_id>> io_output_maps = {};
+    std::vector<std::shared_ptr<program>> inner_progs;
+    std::vector<std::shared_ptr<network>> inner_nets;
+    std::vector<std::map<size_t, primitive_id>> io_output_maps;
     // TODO : These values are temporarily added for prior box.
     // Such values decided at runtime shape infer and primitive creation will be handled with more generalized way in the near future.
     std::vector<size_t> output_size;
     std::vector<size_t> img_size;
 
-    std::map<size_t, size_t> in_port_to_shape_info_offset = {};
-    std::map<size_t, size_t> out_port_to_shape_info_offset = {};
+    std::map<size_t, size_t> in_port_to_shape_info_offset;
+    std::map<size_t, size_t> out_port_to_shape_info_offset;
 
-    kernel_impl_params() : prog(nullptr), dev_type(cldnn::device_type::integrated_gpu), strm(nullptr), desc(nullptr), unique_id(0) {
-    }
+    kernel_impl_params() : prog(nullptr), dev_type(cldnn::device_type::integrated_gpu), strm(nullptr), desc(nullptr), unique_id(0) {}
 
     kernel_impl_params(program& _prog,
                        cldnn::device_type _dev_type,
@@ -79,23 +90,26 @@ struct kernel_impl_params {
                        const std::vector<layout>& _in_layouts,
                        const std::vector<layout>& _out_layouts,
                        const std::vector<cldnn::fused_primitive_desc>& _fused_descs)
-                       : has_runtime_layouts(true)
-                       , prog(&_prog)
-                       , dev_type(_dev_type)
-                       , strm(std::move(_strm))
-                       , desc(std::move(_desc))
-                       , unique_id(_uid)
-                       , input_layouts(_in_layouts)
-                       , output_layouts(_out_layouts)
-                       , fused_desc(_fused_descs)
-                       , primary_input_idx(0) {
-    }
+        : prog(&_prog),
+          dev_type(_dev_type),
+          strm(std::move(_strm)),
+          desc(std::move(_desc)),
+          unique_id(_uid),
+          input_layouts(_in_layouts),
+          output_layouts(_out_layouts),
+          fused_desc(_fused_descs),
+          primary_input_idx(0) {}
 
-    layout get_input_layout(size_t idx = 0) const {
+    ~kernel_impl_params() = default;
+
+    const layout& get_input_layout(size_t idx = 0) const {
         OPENVINO_ASSERT(input_layouts.size() > idx,
                         "The size of input layouts must be greater than the requested index: ",
-                        "Requested index is ", idx, ", ",
-                        "but the size of input layouts is ", input_layouts.size());
+                        "Requested index is ",
+                        idx,
+                        ", ",
+                        "but the size of input layouts is ",
+                        input_layouts.size());
         return input_layouts[idx];
     }
 
@@ -105,29 +119,54 @@ struct kernel_impl_params {
         return result;
     }
 
-    layout get_output_layout(size_t idx = 0) const {
+    const layout& get_output_layout(size_t idx = 0) const {
         OPENVINO_ASSERT(output_layouts.size() > idx,
                         "The size of output layouts must be greater than the requested index: ",
-                        "Requested index is ", idx, ",",
-                        "but the size of output layouts is ", output_layouts.size());
+                        "Requested index is ",
+                        idx,
+                        ", ",
+                        "but the size of output layouts is ",
+                        output_layouts.size());
         return output_layouts[idx];
     }
 
-    bool has_fused_primitives() const { return !fused_desc.empty(); }
+    layout& get_output_layout(size_t idx = 0) {
+        OPENVINO_ASSERT(output_layouts.size() > idx,
+                        "The size of output layouts must be greater than the requested index: ",
+                        "Requested index is ",
+                        idx,
+                        ", ",
+                        "but the size of output layouts is ",
+                        output_layouts.size());
+        return output_layouts[idx];
+    }
 
-    layout get_fused_output_layout() const {
-        if (fused_desc.empty())
-            return layout(data_types::f32, format::bfyx, tensor());
-        return fused_desc.back().output_layout;
+    size_t get_input_layout_size() const {
+        return input_layouts.size();
+    }
+
+    bool has_fused_primitives() const {
+        return !fused_desc.empty();
+    }
+
+    ov::element::Type_t get_output_element_type(size_t idx = 0) const {
+        if (fused_desc.empty()) {
+            return output_layouts[idx].data_type;
+        }
+        return fused_desc.back().output_layouts[idx].data_type;
     }
 
     bool is_dynamic() const {
-        for (auto& i : input_layouts)
-            if (i.is_dynamic())
+        for (const auto& i : input_layouts) {
+            if (i.is_dynamic()) {
                 return true;
-        for (auto& i : output_layouts)
-            if (i.is_dynamic())
+            }
+        }
+        for (const auto& i : output_layouts) {
+            if (i.is_dynamic()) {
                 return true;
+            }
+        }
         return false;
     }
 
@@ -135,25 +174,40 @@ struct kernel_impl_params {
         return _can_be_optimized;
     }
 
+    bool runtime_skippable() const {
+        return _runtime_skippable;
+    }
+
     template <class PType>
-    std::shared_ptr<const PType> typed_desc() const { return std::static_pointer_cast<const PType>(desc); }
+    std::shared_ptr<const PType> typed_desc() const {
+        return std::static_pointer_cast<const PType>(desc);
+    }
 
     template <class PType>
     bool is_type() const {
         return std::static_pointer_cast<const PType>(desc)->type == PType::type_id();
     }
 
-    virtual primitive_type_id type() const { return desc->type; }
-
     const program& get_program() const {
         OPENVINO_ASSERT(prog != nullptr, "[GPU] Program pointer in kernel_impl_params is not initialized");
         return *prog;
     }
-    stream& get_stream() const { return *strm; }
-    stream::ptr get_stream_ptr() const { return strm; }
+
+    const device_info& get_device_info() const;
+
+    stream& get_stream() const {
+        return *strm;
+    }
+    stream::ptr get_stream_ptr() const {
+        return strm;
+    }
 
     size_t hash() const;
     bool operator==(const kernel_impl_params& rhs) const;
 };
 
 }  // namespace cldnn
+
+namespace ov::intel_gpu {
+using RuntimeParams = cldnn::kernel_impl_params;
+}  // namespace ov::intel_gpu

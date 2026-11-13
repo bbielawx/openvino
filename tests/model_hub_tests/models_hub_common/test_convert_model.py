@@ -1,14 +1,18 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 import gc
+import os
 
 import numpy as np
 # noinspection PyUnresolvedReferences
-import openvino_tokenizers  # do not delete, needed for text models
+try:
+    import openvino_tokenizers  # do not delete, needed for text models
+except:
+    pass
 from models_hub_common.multiprocessing_utils import multiprocessing_run
 from models_hub_common.utils import compare_two_tensors
 from openvino import convert_model
-from openvino.runtime import Core
+from openvino import Core
 
 # set seed to have deterministic input data generation
 # to avoid sporadic issues in inference results
@@ -17,6 +21,7 @@ rng = np.random.default_rng(seed=56190)
 
 class TestConvertModel:
     infer_timeout = 600
+    ov_config = {}
 
     def load_model(self, model_name, model_link):
         raise "load_model is not implemented"
@@ -55,9 +60,22 @@ class TestConvertModel:
     def infer_fw_model(self, model_obj, inputs):
         raise "infer_fw_model is not implemented"
 
+    def get_compile_config(self, ie_device):
+        # NPU: compile-only (offline); compiler-in-plugin is required to compile without a device
+        config = dict(self.ov_config)
+        if 'NPU' in (ie_device or ''):
+            config["NPU_COMPILER_TYPE"] = "PLUGIN"
+            npu_platform = os.environ.get("NPU_PLATFORM")
+            if npu_platform:
+                config["NPU_PLATFORM"] = npu_platform
+        return config
+
     def infer_ov_model(self, ov_model, inputs, ie_device):
         core = Core()
-        compiled = core.compile_model(ov_model, ie_device)
+        compiled = core.compile_model(ov_model, ie_device, self.get_compile_config(ie_device))
+        # Compile-only for NPU device
+        if 'NPU' in (ie_device or ''):
+            return None
         ov_outputs = compiled(inputs)
         return ov_outputs
 
@@ -95,6 +113,7 @@ class TestConvertModel:
 
     def _run(self, model_name, model_link, ie_device):
         self.model_name = model_name
+        self.ie_device = ie_device
         print("Load the model {} (url: {})".format(model_name, model_link))
         fw_model = self.load_model(model_name, model_link)
         print("Retrieve inputs info")
@@ -105,7 +124,12 @@ class TestConvertModel:
         ov_model = self.convert_model(fw_model)
         print("Infer ov::Model")
         ov_outputs = self.infer_ov_model(ov_model, inputs, ie_device)
-        
+
+        # Compile-only mode (e.g. NPU offline)
+        if ov_outputs is None:
+            print("Compile-only run on {}: skipping inference and accuracy comparison".format(ie_device))
+            return
+
         # Run original FW inference after OV inference, as original FW inference may change original FW model,
         # which results in corruption of shared memory.
         print("Infer the original model")

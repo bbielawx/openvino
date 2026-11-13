@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 #
@@ -26,7 +26,7 @@ def reduce_prod(name : str, x, axis=None, keepdim=False):
         outs = exe.run(
         feed={'x': x},
         fetch_list=[out])
-        saveModel(name, exe, feedkeys=['x'], fetchlist=[out], inputs=[x], outputs=[outs[0]], target_dir=sys.argv[1])
+        saveModel(name, exe, feed_vars=[data_x], fetchlist=[out], inputs=[x], outputs=[outs[0]], target_dir=sys.argv[1])
 
     return outs[0]
 
@@ -40,6 +40,10 @@ def main():
     reduce_prod("reduce_prod_test_3", data, axis=1, keepdim=True)
     reduce_prod("reduce_prod_test_4", data, axis=[1,2], keepdim=False)
     reduce_prod("reduce_prod_test_5", data, axis=[0,1], keepdim=True)
+
+    # issue 37952: reduce_prod keeps int32, unlike reduce_sum it must not be promoted
+    data_i32 = np.array([[1, 2, 3], [4, 5, 6]]).astype(np.int32)
+    reduce_prod("reduce_prod_i32", data_i32, axis=1, keepdim=True)
 
 
 if __name__ == "__main__":

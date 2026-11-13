@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,6 +17,8 @@
 
 namespace ov {
 namespace hetero {
+
+using SubmodelInfo = std::pair<std::string, std::shared_ptr<ov::Model>>;
 
 class CompiledModel;
 
@@ -49,6 +51,13 @@ public:
                                                      const ov::SoPtr<ov::IRemoteContext>& context,
                                                      const ov::AnyMap& properties) const override;
 
+    std::shared_ptr<ov::ICompiledModel> import_model(const ov::Tensor& model,
+                                                     const ov::AnyMap& properties) const override;
+
+    std::shared_ptr<ov::ICompiledModel> import_model(const ov::Tensor& model,
+                                                     const ov::SoPtr<ov::IRemoteContext>& context,
+                                                     const ov::AnyMap& properties) const override;
+
     ov::SupportedOpsMap query_model(const std::shared_ptr<const ov::Model>& model,
                                     const ov::AnyMap& properties) const override;
 
@@ -68,7 +77,13 @@ private:
         const ov::AnyMap& properties,
         bool allow_exception = false) const;
 
+    std::pair<ov::hetero::SubgraphsMappingInfo, std::vector<SubmodelInfo>> split_graph(
+        const std::shared_ptr<ov::Model>& model,
+        Configuration config) const;
+
     Configuration m_cfg;
+
+    mutable size_t independent_submodel_size = 0;
 };
 
 }  // namespace hetero

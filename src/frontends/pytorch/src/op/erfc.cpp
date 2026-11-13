@@ -1,20 +1,15 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "common_translators.hpp"
 #include "openvino/frontend/pytorch/node_context.hpp"
-#include "openvino/op/convert.hpp"
-#include "openvino/op/erf.hpp"
-#include "openvino/op/subtract.hpp"
 #include "utils.hpp"
 
 using namespace std;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 OutputVector translate_erfc(const NodeContext& context) {
     // aten::erf(Tensor self) -> Tensor
@@ -22,15 +17,7 @@ OutputVector translate_erfc(const NodeContext& context) {
     num_inputs_check(context, 1, 2);
     auto x = get_input_with_floating_type(context, 0);
 
-    // create 'ones' to use to calculate complementary of Erf output
-    auto ones = context.mark_node(make_shared<v0::Constant>(element::f32, Shape{}, 1.0f))->output(0);
-
-    ones = context.mark_node(std::make_shared<v1::ConvertLike>(ones, x));
-
-    // apply Erf to the input tensor 'x'
-    auto y = context.mark_node(make_shared<v0::Erf>(x));
-
-    y = context.mark_node(make_shared<v1::Subtract>(ones, y));
+    auto y = common_translators::translate_erfc_util(context, x)[0];
 
     if (!context.input_is_none(1)) {
         context.mutate_input(1, y);
@@ -38,7 +25,4 @@ OutputVector translate_erfc(const NodeContext& context) {
     return {y};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

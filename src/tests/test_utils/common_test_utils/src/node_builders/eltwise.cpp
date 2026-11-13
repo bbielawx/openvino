@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,11 +6,14 @@
 
 #include "openvino/op/add.hpp"
 #include "openvino/op/bitwise_and.hpp"
+#include "openvino/op/bitwise_left_shift.hpp"
 #include "openvino/op/bitwise_not.hpp"
 #include "openvino/op/bitwise_or.hpp"
+#include "openvino/op/bitwise_right_shift.hpp"
 #include "openvino/op/bitwise_xor.hpp"
 #include "openvino/op/divide.hpp"
 #include "openvino/op/erf.hpp"
+#include "openvino/op/floor.hpp"
 #include "openvino/op/floor_mod.hpp"
 #include "openvino/op/mod.hpp"
 #include "openvino/op/multiply.hpp"
@@ -39,6 +42,8 @@ std::shared_ptr<ov::Node> make_eltwise(const ov::Output<Node>& in0,
         return std::make_shared<ov::op::v1::Power>(in0, in1);
     case ov::test::utils::EltwiseTypes::FLOOR_MOD:
         return std::make_shared<ov::op::v1::FloorMod>(in0, in1);
+    case ov::test::utils::EltwiseTypes::FLOOR:
+        return std::make_shared<ov::op::v0::Floor>(in0);
     case ov::test::utils::EltwiseTypes::MOD:
         return std::make_shared<ov::op::v1::Mod>(in0, in1);
     case ov::test::utils::EltwiseTypes::ERF:
@@ -51,6 +56,10 @@ std::shared_ptr<ov::Node> make_eltwise(const ov::Output<Node>& in0,
         return std::make_shared<ov::op::v13::BitwiseOr>(in0, in1);
     case ov::test::utils::EltwiseTypes::BITWISE_XOR:
         return std::make_shared<ov::op::v13::BitwiseXor>(in0, in1);
+    case ov::test::utils::EltwiseTypes::RIGHT_SHIFT:
+        return std::make_shared<ov::op::v15::BitwiseRightShift>(in0, in1);
+    case ov::test::utils::EltwiseTypes::LEFT_SHIFT:
+        return std::make_shared<ov::op::v15::BitwiseLeftShift>(in0, in1);
     default: {
         OPENVINO_THROW("Incorrect type of Eltwise operation");
     }

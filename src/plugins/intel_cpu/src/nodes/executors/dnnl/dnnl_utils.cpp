@@ -1,36 +1,62 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "nodes/executors/dnnl/dnnl_utils.hpp"
 
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <oneapi/dnnl/dnnl.hpp>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
+#include <unordered_map>
 
+#include "cache/multi_cache.h"
 #include "cpu_memory.h"
+#include "dnnl_extension_utils.h"
+#include "memory_desc/cpu_memory_desc_utils.h"
 #include "memory_desc/dnnl_memory_desc.h"
 #include "nodes/executors/executor.hpp"
 #include "nodes/reorder.h"
+#include "openvino/core/except.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "thread_pool_imp.hpp"
+#include "weights_cache.hpp"
 
-namespace ov {
-namespace intel_cpu {
-namespace utils {
+namespace ov::intel_cpu::utils {
 
-DnnlMemoryDescPtr makeTransposedWeightDescriptor(const DnnlMemoryDescPtr srcDesc, const DnnlMemoryDescPtr dstDesc) {
-    const auto& weiDesc = srcDesc->getDnnlDesc();
-    const auto reorderedWeiDesc = dnnl::memory::desc{weiDesc.get_dims(), weiDesc.get_data_type(), dnnl::memory::format_tag::ba};
-    const auto transposedWeiDesc = reorderedWeiDesc.reshape(dstDesc->getDnnlDesc().get_dims());
+MemoryPtr prepareWeightsMemory(const DnnlMemoryDescPtr& srcWeightDesc,
+                               const DnnlMemoryDescPtr& dstWeightDesc,
+                               const MemoryCPtr& weightsMem,
+                               const ExecutorContext::CPtr& context,
+                               const bool needShiftSignedToUnsigned) {
+    const auto privateWeightCache = context->getPrivateWeightCache();
+    OPENVINO_ASSERT(privateWeightCache, "privateWeightCache is nullptr");
 
-    return DnnlExtensionUtils::makeDescriptor(transposedWeiDesc);
+    return prepareWeightsMemory(srcWeightDesc,
+                                dstWeightDesc,
+                                weightsMem,
+                                context->getEngine(),
+                                context->getRuntimeCache(),
+                                context->getWeightsCache(),
+                                privateWeightCache,
+                                context->getThreadPool(),
+                                needShiftSignedToUnsigned);
 }
 
-MemoryPtr prepareWeightsMemory(const DnnlMemoryDescPtr srcWeightDesc,
-                               const DnnlMemoryDescPtr dstWeightDesc,
-                               const MemoryCPtr weightsMem,
-                               const ExecutorContext::CPtr context) {
-    const auto& eng = context->getEngine();
-    const auto& format = dstWeightDesc->serializeFormat();
-
-    const auto privateWeightCache = context->getPrivateWeighCache();
+MemoryPtr prepareWeightsMemory(const DnnlMemoryDescPtr& srcWeightDesc,
+                               const DnnlMemoryDescPtr& dstWeightDesc,
+                               const MemoryCPtr& weightsMem,
+                               const dnnl::engine& eng,
+                               const MultiCachePtr& rtCache,
+                               const WeightsSharing::Ptr& globalWeightCache,
+                               const std::shared_ptr<std::unordered_map<std::string, MemoryPtr>>& privateWeightCache,
+                               const std::shared_ptr<ThreadPool>& threadPool,
+                               bool needShiftSignedToUnsigned) {
+    const auto format = dstWeightDesc->serializeFormat();
     if (privateWeightCache) {
         auto itr = privateWeightCache->find(format);
         if (privateWeightCache->end() != itr) {
@@ -39,30 +65,68 @@ MemoryPtr prepareWeightsMemory(const DnnlMemoryDescPtr srcWeightDesc,
     }
 
     auto create = [&]() {
+        // https://oneapi-src.github.io/oneDNN/dev_guide_int8_computations.html?highlight=128#inputs-of-the-same-type-s8
+        auto src_wdt = srcWeightDesc->getPrecision();
+        auto dst_wdt = dstWeightDesc->getPrecision();
+        if (needShiftSignedToUnsigned && src_wdt.is_integral_number() && src_wdt.is_signed() &&
+            dst_wdt.is_integral_number() && !dst_wdt.is_signed()) {
+            assert(src_wdt.bitwidth() == dst_wdt.bitwidth());
+
+            // prevent reorderData from doing conversion
+            Memory srcMemory{eng, srcWeightDesc->cloneWithNewPrecision(dst_wdt), weightsMem->getData()};
+            MemoryPtr _ptr = std::make_shared<Memory>(eng, dstWeightDesc);
+            node::Reorder::reorderData(srcMemory, *_ptr, rtCache, threadPool);
+
+            // do shift
+            auto count = _ptr->getSize() / _ptr->getDesc().getPrecision().size();
+            if (dst_wdt == ov::element::u8) {
+                auto* data = _ptr->getDataAs<uint8_t>();
+                for (size_t i = 0; i < count; i++) {
+                    data[i] = data[i] + 128;
+                }
+            } else if (dst_wdt == ov::element::u4) {
+                auto* data = _ptr->getDataAs<uint8_t>();
+                for (size_t i = 0; i < count; i++) {
+                    auto low = (data[i] & 0xF) + 8;
+                    auto high = (data[i] >> 4) + 8;
+                    data[i] = (high << 4) | (low & 0xF);
+                }
+            } else {
+                OPENVINO_THROW("Unsupported data type for shiftting sign to unsign");
+            }
+            return _ptr;
+        }
+
         Memory srcMemory{eng, srcWeightDesc, weightsMem->getData()};
         MemoryPtr _ptr = std::make_shared<Memory>(eng, dstWeightDesc);
-        auto rtCache = context->getRuntimeCache();
-        node::Reorder::reorderData(srcMemory, *_ptr, rtCache);
+        node::Reorder::reorderData(srcMemory, *_ptr, rtCache, threadPool);
 
         return _ptr;
     };
 
-    auto globalWeightCache = context->getWeightsCache();
     MemoryPtr ptr;
-    if (globalWeightCache &&
-        dnnl::memory::format_kind::blocked == dstWeightDesc->getDnnlDesc().get_format_kind()) {
-        const std::string string_hash = format + "_" + std::to_string(weightsMem->getSize()) + "_" +
-                                        std::to_string(*weightsMem->getDataAs<uint64_t>());
-        ptr = *globalWeightCache->findOrCreate(string_hash, create);
+    if (globalWeightCache && dnnl::memory::format_kind::blocked == dstWeightDesc->getDnnlDesc().get_format_kind()) {
+        ptr = MemoryPtr(
+            *globalWeightCache->findOrCreate(DnnlExtensionUtils::computeWeightsStringHash(weightsMem, dstWeightDesc),
+                                             create));
     } else {
         ptr = create();
     }
 
-    (*privateWeightCache)[format] = ptr;
+    if (privateWeightCache) {
+        (*privateWeightCache)[format] = ptr;
+    }
 
     return ptr;
 }
 
-}  // namespace utils
-}  // namespace intel_cpu
-}  // namespace ov
+bool isNonNegativeI8(const IMemory& mem) {
+    OPENVINO_ASSERT(mem.getDesc().getPrecision() == ov::element::i8, "isNonNegativeI8 expects i8 memory");
+    const auto* data = mem.getDataAs<const int8_t>();
+    const size_t count = mem.getShape().getElementsCount();
+    return std::all_of(data, data + count, [](int8_t value) {
+        return value >= 0;
+    });
+}
+
+}  // namespace ov::intel_cpu::utils

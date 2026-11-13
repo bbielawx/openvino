@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #pragma once
@@ -18,13 +18,15 @@ std::vector<TRShape> shape_infer(const ScaledDotProductAttention* op,
     const auto& inputs_count = input_shapes.size();
     const auto& has_attention_mask_input = inputs_count >= 4;
     const auto& has_scale_input = inputs_count == 5;
-    NODE_VALIDATION_CHECK(op, inputs_count == 3 || has_attention_mask_input || has_scale_input);
+    const auto& has_sink_input = inputs_count == 6;
+    NODE_VALIDATION_CHECK(op, inputs_count == 3 || has_attention_mask_input || has_scale_input || has_sink_input);
     DimType e_dim{};
     DimType l_dim{};
     DimType s_dim{};
     DimType ev_dim{};
 
-    TRShape n_dims = input_shapes[0];
+    auto output_shapes = std::vector<TRShape>{input_shapes[0]};
+    auto& n_dims = output_shapes[0];
     const auto& n_dims_rank = n_dims.rank();
     if (n_dims_rank.is_static()) {
         NODE_SHAPE_INFER_CHECK(op,
@@ -73,9 +75,9 @@ std::vector<TRShape> shape_infer(const ScaledDotProductAttention* op,
         const auto& attention_mask_rank = attention_mask.rank();
         if (attention_mask_rank.is_static() && attention_mask_rank != 0) {
             const auto& attention_mask_rank_len = attention_mask_rank.get_length();
-            bool attention_mask_input_correctness = attention_mask_rank_len >= 2 &&
-                                                    DimType::merge(l_dim, l_dim, *(attention_mask.end() - 2)) &&
-                                                    DimType::merge(s_dim, s_dim, *(attention_mask.end() - 1));
+            bool attention_mask_input_correctness =
+                attention_mask_rank_len >= 2 && DimType::broadcast_merge(l_dim, l_dim, *(attention_mask.end() - 2)) &&
+                DimType::broadcast_merge(s_dim, s_dim, *(attention_mask.end() - 1));
             if (attention_mask_rank_len >= 3) {
                 attention_mask_input_correctness =
                     attention_mask_input_correctness &&
@@ -103,11 +105,32 @@ std::vector<TRShape> shape_infer(const ScaledDotProductAttention* op,
         }
     }
 
+    if (has_sink_input) {
+        const auto& sink_shape = input_shapes[5];
+        const auto& sink_rank = sink_shape.rank();
+        const auto& query_shape = input_shapes[0];
+        const auto& query_rank = query_shape.rank();
+        if (sink_rank.is_static() && query_rank.is_static()) {
+            const bool sink_rank_correctness = sink_rank.get_length() == query_rank.get_length();
+            NODE_SHAPE_INFER_CHECK(op,
+                                   input_shapes,
+                                   sink_rank_correctness,
+                                   "The rank of sink input shape must be equal to the query input rank.");
+            auto sink_broadcast_dims = TRShape(std::vector<DimType>(sink_shape.begin(), sink_shape.end() - 1));
+            const bool sink_shape_correctness =
+                TRShape::broadcast_merge_into(sink_broadcast_dims,
+                                              TRShape(std::vector<DimType>(query_shape.begin(), query_shape.end() - 1)),
+                                              AutoBroadcastType::NUMPY) &&
+                sink_shape[sink_rank.get_length() - 1].compatible(1);
+            NODE_SHAPE_INFER_CHECK(op, input_shapes, sink_shape_correctness, "Sink input has not compatible shape.");
+        }
+    }
+
     if (n_dims.rank().is_static()) {
         n_dims.push_back(l_dim);
         n_dims.push_back(ev_dim);
     }
-    return {n_dims};
+    return output_shapes;
 }
 }  // namespace v13
 }  // namespace op

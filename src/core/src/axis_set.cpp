@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -22,7 +22,7 @@ ov::AxisSet& ov::AxisSet::operator=(const AxisSet& v) {
 }
 
 ov::AxisSet& ov::AxisSet::operator=(AxisSet&& v) noexcept {
-    static_cast<std::set<size_t>*>(this)->operator=(v);
+    static_cast<std::set<size_t>*>(this)->operator=(std::move(v));
     return *this;
 }
 
@@ -31,10 +31,7 @@ std::vector<int64_t> ov::AxisSet::to_vector() const {
 }
 
 std::ostream& ov::operator<<(std::ostream& s, const AxisSet& axis_set) {
-    s << "AxisSet{";
-    s << ov::util::join(axis_set);
-    s << "}";
-    return s;
+    return s << "AxisSet{" << ov::util::join<std::ostream>(axis_set) << "}";
 }
 
 const std::vector<int64_t>& ov::AttributeAdapter<ov::AxisSet>::get() {
@@ -55,3 +52,5 @@ void ov::AttributeAdapter<ov::AxisSet>::set(const std::vector<int64_t>& value) {
     }
     m_buffer_valid = false;
 }
+
+ov::AttributeAdapter<ov::AxisSet>::~AttributeAdapter() = default;

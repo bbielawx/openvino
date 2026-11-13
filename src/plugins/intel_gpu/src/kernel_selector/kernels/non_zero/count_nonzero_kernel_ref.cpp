@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2022 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -76,7 +76,7 @@ KernelsData CountNonzeroKernelRef::GetKernelsData(const Params& params) const {
     auto cldnn_jit = MakeBaseParamsJitConstants(newParams);
     if (newParams.has_dynamic_tensors()) {
         const auto& input = newParams.inputs[0];
-        DimensionAccessHelper dims(input);
+        DimensionAccessHelperJit dims(input);
         const std::string total_data_size = toVectorMulString({dims.x(), dims.y(), dims.z(), dims.w(), dims.f(), dims.b()});
         cldnn_jit.AddConstants({MakeJitConstant("DATA_SIZE", total_data_size)});
     } else {
@@ -112,8 +112,9 @@ KernelsPriority CountNonzeroKernelRef::GetKernelsPriority(const Params& /*params
 }
 
 bool CountNonzeroKernelRef::Validate(const Params& p) const {
-    if (!KernelBaseOpenCL::Validate(p))
-        return false;
+    if (!KernelBaseOpenCL::Validate(p)) {
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
+    }
 
     const auto& rp = static_cast<const count_nonzero_params&>(p);
 

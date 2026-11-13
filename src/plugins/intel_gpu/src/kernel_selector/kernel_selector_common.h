@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -18,6 +18,10 @@
 #define EXE_MODE_DEFAULT ""
 #define EXE_MODE_AGE_BASED "-cl-no-subgroup-ifp"
 #define EXE_MODE_NO_PRERA_SCH "-cl-intel-no-prera-scheduling"
+
+namespace micro {
+struct MicroKernelPackage;
+}  // namspace
 
 namespace kernel_selector {
 
@@ -42,6 +46,7 @@ namespace kernel_selector {
 
 std::string GetStringEnv(const char* varName);
 
+using KernelLanguage = cldnn::kernel_language;
 using KernelString = cldnn::kernel_string;
 using WorkGroupSizes = cldnn::work_group_sizes;
 using ScalarDescriptor = cldnn::scalar_desc;
@@ -49,7 +54,6 @@ using Scalars = cldnn::scalars_desc;
 using ArgumentDescriptor = cldnn::argument_desc;
 using Arguments = cldnn::arguments_desc;
 using KernelParams = cldnn::kernel_arguments_desc;
-
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // KernelCode
@@ -64,7 +68,11 @@ struct KernelCode {
 struct clKernelData {
     KernelCode code;
     KernelParams params;
+    std::vector<std::shared_ptr<micro::MicroKernelPackage>> micro_kernels;
     bool skip_execution = false;
+
+    void save(cldnn::BinaryOutputBuffer& ob) const;
+    void load(cldnn::BinaryInputBuffer& ib);
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -78,12 +86,26 @@ struct WeightsReorderParams {
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// InternalBuffer
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+struct InternalBuffer {
+    InternalBuffer() : lockable(false), byte_count(0) {}
+    InternalBuffer(size_t byte_count, bool lockable = false) : lockable(lockable), byte_count(byte_count) {}
+
+    bool lockable = false;
+    size_t byte_count = 0;
+
+    void save(cldnn::BinaryOutputBuffer& ob) const;
+    void load(cldnn::BinaryInputBuffer& ib);
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // KernelData
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 struct KernelData {
     std::shared_ptr<Params> params;
     std::vector<clKernelData> kernels;
-    std::vector<size_t> internalBufferSizes;
+    std::vector<InternalBuffer> internalBuffers;
     Datatype internalBufferDataType = Datatype::UNSUPPORTED;
     uint64_t runTime = std::numeric_limits<uint64_t>::max();  // kernel run time in nanoseconds
 
@@ -176,7 +198,7 @@ inline std::uint64_t create_hash(const unsigned char* begin, const unsigned char
     constexpr auto mul_factor = static_cast<std::uint64_t>(UINT64_C(1099511628211));
 
     std::uint64_t acc = start_acc;
-    for (auto elem_it = begin; elem_it != end; ++elem_it) {
+    for (const auto* elem_it = begin; elem_it != end; ++elem_it) {
         acc ^= static_cast<std::uint64_t>(*elem_it);
         acc *= mul_factor;
     }

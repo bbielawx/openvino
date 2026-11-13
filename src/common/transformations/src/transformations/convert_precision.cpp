@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,37 +8,47 @@
 #include <vector>
 
 #include "itt.hpp"
-#include "openvino/opsets/opset1.hpp"
-#include "openvino/opsets/opset10.hpp"
-#include "openvino/opsets/opset11.hpp"
-#include "openvino/opsets/opset13.hpp"
-#include "openvino/opsets/opset3.hpp"
-#include "openvino/opsets/opset4.hpp"
-#include "openvino/opsets/opset5.hpp"
-#include "openvino/opsets/opset6.hpp"
-#include "openvino/opsets/opset8.hpp"
-#include "openvino/opsets/opset9.hpp"
+#include "openvino/core/graph_util.hpp"
+#include "openvino/core/rt_info/weightless_caching_attributes.hpp"
+#include "openvino/core/type/element_iterator.hpp"
+#include "openvino/core/weight_sharing_util.hpp"
+#include "openvino/op/ops.hpp"
 #include "openvino/pass/constant_folding.hpp"
 #include "openvino/pass/manager.hpp"
 #include "openvino/reference/convert.hpp"
+#include "openvino/util/container_util.hpp"
+#include "ov_ops/rms.hpp"
 #include "ov_ops/type_relaxed.hpp"
 #include "transformations/fp16_compression/align_mixed_fp32_fp16_types.hpp"
 #include "transformations/fp16_compression/mark_decompression_convert_constant_folding.hpp"
 #include "transformations/fp16_compression/mark_subgraphs_to_keep_in_mixed_precision.hpp"
 #include "transformations/rt_info/decompression.hpp"
-#include "transformations/rt_info/disable_fp16_compression.hpp"
+#include "transformations/rt_info/disable_precision_conversion.hpp"
 #include "transformations/rt_info/keep_const_precision.hpp"
 #include "transformations/rt_info/original_precision_attribute.hpp"
 #include "transformations/utils/utils.hpp"
 
 using namespace ov;
 
+namespace v0 = ov::op::v0;
+namespace v1 = ov::op::v1;
+namespace v3 = ov::op::v3;
+namespace v4 = ov::op::v4;
+namespace v5 = ov::op::v5;
+namespace v6 = ov::op::v6;
+namespace v8 = ov::op::v8;
+namespace v9 = ov::op::v9;
+namespace v10 = ov::op::v10;
+namespace v13 = ov::op::v13;
+namespace v14 = ov::op::v14;
+namespace v15 = ov::op::v15;
+namespace op_util = ov::op::util;
 bool fuse_type_to_parameter(const std::shared_ptr<ov::Node>& node,
                             const precisions_map& precisions,
                             bool convert_input_precision);
 
 // this function inserts Convert operations to 'data' input and outputs of `node`
-// to execute 'node' with the original type.
+// to execute 'node' with the original type. This function supports nodes with single output.
 bool wrap_into_original_type(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
 bool store_original_type_as_attribute(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
 
@@ -68,8 +78,11 @@ bool fuse_type_to_maxpool(const std::shared_ptr<ov::Node>& node, const precision
 bool fuse_type_to_nonzero(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
 bool fuse_type_to_bucketize(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
 bool fuse_type_to_ctc_greedy_decoder_seq_len(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
+bool fuse_type_to_rms(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
 
 bool fuse_type_to_random_uniform_v8(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
+
+bool fuse_type_to_search_sorted_v15(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
 
 bool extend_select_type(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
 bool extend_reverse_type(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
@@ -83,7 +96,7 @@ bool fuse_type_to_binary_comparision(const std::shared_ptr<ov::Node>& node, cons
     if (auto type_relaxed = std::dynamic_pointer_cast<ov::op::TypeRelaxedBase>(node)) {
         type_relaxed->set_overridden_output_type(to);
         return true;
-    } else if (auto casted = std::dynamic_pointer_cast<T>(node)) {
+    } else if (auto casted = ov::as_type_ptr<T>(node)) {
         auto relaxed_op =
             std::make_shared<ov::op::TypeRelaxed<T>>(*casted, ov::element::TypeVector{}, ov::element::TypeVector{to});
         replace_node(node, relaxed_op);
@@ -103,7 +116,7 @@ bool fuse_type_to_logical(const std::shared_ptr<ov::Node>& node, const precision
         for (size_t i = 0; i < node->get_input_size(); ++i)
             type_relaxed->set_origin_input_type(ov::element::boolean, i);
         return true;
-    } else if (auto casted = std::dynamic_pointer_cast<T>(node)) {
+    } else if (auto casted = ov::as_type_ptr<T>(node)) {
         ov::element::TypeVector input_types(node->get_input_size(), ov::element::boolean);
         auto relaxed_op = std::make_shared<ov::op::TypeRelaxed<T>>(*casted, input_types, ov::element::TypeVector{to});
         replace_node(node, relaxed_op);
@@ -122,7 +135,7 @@ bool fuse_type_to_reduce_logical(const std::shared_ptr<ov::Node>& node, const pr
         type_relaxed->set_overridden_output_type(to);
         type_relaxed->set_origin_input_type(ov::element::boolean, 0);
         return true;
-    } else if (auto casted = std::dynamic_pointer_cast<T>(node)) {
+    } else if (auto casted = ov::as_type_ptr<T>(node)) {
         auto relaxed_op = std::make_shared<ov::op::TypeRelaxed<T>>(*casted,
                                                                    ov::element::TypeVector{ov::element::boolean},
                                                                    ov::element::TypeVector{to});
@@ -143,7 +156,7 @@ bool fuse_type_to_prior_box(const std::shared_ptr<ov::Node>& node, const precisi
     if (auto type_relaxed = std::dynamic_pointer_cast<ov::op::TypeRelaxedBase>(node)) {
         type_relaxed->set_overridden_output_type(to);
         return true;
-    } else if (const auto casted = std::dynamic_pointer_cast<T>(node)) {
+    } else if (const auto casted = ov::as_type_ptr<T>(node)) {
         auto relaxed_op = std::make_shared<op::TypeRelaxed<T>>(
             *casted,
             ov::element::TypeVector{casted->get_input_element_type(0), casted->get_input_element_type(1)},
@@ -164,6 +177,15 @@ bool node_is_replaced(const std::shared_ptr<Node>& node) {
     return has_consumers && !(is_type<op::v0::Result>(node) || is_type<op::Sink>(node));
 }
 
+static precisions_map filter_precisions_for_node(const std::shared_ptr<ov::Node>& node,
+                                                 const precisions_map& precisions) {
+    precisions_map result = precisions;
+    ov::util::erase_if(result, [&](const precisions_map::value_type& entry) {
+        return is_conversion_disabled(node, entry.first, entry.second);
+    });
+    return result;
+}
+
 bool convert_node_output_precision(
     const std::shared_ptr<ov::Node>& node,
     const precisions_map& precisions,
@@ -172,7 +194,7 @@ bool convert_node_output_precision(
     bool function_changed) {
     bool node_changed = false;
     // Handle case with Constants as they can have consumers from other ov::Model object
-    const auto constant = ov::as_type_ptr<opset10::Constant>(node);
+    const auto constant = ov::as_type_ptr<v0::Constant>(node);
     const auto it = const_to_internal_output.find(node.get());
     if (constant && it != const_to_internal_output.end()) {
         return fuse_type_to_constant(node, precisions, it->second);
@@ -202,18 +224,27 @@ bool convert_node_input_precision(const std::shared_ptr<ov::Node>& node,
     return false;
 }
 
-bool convert_function_precision(const std::shared_ptr<Model>& f,
+bool convert_function_precision(ov::pass::PassBase& pass,
+                                const std::shared_ptr<Model>& f,
                                 const type_to_fuse_map& type_to_fuse,
                                 const type_to_fuse_map& type_to_extend,
                                 const precisions_map& precisions,
                                 std::unordered_map<const ov::Node*, std::vector<Input<Node>>>& const_to_internal_output,
-                                bool has_fp16_compression,
-                                bool skip_precision_sensitive,
+                                bool keep_sensitive_in_fp32,
                                 bool is_changed,
                                 bool is_subgraph,
                                 bool convert_input_output_precision,
-                                bool store_original_precision_as_rt_attribute) {
+                                bool store_original_precision_as_rt_attribute,
+                                bool names_compatibility_mode) {
     bool is_output_precision_changed = false;
+
+    if (keep_sensitive_in_fp32 && precisions.count(element::f32) && precisions.at(element::f32) == element::f16) {
+        pass::Manager manager(pass.get_pass_config(), "KeepPrecisionSensitiveInFP32");
+        // Mark subgraphs with disable_fp16_compression to keep them in FP32
+        manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
+        manager.register_pass<pass::AlignMixedFP32FP16Types>();
+        manager.run_passes(f);
+    }
 
     ov::element::TypeVector orig_result_types;
     if (!convert_input_output_precision) {
@@ -229,15 +260,13 @@ bool convert_function_precision(const std::shared_ptr<Model>& f,
     // otherwise we insert Convert operation.
     auto ops = f->get_ordered_ops();
     for (auto& node : ops) {
-        if (skip_precision_sensitive && fp16_compression_is_disabled(node) && has_fp16_compression)
-            continue;
-        is_changed = convert_node_input_precision(node, precisions, type_to_extend) || is_changed;
+        auto node_precisions = filter_precisions_for_node(node, precisions);
+        is_changed = convert_node_input_precision(node, node_precisions, type_to_extend) || is_changed;
     }
 
     for (const auto& param : f->get_parameters()) {
-        if (skip_precision_sensitive && fp16_compression_is_disabled(param) && has_fp16_compression)
-            continue;
-        is_changed = fuse_type_to_parameter(param, precisions, convert_input_output_precision) || is_changed;
+        auto node_precisions = filter_precisions_for_node(param, precisions);
+        is_changed = fuse_type_to_parameter(param, node_precisions, convert_input_output_precision) || is_changed;
     }
 
     if (convert_input_output_precision || store_original_precision_as_rt_attribute) {
@@ -252,8 +281,7 @@ bool convert_function_precision(const std::shared_ptr<Model>& f,
     auto register_constants = [&const_to_internal_output](const std::vector<std::shared_ptr<Node>>& ops) {
         for (auto& node : ops) {
             for (auto& input : node->inputs()) {
-                if (auto const_node =
-                        std::dynamic_pointer_cast<opset4::Constant>(input.get_source_output().get_node_shared_ptr())) {
+                if (auto const_node = ov::as_type_ptr<v0::Constant>(input.get_source_output().get_node_shared_ptr())) {
                     const_to_internal_output[const_node.get()].emplace_back(input);
                 }
             }
@@ -263,26 +291,37 @@ bool convert_function_precision(const std::shared_ptr<Model>& f,
     // Register internal constants only after fixing input type that could lead to nodes
     // replacement
     register_constants(ops);
+    // Move each shared_ptr out of `ops` as we iterate so that an old constant
+    // is destroyed as soon as fuse_type_to_constant has rewired its consumers
+    // to the freshly allocated replacement. Without the std::move the original
+    // constants stay alive until the loop ends, doubling the peak memory of
+    // the pass on constant-heavy models.
 
-    for (auto& node : ops) {
-        // skip precision sensitive nodes
-        if (skip_precision_sensitive && fp16_compression_is_disabled(node) && has_fp16_compression)
+    for (size_t i = 0; i < ops.size(); ++i) {
+        auto node = std::move(ops[i]);
+        auto node_precisions = filter_precisions_for_node(node, precisions);
+
+        // Skip nodes where all requested conversions are disabled (e.g. sensitive ops kept in FP32)
+        if (keep_sensitive_in_fp32 && node_precisions.empty()) {
             continue;
+        }
+
         // Recursively apply transformation for sub-graph based operations
-        if (auto sub_graph_node = std::dynamic_pointer_cast<op::util::MultiSubGraphOp>(node)) {
+        if (auto sub_graph_node = ov::as_type_ptr<op::util::MultiSubGraphOp>(node)) {
             size_t sub_graphs_num = sub_graph_node->get_internal_subgraphs_size();
             for (size_t sub_graph_ind = 0; sub_graph_ind < sub_graphs_num; ++sub_graph_ind) {
-                is_changed = convert_function_precision(sub_graph_node->get_function(static_cast<int>(sub_graph_ind)),
+                is_changed = convert_function_precision(pass,
+                                                        sub_graph_node->get_function(static_cast<int>(sub_graph_ind)),
                                                         type_to_fuse,
                                                         type_to_extend,
                                                         precisions,
                                                         const_to_internal_output,
-                                                        has_fp16_compression,
-                                                        skip_precision_sensitive,
+                                                        keep_sensitive_in_fp32,
                                                         is_changed || is_output_precision_changed,
-                                                        true,
-                                                        true,
-                                                        store_original_precision_as_rt_attribute) ||
+                                                        true,  // is_changed
+                                                        true,  // is_subgraph
+                                                        store_original_precision_as_rt_attribute,
+                                                        names_compatibility_mode) ||
                              is_changed;
             }
         }
@@ -295,23 +334,27 @@ bool convert_function_precision(const std::shared_ptr<Model>& f,
             continue;
         }
         is_output_precision_changed = convert_node_output_precision(node,
-                                                                    precisions,
+                                                                    node_precisions,
                                                                     type_to_fuse,
                                                                     const_to_internal_output,
                                                                     is_changed || is_output_precision_changed) ||
                                       is_output_precision_changed;
     }
 
+    // The constant-replacement loop above moved every shared_ptr out of `ops`,
+    // so the vector is now full of nullptrs. Always refresh it before the
+    // downstream Convert-cleanup loop, otherwise that loop would silently skip
+    // every node and miss freshly inserted Convert ops.
+    ops = f->get_ordered_ops();
     if (is_output_precision_changed) {
-        ops = f->get_ordered_ops();
-        is_changed = is_output_precision_changed || is_changed;
+        is_changed = true;
     }
 
     if (!is_subgraph) {
         // TODO: we need to split NopElimination pass to separate MatcherPasses and call
         // Convert elimination here
         for (auto& node : ops) {
-            if (auto convert = std::dynamic_pointer_cast<opset4::Convert>(node)) {
+            if (auto convert = ov::as_type_ptr<v0::Convert>(node)) {
                 if (pass::constant_folding_is_disabled(node))
                     continue;
                 // WA for topK, dont remove fake convert
@@ -329,25 +372,22 @@ bool convert_function_precision(const std::shared_ptr<Model>& f,
             auto& result = results[i];
             if (result->get_input_element_type(0) != orig_result_types[i]) {
                 auto result_input = result->input_value(0);
-                const auto convert = std::make_shared<ov::op::v0::Convert>(result_input, orig_result_types[i]);
-                if (result_input.get_node()->get_output_size() > 1) {
-                    convert->set_friendly_name(result_input.get_node()->get_friendly_name() + "." +
-                                               std::to_string(result_input.get_index()));
+                const auto convert = std::make_shared<v0::Convert>(result_input, orig_result_types[i]);
+
+                auto convert_f_name = result_input.get_node()->get_friendly_name();
+                if (names_compatibility_mode) {
+                    if (result_input.get_node()->get_output_size() > 1) {
+                        convert_f_name += '.' + std::to_string(result_input.get_index());
+                    } else {
+                        result_input.get_node()->set_friendly_name("");
+                    }
+
+                    convert->get_output_tensor(0).set_names(result_input.get_names());
                 } else {
-                    convert->set_friendly_name(result_input.get_node()->get_friendly_name());
-                    result_input.get_node()->set_friendly_name("");
+                    convert_f_name += '.' + std::to_string(result_input.get_index());
                 }
+                convert->set_friendly_name(convert_f_name);
 
-                auto& convert_output_tensor = convert->get_output_tensor(0);
-                convert_output_tensor.set_names(result_input.get_names());
-                OPENVINO_SUPPRESS_DEPRECATED_START
-                const auto& legacy_name = ov::descriptor::get_ov_tensor_legacy_name(result_input.get_tensor());
-                if (!legacy_name.empty()) {
-                    ov::descriptor::set_ov_tensor_legacy_name(convert_output_tensor, legacy_name);
-                }
-                OPENVINO_SUPPRESS_DEPRECATED_END
-
-                result_input.set_names({});
                 result->input(0).replace_source_output(convert->output(0));
                 result->revalidate_and_infer_types();
             }
@@ -362,25 +402,27 @@ bool convert_precision(ov::pass::PassBase& pass,
                        const type_to_fuse_map& type_to_fuse,
                        const type_to_fuse_map& type_to_extend,
                        const precisions_map& precisions,
-                       bool has_fp16_compression,
-                       bool skip_precision_sensitive,
+                       bool keep_sensitive_in_fp32,
                        bool convert_input_output_precision,
                        bool store_original_precision_as_rt_attribute) {
     // As Constant operations can be shared between multiple ov::Models so before
     // changing precision we need to understand which Constant consumers belongs
     // to the current ov::Model
     std::unordered_map<const ov::Node*, std::vector<Input<Node>>> const_to_internal_output;
-    return convert_function_precision(f,
+
+    const auto names_compatibility_mode = f->has_rt_info("version") && f->get_rt_info<int64_t>("version") < 11;
+    return convert_function_precision(pass,
+                                      f,
                                       type_to_fuse,
                                       type_to_extend,
                                       precisions,
                                       const_to_internal_output,
-                                      has_fp16_compression,
-                                      skip_precision_sensitive,
+                                      keep_sensitive_in_fp32,
                                       false,
                                       false,
                                       convert_input_output_precision,
-                                      store_original_precision_as_rt_attribute);
+                                      store_original_precision_as_rt_attribute,
+                                      names_compatibility_mode);
 }
 
 using precisions_set_t = std::unordered_set<ov::element::Type_t, EnumClassHash>;
@@ -392,7 +434,7 @@ precisions_set_t find_all_used_precisions(const std::shared_ptr<ov::Model>& fn) 
         for (const auto& output : node->outputs()) {
             used_precisions.emplace(output.get_element_type());
         }
-        if (auto sub_graph_node = std::dynamic_pointer_cast<ov::op::util::MultiSubGraphOp>(node)) {
+        if (auto sub_graph_node = ov::as_type_ptr<op_util::MultiSubGraphOp>(node)) {
             size_t sub_graphs_num = sub_graph_node->get_internal_subgraphs_size();
             for (size_t sub_graph_ind = 0; sub_graph_ind < sub_graphs_num; ++sub_graph_ind) {
                 auto sub_graph_precisions =
@@ -419,64 +461,60 @@ bool ov::pass::ConvertPrecision::run_on_model(const std::shared_ptr<ov::Model>& 
     if (used_precisions.empty())
         return false;
 
-    bool has_fp16_compression = m_precisions.count(element::f32) > 0 && m_precisions[element::f32] == element::f16;
-
-    if (m_keep_precision_sensitive_in_fp32 && has_fp16_compression) {
-        pass::Manager manager(get_pass_config());
-        // Mark subgraphs with disable_fp16_compression to keep them in FP32
-        manager.register_pass<pass::MarkSugraphsToKeepInMixedPrecision>();
-        manager.register_pass<pass::AlignMixedFP32FP16Types>();
-        manager.run_passes(f);
-    }
-
     type_to_fuse_map type_to_fuse{
-        {opset4::Convert::get_type_info_static(), fuse_type_to_convert},
-        {opset4::ShapeOf::get_type_info_static(), fuse_type_to_shapeof},
-        {opset6::Assign::get_type_info_static(),
+        {v0::Convert::get_type_info_static(), fuse_type_to_convert},
+        {v3::ShapeOf::get_type_info_static(), fuse_type_to_shapeof},
+        {v6::Assign::get_type_info_static(),
          m_store_original_precision_as_rt_attribute ? store_original_type_as_attribute : wrap_into_original_type},
-        {opset6::ReadValue::get_type_info_static(),
+        {v6::ReadValue::get_type_info_static(),
          m_store_original_precision_as_rt_attribute ? store_original_type_as_attribute : wrap_into_original_type},
-        {opset3::NonMaxSuppression::get_type_info_static(), fuse_type_to_nms3},
-        {opset4::NonMaxSuppression::get_type_info_static(), fuse_type_to_nms4},
-        {opset5::NonMaxSuppression::get_type_info_static(), fuse_type_to_nms5},
-        {opset9::NonMaxSuppression::get_type_info_static(), fuse_type_to_nms9},
+        {v3::NonMaxSuppression::get_type_info_static(), fuse_type_to_nms3},
+        {v4::NonMaxSuppression::get_type_info_static(), fuse_type_to_nms4},
+        {v5::NonMaxSuppression::get_type_info_static(), fuse_type_to_nms5},
+        {v9::NonMaxSuppression::get_type_info_static(), fuse_type_to_nms9},
         {op::v13::NMSRotated::get_type_info_static(), fuse_type_to_nms_rotated},
-        {opset8::MatrixNms::get_type_info_static(), fuse_type_to_matrix_nms},
-        {opset8::MulticlassNms::get_type_info_static(), fuse_type_to_multiclass_nms},
-        {opset9::MulticlassNms::get_type_info_static(), fuse_type_to_multiclass_nms},
-        {opset9::GenerateProposals::get_type_info_static(), fuse_type_to_generate_proposals},
-        {opset6::CTCGreedyDecoderSeqLen::get_type_info_static(), fuse_type_to_ctc_greedy_decoder_seq_len},
-        {opset1::TopK::get_type_info_static(), fuse_type_to_topk},
-        {opset4::TopK::get_type_info_static(), fuse_type_to_topk},
-        {opset11::TopK::get_type_info_static(), fuse_type_to_topk},
-        {opset8::MaxPool::get_type_info_static(), fuse_type_to_maxpool},
-        {opset4::NonZero::get_type_info_static(), fuse_type_to_nonzero},
-        {opset4::Bucketize::get_type_info_static(), fuse_type_to_bucketize},
-        {opset4::Equal::get_type_info_static(), fuse_type_to_binary_comparision<opset4::Equal>},
-        {opset4::NotEqual::get_type_info_static(), fuse_type_to_binary_comparision<opset4::NotEqual>},
-        {opset4::Greater::get_type_info_static(), fuse_type_to_binary_comparision<opset4::Greater>},
-        {opset4::GreaterEqual::get_type_info_static(), fuse_type_to_binary_comparision<opset4::GreaterEqual>},
-        {opset4::Less::get_type_info_static(), fuse_type_to_binary_comparision<opset4::Less>},
-        {opset4::LessEqual::get_type_info_static(), fuse_type_to_binary_comparision<opset4::LessEqual>},
-        {opset10::IsFinite::get_type_info_static(), fuse_type_to_binary_comparision<opset10::IsFinite>},
-        {opset10::IsNaN::get_type_info_static(), fuse_type_to_binary_comparision<opset10::IsNaN>},
-        {opset10::IsInf::get_type_info_static(), fuse_type_to_binary_comparision<opset10::IsInf>},
-        {opset4::LogicalAnd::get_type_info_static(), fuse_type_to_logical<opset4::LogicalAnd>},
-        {opset4::LogicalOr::get_type_info_static(), fuse_type_to_logical<opset4::LogicalOr>},
-        {opset4::LogicalXor::get_type_info_static(), fuse_type_to_logical<opset4::LogicalXor>},
-        {opset4::LogicalNot::get_type_info_static(), fuse_type_to_logical<opset4::LogicalNot>},
-        {opset1::Xor::get_type_info_static(), fuse_type_to_logical<opset1::Xor>},
-        {opset4::ReduceLogicalAnd::get_type_info_static(), fuse_type_to_reduce_logical<opset4::ReduceLogicalAnd>},
-        {opset4::ReduceLogicalOr::get_type_info_static(), fuse_type_to_reduce_logical<opset4::ReduceLogicalOr>},
-        {opset1::ShapeOf::get_type_info_static(), fuse_type_to_shapeof_v0},
-        {opset4::Range::get_type_info_static(), fuse_type_to_range_v4},
-        {opset9::Eye::get_type_info_static(), fuse_type_to_eye_v9},
-        {opset10::Unique::get_type_info_static(), fuse_type_to_unique_v10},
-        {opset8::RandomUniform::get_type_info_static(), fuse_type_to_random_uniform_v8},
-        {opset13::Multinomial::get_type_info_static(), fuse_type_to_multinomial_v13},
-        {opset1::PriorBox::get_type_info_static(), fuse_type_to_prior_box<opset1::PriorBox>},
-        {opset8::PriorBox::get_type_info_static(), fuse_type_to_prior_box<opset8::PriorBox>},
-        {opset1::PriorBoxClustered::get_type_info_static(), fuse_type_to_prior_box<opset1::PriorBoxClustered>}};
+        {v8::MatrixNms::get_type_info_static(), fuse_type_to_matrix_nms},
+        {v8::MulticlassNms::get_type_info_static(), fuse_type_to_multiclass_nms},
+        {v9::MulticlassNms::get_type_info_static(), fuse_type_to_multiclass_nms},
+        {v9::GenerateProposals::get_type_info_static(), fuse_type_to_generate_proposals},
+        {v6::CTCGreedyDecoderSeqLen::get_type_info_static(), fuse_type_to_ctc_greedy_decoder_seq_len},
+        {v1::TopK::get_type_info_static(), fuse_type_to_topk},
+        {v3::TopK::get_type_info_static(), fuse_type_to_topk},
+        {ov::op::v11::TopK::get_type_info_static(), fuse_type_to_topk},
+        {v8::MaxPool::get_type_info_static(), fuse_type_to_maxpool},
+        {v14::MaxPool::get_type_info_static(), fuse_type_to_maxpool},
+        {v3::NonZero::get_type_info_static(), fuse_type_to_nonzero},
+        {v3::Bucketize::get_type_info_static(), fuse_type_to_bucketize},
+        {v1::Equal::get_type_info_static(), fuse_type_to_binary_comparision<v1::Equal>},
+        {v1::NotEqual::get_type_info_static(), fuse_type_to_binary_comparision<v1::NotEqual>},
+        {v1::Greater::get_type_info_static(), fuse_type_to_binary_comparision<v1::Greater>},
+        {v1::GreaterEqual::get_type_info_static(), fuse_type_to_binary_comparision<v1::GreaterEqual>},
+        {v1::Less::get_type_info_static(), fuse_type_to_binary_comparision<v1::Less>},
+        {v1::LessEqual::get_type_info_static(), fuse_type_to_binary_comparision<v1::LessEqual>},
+        {v10::IsFinite::get_type_info_static(), fuse_type_to_binary_comparision<v10::IsFinite>},
+        {v10::IsNaN::get_type_info_static(), fuse_type_to_binary_comparision<v10::IsNaN>},
+        {v10::IsInf::get_type_info_static(), fuse_type_to_binary_comparision<v10::IsInf>},
+        {v1::LogicalAnd::get_type_info_static(), fuse_type_to_logical<v1::LogicalAnd>},
+        {v1::LogicalOr::get_type_info_static(), fuse_type_to_logical<v1::LogicalOr>},
+        {v1::LogicalXor::get_type_info_static(), fuse_type_to_logical<v1::LogicalXor>},
+        {v1::LogicalNot::get_type_info_static(), fuse_type_to_logical<v1::LogicalNot>},
+        {v0::Xor::get_type_info_static(), fuse_type_to_logical<v0::Xor>},
+        {v1::ReduceLogicalAnd::get_type_info_static(), fuse_type_to_reduce_logical<v1::ReduceLogicalAnd>},
+        {v1::ReduceLogicalOr::get_type_info_static(), fuse_type_to_reduce_logical<v1::ReduceLogicalOr>},
+        {v0::ShapeOf::get_type_info_static(), fuse_type_to_shapeof_v0},
+        {v4::Range::get_type_info_static(), fuse_type_to_range_v4},
+        {v9::Eye::get_type_info_static(), fuse_type_to_eye_v9},
+        {v10::Unique::get_type_info_static(), fuse_type_to_unique_v10},
+        {v8::RandomUniform::get_type_info_static(), fuse_type_to_random_uniform_v8},
+        {v13::Multinomial::get_type_info_static(), fuse_type_to_multinomial_v13},
+        {v0::PriorBox::get_type_info_static(), fuse_type_to_prior_box<v0::PriorBox>},
+        {v8::PriorBox::get_type_info_static(), fuse_type_to_prior_box<v8::PriorBox>},
+        {v0::PriorBoxClustered::get_type_info_static(), fuse_type_to_prior_box<v0::PriorBoxClustered>},
+        {v15::SearchSorted::get_type_info_static(), fuse_type_to_search_sorted_v15},
+        {ov::op::internal::RMS::get_type_info_static(), fuse_type_to_rms},
+        // This is operation representing inline_extension from
+        // src/bindings/python/src/openvino/frontend/pytorch/inlined_extension.py
+        {ov::DiscreteTypeInfo("InlinedCustomOp", "extension"), wrap_into_original_type}};
 
     for (const auto& it : m_additional_type_to_fuse_map) {
         type_to_fuse[it.first] = it.second;
@@ -485,8 +523,8 @@ bool ov::pass::ConvertPrecision::run_on_model(const std::shared_ptr<ov::Model>& 
     type_to_fuse.insert(m_additional_type_to_fuse_map.begin(), m_additional_type_to_fuse_map.end());
 
     static type_to_fuse_map type_to_extend{
-        {opset4::Select::get_type_info_static(), extend_select_type},
-        {opset1::Reverse::get_type_info_static(), extend_reverse_type},
+        {v1::Select::get_type_info_static(), extend_select_type},
+        {v1::Reverse::get_type_info_static(), extend_reverse_type},
     };
 
     bool is_changed = convert_precision(*this,
@@ -494,14 +532,13 @@ bool ov::pass::ConvertPrecision::run_on_model(const std::shared_ptr<ov::Model>& 
                                         type_to_fuse,
                                         type_to_extend,
                                         used_precisions,
-                                        has_fp16_compression,
                                         m_keep_precision_sensitive_in_fp32,
                                         m_convert_input_output_precision,
                                         m_store_original_precision_as_rt_attribute);
 
     // to remove extra converts
     if (m_keep_precision_sensitive_in_fp32) {
-        pass::Manager manager(get_pass_config());
+        pass::Manager manager(get_pass_config(), "KeepPrecisionSensitiveInFP32:RemoveConverts");
         manager.register_pass<pass::EnableDecompressionConvertConstantFolding>();
         manager.register_pass<pass::ConstantFolding>();
         manager.run_passes(f);
@@ -521,7 +558,7 @@ bool fuse_type_to_shapeof(const std::shared_ptr<ov::Node>& node, const precision
     if (it == precisions.end())
         return false;
     const auto& to = it->second;
-    if (auto shapeof = ov::as_type_ptr<opset4::ShapeOf>(node)) {
+    if (auto shapeof = ov::as_type_ptr<v3::ShapeOf>(node)) {
         if (to == ov::element::i32 || to == ov::element::i64) {
             shapeof->set_output_type(to);
             return true;
@@ -535,7 +572,7 @@ bool fuse_type_to_random_uniform_v8(const std::shared_ptr<ov::Node>& node, const
     if (it == precisions.end())
         return false;
     const auto& to = it->second;
-    if (auto random_uniform = ov::as_type_ptr<opset8::RandomUniform>(node)) {
+    if (auto random_uniform = ov::as_type_ptr<v8::RandomUniform>(node)) {
         if (to.is_integral_number() || to.is_real()) {
             random_uniform->set_out_type(to);
             return true;
@@ -546,7 +583,7 @@ bool fuse_type_to_random_uniform_v8(const std::shared_ptr<ov::Node>& node, const
 
 bool fuse_type_to_unique_v10(const std::shared_ptr<Node>& node, const precisions_map& precisions) {
     bool res = false;
-    if (auto unique = ov::as_type_ptr<opset10::Unique>(node)) {
+    if (auto unique = ov::as_type_ptr<v10::Unique>(node)) {
         auto it = precisions.find(node->get_output_element_type(1));
         if (it != precisions.end()) {
             unique->set_index_element_type(it->second);
@@ -561,13 +598,25 @@ bool fuse_type_to_unique_v10(const std::shared_ptr<Node>& node, const precisions
     return res;
 }
 
+bool fuse_type_to_search_sorted_v15(const std::shared_ptr<Node>& node, const precisions_map& precisions) {
+    bool res = false;
+    if (auto op = ov::as_type_ptr<v15::SearchSorted>(node)) {
+        auto it = precisions.find(node->get_output_element_type(0));
+        if (it != precisions.end()) {
+            op->set_output_type_attr(it->second);
+            res = true;
+        }
+    }
+    return res;
+}
+
 bool fuse_type_to_range_v4(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
     auto it = precisions.find(node->get_output_element_type(0));
     if (it == precisions.end())
         return false;
     const auto& to = it->second;
-    if (auto range = ov::as_type_ptr<opset4::Range>(node)) {
-        if (to.is_integral_number() || to.is_real()) {
+    if (auto range = ov::as_type_ptr<v4::Range>(node)) {
+        if (to.is_real() || to.is_integral_number()) {
             range->set_output_type(to);
             return true;
         }
@@ -580,7 +629,7 @@ bool fuse_type_to_eye_v9(const std::shared_ptr<ov::Node>& node, const precisions
     if (it == precisions.end())
         return false;
     const auto& to = it->second;
-    if (auto eye_node = ov::as_type_ptr<opset9::Eye>(node)) {
+    if (auto eye_node = ov::as_type_ptr<v9::Eye>(node)) {
         if (to.is_integral() || to.is_real()) {
             eye_node->set_out_type(to);
             return true;
@@ -592,26 +641,26 @@ bool fuse_type_to_eye_v9(const std::shared_ptr<ov::Node>& node, const precisions
 bool fuse_type_to_parameter(const std::shared_ptr<ov::Node>& node,
                             const precisions_map& precisions,
                             bool convert_input_precision) {
+    // Parameter marked with is_keep_const_precision should be kept in their own precision until they reach the plugin
+    if (is_keep_const_precision(node))
+        return false;
+
     auto it = precisions.find(node->get_output_element_type(0));
     if (it == precisions.end())
         return false;
     bool changed = false;
     const auto& to = it->second;
-    if (auto param = ov::as_type_ptr<opset4::Parameter>(node)) {
+    if (auto param = ov::as_type_ptr<v0::Parameter>(node)) {
         if (convert_input_precision) {
             param->set_element_type(to);
             param->validate_and_infer_types();
             changed = true;
         } else {
             auto param_consumers = param->output(0).get_target_inputs();
-            auto convert = std::make_shared<opset4::Convert>(param, to);
+            auto convert = std::make_shared<v0::Convert>(param, to);
             for (auto& input : param_consumers) {
                 const auto consumer = input.get_node();
-                if (ov::is_type<ov::op::v0::Result>(consumer) || ov::is_type<ov::op::v0::Convert>(consumer) ||
-                    // TODO: refactor after ngraph op defined
-                    // The fourth and fifth inputs are kvcache and should be directly connected to parameters
-                    (consumer->get_type_name() == std::string("PagedAttentionExtension") &&
-                     (input.get_index() == 3 || input.get_index() == 4))) {
+                if (ov::is_type<v0::Result>(consumer) || ov::is_type<v0::Convert>(consumer)) {
                     continue;
                 }
                 input.replace_source_output(convert);
@@ -629,17 +678,20 @@ bool wrap_into_original_type(const std::shared_ptr<ov::Node>& node, const precis
 
     const auto& to = it->second;
     const auto& from = it->first;
-
-    auto convert_before = std::make_shared<opset4::Convert>(node->input_value(0), from);
-    node->input(0).replace_source_output(convert_before);
-    auto consumers = node->output(0).get_target_inputs();
-    auto convert_after = std::make_shared<opset4::Convert>(node, to);
-    for (auto& input : consumers) {
-        const auto consumer = input.get_node();
-        if (ov::is_type<ov::op::v0::Result>(consumer) || ov::is_type<ov::op::v0::Convert>(consumer)) {
-            continue;
+    if (node->get_input_size()) {
+        auto convert_before = std::make_shared<v0::Convert>(node->input_value(0), from);
+        node->input(0).replace_source_output(convert_before);
+    }
+    if (node->get_output_size() == 1) {
+        auto consumers = node->output(0).get_target_inputs();
+        auto convert_after = std::make_shared<v0::Convert>(node, to);
+        for (auto& input : consumers) {
+            const auto consumer = input.get_node();
+            if (ov::is_type<v0::Result>(consumer) || ov::is_type<v0::Convert>(consumer)) {
+                continue;
+            }
+            input.replace_source_output(convert_after);
         }
-        input.replace_source_output(convert_after);
     }
 
     return true;
@@ -670,7 +722,7 @@ bool fuse_type_to_convert(const std::shared_ptr<ov::Node>& node, const precision
     if (it == precisions.end())
         return false;
     const auto& to = it->second;
-    if (auto convert = ov::as_type_ptr<opset4::Convert>(node)) {
+    if (auto convert = ov::as_type_ptr<v0::Convert>(node)) {
         convert->set_convert_element_type(to);
         return true;
     }
@@ -682,7 +734,7 @@ bool fuse_type_to_nms3(const std::shared_ptr<ov::Node>& node, const precisions_m
     if (it == precisions.end())
         return false;
     const auto& to = it->second;
-    if (auto nms = ov::as_type_ptr<opset3::NonMaxSuppression>(node)) {
+    if (auto nms = ov::as_type_ptr<v3::NonMaxSuppression>(node)) {
         if (to == ov::element::i32 || to == ov::element::i64) {
             nms->set_output_type(to);
         } else {
@@ -698,7 +750,7 @@ bool fuse_type_to_nms4(const std::shared_ptr<ov::Node>& node, const precisions_m
     if (it == precisions.end())
         return false;
     const auto& to = it->second;
-    if (auto nms = ov::as_type_ptr<opset4::NonMaxSuppression>(node)) {
+    if (auto nms = ov::as_type_ptr<v4::NonMaxSuppression>(node)) {
         if (to == ov::element::i32 || to == ov::element::i64) {
             nms->set_output_type(to);
         } else {
@@ -710,7 +762,7 @@ bool fuse_type_to_nms4(const std::shared_ptr<ov::Node>& node, const precisions_m
 }
 
 bool fuse_type_to_nms5(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    auto nms = ov::as_type_ptr<opset5::NonMaxSuppression>(node);
+    auto nms = ov::as_type_ptr<v5::NonMaxSuppression>(node);
     if (!nms) {
         return false;
     }
@@ -753,13 +805,13 @@ bool fuse_type_to_nms5(const std::shared_ptr<ov::Node>& node, const precisions_m
     }
 
     auto relaxed_op =
-        std::make_shared<ov::op::TypeRelaxed<opset5::NonMaxSuppression>>(*nms, ov::element::TypeVector{}, output_types);
+        std::make_shared<ov::op::TypeRelaxed<v5::NonMaxSuppression>>(*nms, ov::element::TypeVector{}, output_types);
     replace_node(node, relaxed_op);
     return true;
 }
 
 bool fuse_type_to_nms9(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    auto nms = ov::as_type_ptr<opset9::NonMaxSuppression>(node);
+    auto nms = ov::as_type_ptr<v9::NonMaxSuppression>(node);
     if (!nms) {
         return false;
     }
@@ -802,7 +854,7 @@ bool fuse_type_to_nms9(const std::shared_ptr<ov::Node>& node, const precisions_m
     }
 
     auto relaxed_op =
-        std::make_shared<ov::op::TypeRelaxed<opset9::NonMaxSuppression>>(*nms, ov::element::TypeVector{}, output_types);
+        std::make_shared<ov::op::TypeRelaxed<v9::NonMaxSuppression>>(*nms, ov::element::TypeVector{}, output_types);
     replace_node(node, relaxed_op);
     return true;
 }
@@ -852,6 +904,20 @@ bool fuse_type_to_nms_rotated(const std::shared_ptr<ov::Node>& node, const preci
     return res;
 }
 
+bool fuse_type_to_rms(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
+    auto it = precisions.find(node->get_output_element_type(0));
+    if (it == precisions.end())
+        return false;
+    const auto& to = it->second;
+    if (auto rms = ov::as_type_ptr<ov::op::internal::RMS>(node)) {
+        if (to.is_real()) {
+            rms->set_output_type_attr(to);
+            return true;
+        }
+    }
+    return false;
+}
+
 namespace {
 
 bool update_type(size_t idx,
@@ -872,7 +938,7 @@ bool update_type(size_t idx,
 }  // namespace
 
 bool fuse_type_to_matrix_nms(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    auto nms = ov::as_type_ptr<opset8::MatrixNms>(node);
+    auto nms = ov::as_type_ptr<v8::MatrixNms>(node);
     if (!nms) {
         return false;
     }
@@ -883,11 +949,11 @@ bool fuse_type_to_matrix_nms(const std::shared_ptr<ov::Node>& node, const precis
 }
 
 bool fuse_type_to_multiclass_nms(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    std::shared_ptr<ov::op::util::MulticlassNmsBase> nms;
-    if (ov::is_type<ov::op::v8::MulticlassNms>(node)) {
-        nms = ov::as_type_ptr<opset8::MulticlassNms>(node);
+    std::shared_ptr<op_util::MulticlassNmsBase> nms;
+    if (ov::is_type<v8::MulticlassNms>(node)) {
+        nms = ov::as_type_ptr<v8::MulticlassNms>(node);
     } else {
-        nms = ov::as_type_ptr<opset9::MulticlassNms>(node);
+        nms = ov::as_type_ptr<v9::MulticlassNms>(node);
     }
     if (!nms) {
         return false;
@@ -899,7 +965,7 @@ bool fuse_type_to_multiclass_nms(const std::shared_ptr<ov::Node>& node, const pr
 }
 
 bool fuse_type_to_multinomial_v13(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    auto multinomial = ov::as_type_ptr<opset13::Multinomial>(node);
+    auto multinomial = ov::as_type_ptr<v13::Multinomial>(node);
     if (!multinomial) {
         return false;
     }
@@ -910,7 +976,7 @@ bool fuse_type_to_multinomial_v13(const std::shared_ptr<ov::Node>& node, const p
 }
 
 bool fuse_type_to_generate_proposals(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    auto generate_proposals = ov::as_type_ptr<opset9::GenerateProposals>(node);
+    auto generate_proposals = ov::as_type_ptr<v9::GenerateProposals>(node);
     if (!generate_proposals) {
         return false;
     }
@@ -921,7 +987,7 @@ bool fuse_type_to_generate_proposals(const std::shared_ptr<ov::Node>& node, cons
 }
 
 bool fuse_type_to_topk(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    if (auto topk = ov::as_type_ptr<ov::op::util::TopKBase>(node)) {
+    if (auto topk = ov::as_type_ptr<op_util::TopKBase>(node)) {
         return update_type(1, node, precisions, [&](const element::Type& to) {
             topk->set_index_element_type(to);
         });
@@ -930,9 +996,15 @@ bool fuse_type_to_topk(const std::shared_ptr<ov::Node>& node, const precisions_m
 }
 
 bool fuse_type_to_maxpool(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    if (auto maxpool = ov::as_type_ptr<opset8::MaxPool>(node)) {
+    auto maxpool_v8 = ov::as_type_ptr<v8::MaxPool>(node);
+    auto maxpool_v14 = ov::as_type_ptr<v14::MaxPool>(node);
+    if (maxpool_v14) {
         return update_type(1, node, precisions, [&](const element::Type& to) {
-            maxpool->set_index_element_type(to);
+            maxpool_v14->set_index_element_type(to);
+        });
+    } else if (maxpool_v8) {
+        return update_type(1, node, precisions, [&](const element::Type& to) {
+            maxpool_v8->set_index_element_type(to);
         });
     }
     return false;
@@ -940,7 +1012,7 @@ bool fuse_type_to_maxpool(const std::shared_ptr<ov::Node>& node, const precision
 
 bool fuse_type_to_ctc_greedy_decoder_seq_len(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
     bool res = false;
-    if (auto ctc_decoder = ov::as_type_ptr<opset6::CTCGreedyDecoderSeqLen>(node)) {
+    if (auto ctc_decoder = ov::as_type_ptr<v6::CTCGreedyDecoderSeqLen>(node)) {
         res = update_type(0, node, precisions, [&](const element::Type& to) {
             ctc_decoder->set_classes_index_type(to);
         });
@@ -956,7 +1028,7 @@ bool fuse_type_to_ctc_greedy_decoder_seq_len(const std::shared_ptr<ov::Node>& no
 }
 
 bool fuse_type_to_nonzero(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    if (auto nonzero = ov::as_type_ptr<opset4::NonZero>(node)) {
+    if (auto nonzero = ov::as_type_ptr<v3::NonZero>(node)) {
         return update_type(0, node, precisions, [&](const element::Type& to) {
             nonzero->set_output_type(to);
         });
@@ -965,7 +1037,7 @@ bool fuse_type_to_nonzero(const std::shared_ptr<ov::Node>& node, const precision
 }
 
 bool fuse_type_to_bucketize(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    if (auto b = ov::as_type_ptr<opset4::Bucketize>(node)) {
+    if (auto b = ov::as_type_ptr<v3::Bucketize>(node)) {
         return update_type(0, node, precisions, [&](const element::Type& to) {
             b->set_output_type(to);
         });
@@ -981,10 +1053,10 @@ bool fuse_type_to_shapeof_v0(const std::shared_ptr<ov::Node>& node, const precis
     if (auto type_relaxed = std::dynamic_pointer_cast<ov::op::TypeRelaxedBase>(node)) {
         type_relaxed->set_overridden_output_type(to);
         return true;
-    } else if (auto casted = std::dynamic_pointer_cast<opset1::ShapeOf>(node)) {
-        auto relaxed_op = std::make_shared<ov::op::TypeRelaxed<opset1::ShapeOf>>(*casted,
-                                                                                 ov::element::TypeVector{},
-                                                                                 ov::element::TypeVector{to});
+    } else if (auto casted = ov::as_type_ptr<v0::ShapeOf>(node)) {
+        auto relaxed_op = std::make_shared<ov::op::TypeRelaxed<v0::ShapeOf>>(*casted,
+                                                                             ov::element::TypeVector{},
+                                                                             ov::element::TypeVector{to});
         replace_node(node, relaxed_op);
         return true;
     }
@@ -995,21 +1067,23 @@ bool extend_select_type(const std::shared_ptr<ov::Node>& node, const precisions_
     if (auto type_relaxed = std::dynamic_pointer_cast<ov::op::TypeRelaxedBase>(node)) {
         type_relaxed->set_origin_input_type(ov::element::boolean, 0);
         return true;
-    } else if (auto casted = std::dynamic_pointer_cast<opset4::Select>(node)) {
-        auto relaxed_op =
-            std::make_shared<op::TypeRelaxed<opset4::Select>>(*casted,
+    } else if (auto casted = ov::as_type_ptr<v1::Select>(node)) {
+        if (precisions.count(ov::element::boolean) != 0) {
+            auto relaxed_op =
+                std::make_shared<op::TypeRelaxed<v1::Select>>(*casted,
                                                               ov::element::TypeVector{ov::element::boolean},
                                                               ov::element::TypeVector{});
-        replace_node(node, relaxed_op);
-        return true;
+            replace_node(node, relaxed_op);
+            return true;
+        }
     }
     return false;
 }
 
 bool extend_reverse_type(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions) {
-    if (const auto casted = std::dynamic_pointer_cast<opset1::Reverse>(node)) {
-        if (casted->get_mode() == ov::op::v1::Reverse::Mode::MASK) {
-            auto relaxed_op = std::make_shared<op::TypeRelaxed<opset1::Reverse>>(
+    if (const auto casted = ov::as_type_ptr<v1::Reverse>(node)) {
+        if (casted->get_mode() == v1::Reverse::Mode::MASK) {
+            auto relaxed_op = std::make_shared<op::TypeRelaxed<v1::Reverse>>(
                 *casted,
                 ov::element::TypeVector{casted->get_input_element_type(0), ov::element::boolean},
                 ov::element::TypeVector{casted->get_output_element_type(0)});
@@ -1051,14 +1125,14 @@ inline int32_t convert_value<uint32_t, int32_t>(uint32_t val) {
 
 namespace {
 template <ov::element::Type_t PREC_FROM, ov::element::Type_t PREC_TO>
-std::shared_ptr<ov::Node> change_constant_precision(std::shared_ptr<opset4::Constant>& constant) {
+std::shared_ptr<ov::Node> change_constant_precision(std::shared_ptr<v0::Constant>& constant) {
     using src_type = typename element_type_traits<PREC_FROM>::value_type;
     using dst_type = typename element_type_traits<PREC_TO>::value_type;
 
     const auto* src_data = constant->get_data_ptr<src_type>();
     const auto size = shape_size(constant->get_shape());
 
-    auto new_constant = std::make_shared<opset4::Constant>(PREC_TO, constant->get_shape());
+    auto new_constant = std::make_shared<v0::Constant>(PREC_TO, constant->get_shape());
     new_constant->output(0).set_names(constant->output(0).get_names());
     auto* dst_data = const_cast<dst_type*>(reinterpret_cast<const dst_type*>(new_constant->get_data_ptr()));
     if (dst_data == nullptr)
@@ -1072,14 +1146,14 @@ std::shared_ptr<ov::Node> change_constant_precision(std::shared_ptr<opset4::Cons
 
 template <>
 std::shared_ptr<Node> change_constant_precision<ov::element::Type_t::f32, ov::element::Type_t::f16>(
-    std::shared_ptr<opset4::Constant>& constant) {
+    std::shared_ptr<v0::Constant>& constant) {
     using src_type = typename element_type_traits<ov::element::Type_t::f32>::value_type;
     using dst_type = typename element_type_traits<ov::element::Type_t::f16>::value_type;
 
     const auto* src_data = constant->get_data_ptr<src_type>();
     const auto size = shape_size(constant->get_shape());
 
-    auto new_constant = std::make_shared<opset4::Constant>(ov::element::Type_t::f16, constant->get_shape());
+    auto new_constant = std::make_shared<v0::Constant>(ov::element::Type_t::f16, constant->get_shape());
     new_constant->output(0).set_names(constant->output(0).get_names());
     auto* dst_data = const_cast<dst_type*>(reinterpret_cast<const dst_type*>(new_constant->get_data_ptr()));
     if (dst_data == nullptr)
@@ -1091,15 +1165,35 @@ std::shared_ptr<Node> change_constant_precision<ov::element::Type_t::f32, ov::el
 }
 
 template <>
+std::shared_ptr<Node> change_constant_precision<ov::element::Type_t::bf16, ov::element::Type_t::f16>(
+    std::shared_ptr<v0::Constant>& constant) {
+    using src_type = typename element_type_traits<ov::element::Type_t::bf16>::value_type;
+    using dst_type = typename element_type_traits<ov::element::Type_t::f16>::value_type;
+
+    const auto* src_data = constant->get_data_ptr<src_type>();
+    const auto size = shape_size(constant->get_shape());
+
+    auto new_constant = std::make_shared<v0::Constant>(ov::element::Type_t::f16, constant->get_shape());
+    new_constant->output(0).set_names(constant->output(0).get_names());
+    auto* dst_data = const_cast<dst_type*>(reinterpret_cast<const dst_type*>(new_constant->get_data_ptr()));
+    if (dst_data == nullptr)
+        OPENVINO_THROW("Can't get destination data pointer");
+
+    ov::reference::convert_from_bf16_to_f16_with_clamp(src_data, dst_data, size);
+
+    return new_constant;
+}
+
+template <>
 std::shared_ptr<Node> change_constant_precision<ov::element::Type_t::f16, ov::element::Type_t::f32>(
-    std::shared_ptr<opset4::Constant>& constant) {
+    std::shared_ptr<v0::Constant>& constant) {
     using src_type = typename element_type_traits<ov::element::Type_t::f16>::value_type;
     using dst_type = typename element_type_traits<ov::element::Type_t::f32>::value_type;
 
     const auto* src_data = constant->get_data_ptr<src_type>();
     const auto size = shape_size(constant->get_shape());
 
-    auto new_constant = std::make_shared<opset4::Constant>(ov::element::Type_t::f32, constant->get_shape());
+    auto new_constant = std::make_shared<v0::Constant>(ov::element::Type_t::f32, constant->get_shape());
     new_constant->output(0).set_names(constant->output(0).get_names());
     auto* dst_data = const_cast<dst_type*>(reinterpret_cast<const dst_type*>(new_constant->get_data_ptr()));
     if (dst_data == nullptr)
@@ -1192,104 +1286,33 @@ void convert_lp_value(const SRC& src,
     dst &= new_val;
 }
 
-std::shared_ptr<Node> convert_low_precisions_int(std::shared_ptr<opset4::Constant>& constant, ov::element::Type to) {
+std::shared_ptr<Node> convert_low_precisions_int(std::shared_ptr<v0::Constant>& constant, ov::element::Type to) {
     // Supported integer precisions
-    static const precisions_set_t supported_integer_precisions = {ov::element::i4, ov::element::u4, ov::element::u1};
-    // Get source element type and source data
+    static const precisions_set_t supported_integer_precisions = {ov::element::i4,
+                                                                  ov::element::u4,
+                                                                  ov::element::u1,
+                                                                  ov::element::u2};
     auto src_type = constant->get_element_type();
-    const auto* src_data = reinterpret_cast<const uint8_t*>(constant->get_data_ptr());
 
-    // We support conversion only if several elements can be represented in one instance of some
-    // C++ common data type without any exception, destination data type should be bigger than
-    // source and destination data type should be real
-    if (!supported_integer_precisions.count(src_type) || (src_type.size() * 8) % src_type.bitwidth() ||
-        (to.size() * 8) % to.bitwidth() || to.is_real() || to.bitwidth() < src_type.bitwidth())
-        OPENVINO_THROW("Convert low precision for " + constant->get_element_type().get_type_name() + " to " +
-                       to.get_type_name() + " is not implemented!");
-
-    // Create a new constant operation and get destination data
-    auto new_constant = std::make_shared<opset4::Constant>(to, constant->get_shape());
-    auto* dst_data = const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(new_constant->get_data_ptr()));
-    // Check pointers
-    if (src_data == nullptr || dst_data == nullptr)
-        OPENVINO_THROW("Can't get data pointer");
-
-    // Convert values
-    const auto size = shape_size(constant->get_shape());
-    size_t src_idx(0), dst_idx(0), dst_off(0), src_off(0);
-    if (src_type.bitwidth() < 8) {
-        src_off = 8 - src_type.bitwidth();
+    // Validate conversion is supported
+    if (!supported_integer_precisions.count(src_type) || to.is_real() || to.bitwidth() < src_type.bitwidth()) {
+        OPENVINO_THROW("Convert low precision for ",
+                       src_type.get_type_name(),
+                       " to ",
+                       to.get_type_name(),
+                       " is not implemented!");
     }
 
-    if (to.bitwidth() < 8) {
-        dst_off = 8 - to.bitwidth();
-    }
+    // Use Convert operator's evaluate() to perform conversion
+    // This ensures consistent nibble packing order (LSB-first) with element::iterator
+    auto outputs = ov::TensorVector{{to, constant->get_shape()}};
+    OPENVINO_ASSERT(v0::Convert(constant, to).evaluate(outputs, {constant->get_tensor_view()}),
+                    "Failed to convert constant from ",
+                    src_type.get_type_name(),
+                    " to ",
+                    to.get_type_name());
 
-    for (size_t i = 0; i < size; i++) {
-        // Source type at the current moment always less than 1 byte
-        // Select the right destination type
-        switch (to.size()) {
-        case 1:
-            convert_lp_value<uint8_t, uint8_t>(src_data[src_idx],
-                                               dst_data[dst_idx],
-                                               src_off,
-                                               src_type.bitwidth(),
-                                               dst_off,
-                                               to.bitwidth(),
-                                               src_type.is_signed());
-            break;
-        case 2:
-            convert_lp_value<uint8_t, uint16_t>(src_data[src_idx],
-                                                reinterpret_cast<uint16_t*>(dst_data)[dst_idx],
-                                                src_off,
-                                                src_type.bitwidth(),
-                                                dst_off,
-                                                to.bitwidth(),
-                                                src_type.is_signed());
-            break;
-        case 4:
-            convert_lp_value<uint8_t, uint32_t>(src_data[src_idx],
-                                                reinterpret_cast<uint32_t*>(dst_data)[dst_idx],
-                                                src_off,
-                                                src_type.bitwidth(),
-                                                dst_off,
-                                                to.bitwidth(),
-                                                src_type.is_signed());
-            break;
-        case 8:
-            convert_lp_value<uint8_t, uint64_t>(src_data[src_idx],
-                                                reinterpret_cast<uint64_t*>(dst_data)[dst_idx],
-                                                src_off,
-                                                src_type.bitwidth(),
-                                                dst_off,
-                                                to.bitwidth(),
-                                                src_type.is_signed());
-            break;
-        default:
-            OPENVINO_THROW("Unsupported element size!");
-        }
-        // Calculate offsets and indexes
-        if (src_type.bitwidth() < 8) {
-            if (src_off == 0) {
-                src_off = 8;
-                src_idx++;
-            }
-            src_off -= src_type.bitwidth();
-        } else {
-            src_idx++;
-        }
-        if (to.bitwidth() < 8) {
-            if (dst_off == 0) {
-                dst_off = 8;
-                dst_idx++;
-            }
-            dst_off -= to.bitwidth();
-        } else {
-            dst_idx++;
-        }
-    }
-
-    return new_constant;
+    return std::make_shared<v0::Constant>(std::move(outputs[0]));
 }
 
 }  // namespace
@@ -1306,7 +1329,7 @@ bool fuse_type_to_constant(const std::shared_ptr<ov::Node>& node,
     if (it == precisions.end())
         return false;
     const auto& to = it->second;
-    if (auto constant = ov::as_type_ptr<opset4::Constant>(node)) {
+    if (auto constant = ov::as_type_ptr<v0::Constant>(node)) {
         std::shared_ptr<ov::Node> new_const;
         if (from == ov::element::u64 && to == ov::element::i32) {
             new_const = change_constant_precision<ov::element::Type_t::u64, ov::element::Type_t::i32>(constant);
@@ -1324,8 +1347,14 @@ bool fuse_type_to_constant(const std::shared_ptr<ov::Node>& node,
             new_const = change_constant_precision<ov::element::Type_t::f64, ov::element::Type_t::f32>(constant);
         } else if (from == ov::element::bf16 && to == ov::element::f32) {
             new_const = change_constant_precision<ov::element::Type_t::bf16, ov::element::Type_t::f32>(constant);
+        } else if (from == ov::element::bf16 && to == ov::element::f16) {
+            new_const = change_constant_precision<ov::element::Type_t::bf16, ov::element::Type_t::f16>(constant);
         } else if (from == ov::element::f32 && to == ov::element::f16) {
             new_const = change_constant_precision<ov::element::Type_t::f32, ov::element::Type_t::f16>(constant);
+        } else if (from == ov::element::f32 && to == ov::element::bf16) {
+            new_const = change_constant_precision<ov::element::Type_t::f32, ov::element::Type_t::bf16>(constant);
+        } else if (from == ov::element::f16 && to == ov::element::bf16) {
+            new_const = change_constant_precision<ov::element::Type_t::f16, ov::element::Type_t::bf16>(constant);
         } else if (from == ov::element::f16 && to == ov::element::f32) {
             new_const = change_constant_precision<ov::element::Type_t::f16, ov::element::Type_t::f32>(constant);
         } else if (from == ov::element::boolean && to == ov::element::u8) {
@@ -1351,6 +1380,8 @@ bool fuse_type_to_constant(const std::shared_ptr<ov::Node>& node,
         new_const->validate_and_infer_types();
         new_const->set_friendly_name(constant->get_friendly_name());
         ov::copy_runtime_info(constant, new_const);
+        ov::copy_weightless_cache_attr(constant, new_const);
+        ov::wsh::Extension::hint_evict(*constant);
         return true;
     }
     return false;

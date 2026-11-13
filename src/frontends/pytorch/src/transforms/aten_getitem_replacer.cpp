@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,7 +7,10 @@
 #include <memory>
 #include <utility>
 
+#include "openvino/core/graph_util.hpp"
 #include "openvino/core/rt_info.hpp"
+#include "openvino/core/validation_util.hpp"
+#include "openvino/frontend/sequence_mark.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/ceiling.hpp"
 #include "openvino/op/constant.hpp"
@@ -31,23 +34,19 @@
 #include "pt_framework_node.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace pass {
+namespace ov::frontend::pytorch::pass {
 
 using namespace ov::op;
 
 AtenGetItemReplacer::AtenGetItemReplacer() {
-    auto getitem = ov::pass::pattern::wrap_type<ov::op::util::FrameworkNode>();
+    auto getitem_pattern =
+        ov::pass::pattern::wrap_type<ov::op::util::FrameworkNode>(fw_node_predicate({"aten::__getitem__"}));
 
     ov::matcher_pass_callback callback = [](ov::pass::pattern::Matcher& m) {
-        auto getitem = cast_fw_node(m.get_match_root(), "aten::__getitem__");
-        if (!getitem)
-            return false;
+        auto getitem = m.get_match_root();
 
         ov::pass::NodeRegistry rg;
-        auto input_node = getitem->input_value(0).get_node_shared_ptr();
+        const auto& input_node = getitem->input_value(0).get_node_shared_ptr();
         if (auto torch_split = cast_fw_node(input_node, "aten::split")) {
             auto rank = torch_split->input(1).get_partial_shape().rank();
             if (rank.is_dynamic()) {
@@ -69,6 +68,49 @@ AtenGetItemReplacer::AtenGetItemReplacer() {
                 auto axis = torch_split->get_input_source_output(2);
                 auto axis_1d = rg.make<v0::Unsqueeze>(axis, const_0);
                 auto getitem_idx = getitem->input(1).get_source_output();
+
+                // Static OOB check when both index and input shape are known at conversion time.
+                auto getitem_idx_const = ov::util::get_constant_from_source(getitem_idx);
+                auto input_pshape = input.get_partial_shape();
+                auto axis_const = ov::util::get_constant_from_source(axis);
+                auto split_size_const = ov::util::get_constant_from_source(split_size);
+                if (getitem_idx_const && axis_const && split_size_const && input_pshape.rank().is_static()) {
+                    auto axis_const_1d = axis_const->cast_vector<int64_t>();
+                    if (axis_const_1d.size() != 1) {
+                        add_exception_to_fw_node(getitem, "aten::__getitem__ axis is not scalar.");
+                        return false;
+                    }
+                    auto axis_val = axis_const_1d[0];
+                    auto input_rank = static_cast<int64_t>(input_pshape.rank().get_length());
+                    if (input_rank < 0) {  // NOTE: Very unlikely, but staying on the safe side
+                        add_exception_to_fw_node(getitem, "aten::__getitem__ input_rank overflow.");
+                        return false;
+                    }
+                    if (axis_val < 0)
+                        axis_val += input_rank;
+                    if (axis_val >= 0 && axis_val < input_rank && input_pshape[axis_val].is_static()) {
+                        auto dim_size = input_pshape[axis_val].get_length();
+                        auto split_size_const_1d = split_size_const->cast_vector<int64_t>();
+                        if (split_size_const_1d.size() != 1) {
+                            add_exception_to_fw_node(getitem, "aten::__getitem__ split_size is not scalar.");
+                            return false;
+                        }
+                        auto split_size = split_size_const_1d[0];
+                        if (split_size <= 0) {
+                            add_exception_to_fw_node(getitem, "aten::__getitem__ split_size must be positive.");
+                            return false;
+                        }
+                        auto num_splits = (dim_size + split_size - 1) / split_size;
+                        auto idx_val = getitem_idx_const->cast_vector<int64_t>()[0];
+                        if (idx_val < -num_splits || idx_val >= num_splits) {
+                            add_exception_to_fw_node(getitem,
+                                                     "aten::__getitem__: index " + std::to_string(idx_val) +
+                                                         " is out of bounds for split with " +
+                                                         std::to_string(num_splits) + " outputs.");
+                            return false;
+                        }
+                    }
+                }
 
                 // Calculate number of splits based on input shape and split_size.
                 auto shape = rg.make<v3::ShapeOf>(input, element::i32);
@@ -94,8 +136,9 @@ AtenGetItemReplacer::AtenGetItemReplacer() {
                 auto split = rg.make<v8::Slice>(input, split_slice_start, split_slice_end, const_1, axis_1d);
                 replace_node(getitem, split);
             } else {
-                auto getitem_index_ptr = getitem->input_value(1).get_node_shared_ptr();
-                auto getitem_index_const = std::dynamic_pointer_cast<v0::Constant>(getitem_index_ptr);
+                auto getitem_index_const = ov::util::get_constant_from_source(getitem->input_value(1));
+                if (!getitem_index_const)
+                    return false;
                 auto split = rg.make<v1::VariadicSplit>(torch_split->get_input_source_output(0),
                                                         torch_split->get_input_source_output(2),
                                                         torch_split->get_input_source_output(1));
@@ -105,24 +148,50 @@ AtenGetItemReplacer::AtenGetItemReplacer() {
                     return false;
                 }
                 auto index = index_val[0];
+                auto num_outputs = static_cast<int64_t>(split->outputs().size());
+                if (index < -num_outputs || index >= num_outputs) {
+                    add_exception_to_fw_node(getitem,
+                                             "aten::__getitem__: index " + std::to_string(index_val[0]) +
+                                                 " is out of bounds for split with " + std::to_string(num_outputs) +
+                                                 " outputs.");
+                    return false;
+                }
                 if (index < 0) {
-                    index = split->outputs().size() + index;
+                    index += num_outputs;
                 }
                 getitem->output(0).replace(split->outputs()[index]);
             }
-        } else if (auto list_construct = cast_fw_node(input_node, "prim::ListConstruct")) {
-            auto getitem_idx = getitem->input_value(1).get_node_shared_ptr();
-            auto getitem_idx_const = std::dynamic_pointer_cast<v0::Constant>(getitem_idx);
+        } else if (auto seq_mark = ov::as_type_ptr<SequenceMark>(input_node)) {
+            // Handle SequenceMark (for list/tuple construct)
+            auto getitem_idx = getitem->input_value(1);
+            auto getitem_idx_const = ov::util::get_constant_from_source(getitem_idx);
             if (getitem_idx_const) {
                 auto idx = getitem_idx_const->cast_vector<int64_t>();
-                getitem->output(0).replace(list_construct->input_value(idx[0]));
+                if (idx.size() != 1) {
+                    add_exception_to_fw_node(getitem, "aten::__getitem__ index is not scalar.");
+                    return false;
+                }
+                auto idx_val = idx[0];
+                auto inputs = seq_mark->get_sequence();
+                auto num_inputs = static_cast<int64_t>(inputs.size());
+                if (idx_val < -num_inputs || idx_val >= num_inputs) {
+                    add_exception_to_fw_node(getitem,
+                                             "aten::__getitem__: index " + std::to_string(idx[0]) +
+                                                 " is out of bounds for sequence with " + std::to_string(num_inputs) +
+                                                 " inputs.");
+                    return false;
+                }
+                if (idx_val < 0) {
+                    idx_val += num_inputs;
+                }
+                getitem->output(0).replace(inputs[idx_val]);
             } else {
-                auto input_concat = concat_list_construct(list_construct);
+                auto input_concat = concat_list_construct(seq_mark);
                 auto zero = v0::Constant::create(element::i32, Shape{}, {0});
                 auto gather = rg.make<v8::Gather>(input_concat, getitem_idx, zero);
                 replace_node(getitem, gather);
             }
-        } else if (auto chunk = cast_fw_node(input_node, "aten::chunk")) {
+        } else if (auto chunk = cast_fw_node(input_node, {"aten::chunk", "aten::unsafe_chunk"})) {
             auto input_tensor = chunk->get_input_source_output(0);
             auto chunks_i32 = chunk->get_input_source_output(1);
             auto dim_i32 = chunk->get_input_source_output(2);
@@ -174,11 +243,9 @@ AtenGetItemReplacer::AtenGetItemReplacer() {
         return true;
     };
 
-    auto m = std::make_shared<ov::pass::pattern::Matcher>(getitem, "ov::frontend::pytorch::pass::AtenGetItemReplacer");
+    auto m = std::make_shared<ov::pass::pattern::Matcher>(getitem_pattern,
+                                                          "ov::frontend::pytorch::pass::AtenGetItemReplacer");
     this->register_matcher(m, callback);
 };
 
-}  // namespace pass
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::pass

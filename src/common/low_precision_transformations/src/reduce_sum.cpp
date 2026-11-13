@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,6 +9,8 @@
 
 #include "low_precision/network_helper.hpp"
 #include "itt.hpp"
+#include "openvino/core/graph_util.hpp"
+#include "openvino/op/reduce_sum.hpp"
 
 namespace ov {
 namespace pass {
@@ -23,16 +25,16 @@ ReduceSumTransformation::ReduceSumTransformation(const Params& params) : ReduceB
         if (transformation_callback(op)) {
             return false;
         }
-        return transform(*context, m);
+        return transform(m);
     };
 
     auto m = std::make_shared<ov::pass::pattern::Matcher>(matcher, matcher_name);
     this->register_matcher(m, callback);
 }
 
-bool ReduceSumTransformation::canBeTransformed(const TransformationContext& context, std::shared_ptr<Node> reduce) const {
+bool ReduceSumTransformation::canBeTransformed(const std::shared_ptr<Node>& reduce) const {
     const auto reduceSum = ov::as_type_ptr<ov::opset1::ReduceSum>(reduce);
-    if (!reduceSum || !ReduceBaseTransformation::canBeTransformed(context, reduceSum)) {
+    if (!reduceSum || !ReduceBaseTransformation::canBeTransformed(reduceSum)) {
         return false;
     }
 
@@ -68,11 +70,24 @@ void ReduceSumTransformation::changeDequantizationValues(
         }
 
         // (a1 - s) + (a2 - s) + ... + (an - s) = (a1 + a2 + ... + an) - n * s
-        const auto reductionSizeConstant = ov::opset1::Constant::create(deqPrecision, Shape{}, { static_cast<float>(reductionSize) });
-        const auto result = fold<ov::opset1::Multiply>(dequantization.subtractConstant, reductionSizeConstant);
+        // Note: since original shift may be in low precision
+        // (in which we can't compute multiplication without accuracy loss because of overflow),
+        // we use precision of multiply constant (which is always float) for new shift computation
+        const auto& newShiftPrecision = dequantization.multiplyConstant->get_element_type();
+        const auto reductionSizeConstant = ov::opset1::Constant::create(newShiftPrecision, Shape{}, { static_cast<float>(reductionSize) });
 
-        replace_node(dequantization.subtractConstant, result);
+        const auto result = fold<ov::opset1::Multiply>(
+            foldConvert(dequantization.subtractConstant, newShiftPrecision),
+            reductionSizeConstant);
+
+        replace_node(
+            dequantization.subtractConvert != nullptr ?
+                std::dynamic_pointer_cast<ov::Node>(dequantization.subtractConvert) :
+                dequantization.subtractConstant,
+            result);
+
         dequantization.subtractConstant = ov::as_type_ptr<ov::opset1::Constant>(result);
+        dequantization.subtractConvert = nullptr;
     }
 }
 

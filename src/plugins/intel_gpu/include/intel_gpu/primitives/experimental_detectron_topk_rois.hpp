@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -24,9 +24,8 @@ struct experimental_detectron_topk_rois : public primitive_base<experimental_det
      * @param max_rois maximal numbers of output ROIs.
      */
     experimental_detectron_topk_rois(const primitive_id &id, const std::vector<input_info> &inputs,
-                                     const size_t max_rois,
-                                     const padding &output_padding = padding())
-            : primitive_base(id, inputs, {output_padding}),
+                                     const size_t max_rois)
+            : primitive_base(id, inputs),
               max_rois(max_rois) {}
 
     /// maximal numbers of output ROIs.
@@ -39,8 +38,9 @@ struct experimental_detectron_topk_rois : public primitive_base<experimental_det
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const experimental_detectron_topk_rois>(rhs);
 

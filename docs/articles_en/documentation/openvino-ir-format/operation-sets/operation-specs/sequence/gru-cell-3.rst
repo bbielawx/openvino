@@ -1,5 +1,3 @@
-.. {#openvino_docs_ops_sequence_GRUCell_3}
-
 GRUCell
 =======
 
@@ -14,7 +12,7 @@ GRUCell
 
 **Short description**: *GRUCell* represents a single GRU Cell that computes the output using the formula described in the `paper <https://arxiv.org/abs/1406.1078>`__.
 
-**Detailed description**: *GRUCell* computes the output *Ht* for the current time step based on the followint formula:
+**Detailed description**: *GRUCell* computes the output *Ht* for the current time step based on the following formula:
 
 .. code-block:: sh
 
@@ -66,7 +64,7 @@ GRUCell
 * *linear_before_reset*
 
   * **Description**: *linear_before_reset* flag denotes if the layer behaves according to the modification
-    of *GRUCell* described in the formula in the `ONNX documentation <https://github.com/onnx/onnx/blob/master/docs/Operators.md#GRU>`__.
+    of *GRUCell* described in the formula in the `ONNX documentation <https://github.com/onnx/onnx/blob/main/docs/Operators.md#GRU>`__.
   * **Range of values**: true or false
   * **Type**: ``boolean``
   * **Default value**: false

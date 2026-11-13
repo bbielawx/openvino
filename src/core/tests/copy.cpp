@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -117,9 +117,8 @@ TEST(copy, broadcast) {
 
     ASSERT_NE(nullptr, new_node);
     ASSERT_EQ(new_args, new_node->input_values());
-    bool axes_determined;
-    AxisSet broadcast_axes;
-    std::tie(axes_determined, broadcast_axes) = node_cast->get_broadcast_axes();
+
+    const auto& [axes_determined, broadcast_axes] = node_cast->get_broadcast_axes();
     ASSERT_EQ(true, axes_determined);
     ASSERT_EQ(AxisSet{0}, broadcast_axes);
 }
@@ -142,7 +141,7 @@ TEST(copy, concat) {
 
     ASSERT_TRUE(nullptr != new_node);
     ASSERT_TRUE(new_args == new_node->input_values());
-    ASSERT_TRUE(node_cast->get_concatenation_axis() == axis);
+    ASSERT_TRUE(node_cast->get_axis() == axis);
 }
 
 TEST(copy, constant) {
@@ -422,7 +421,7 @@ TEST(copy, loop) {
     OutputVector new_args = {trip_count, exec_condition, X_new, Y_new, M_new};
     auto loop_copy = loop->clone_with_new_inputs(new_args);
 
-    auto node_cast = std::dynamic_pointer_cast<op::v5::Loop>(loop_copy);
+    auto node_cast = ov::as_type_ptr<op::v5::Loop>(loop_copy);
     ASSERT_NE(node_cast, nullptr);
     ASSERT_TRUE(nullptr != loop_copy);
     EXPECT_EQ(loop->get_num_iterations(), node_cast->get_num_iterations());

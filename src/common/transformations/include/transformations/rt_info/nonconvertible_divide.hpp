@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -23,7 +23,7 @@ TRANSFORMATIONS_API bool divide_is_nonconvertible(const std::shared_ptr<Node>& n
  */
 class TRANSFORMATIONS_API NonconvertibleDivide : public RuntimeAttribute {
 public:
-    OPENVINO_RTTI("nonconvertable_divide", "0");
+    OPENVINO_RTTI("nonconvertable_divide", "0", RuntimeAttribute);
 
     NonconvertibleDivide() = default;
 

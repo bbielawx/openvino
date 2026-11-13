@@ -1,22 +1,20 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
 #include "openvino/core/any.hpp"
-#include "openvino/frontend/decoder.hpp"
 #include "openvino/frontend/node_context.hpp"
+#include "openvino/frontend/tensorflow_lite/decoder.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow_lite {
+namespace ov::frontend::tensorflow_lite {
 
 using SubGraphFuncs = std::vector<std::function<std::shared_ptr<ov::Model>()>>;
 
 /// Keep necessary data for a single node in the original FW graph to facilitate
 /// conversion process in the rules code.
-class TENSORFLOW_LITE_API NodeContext : public ov::frontend::NodeContext {
+class TENSORFLOW_LITE_FRONTEND_API NodeContext : public ov::frontend::NodeContext {
 public:
     using Ptr = std::shared_ptr<NodeContext>;
     NodeContext(const std::shared_ptr<DecoderBase>& decoder, const OutputVector& inputs)
@@ -97,6 +95,4 @@ private:
 using CreatorFunction = std::function<ov::OutputVector(const ov::frontend::tensorflow_lite::NodeContext&)>;
 using TranslatorDictionaryType = std::map<std::string, CreatorFunction>;
 
-}  // namespace tensorflow_lite
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow_lite

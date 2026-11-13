@@ -1,10 +1,9 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/dynamic_quantize_linear.hpp"
-
 #include "core/null_node.hpp"
+#include "core/operator_set.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/clamp.hpp"
 #include "openvino/op/constant.hpp"
@@ -21,13 +20,10 @@
 #include "openvino/op/squeeze.hpp"
 #include "openvino/op/subtract.hpp"
 #include "utils/common.hpp"
-
 using namespace ov::op;
 using ov::Shape;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
+namespace ov::frontend::onnx {
 namespace {
 std::shared_ptr<ov::Node> find_min_value(const ov::Output<ov::Node>& input) {
     const auto& zero_node = v0::Constant::create(ov::element::i64, ov::Shape{}, {0});
@@ -77,8 +73,7 @@ std::shared_ptr<ov::Node> quantize_linear(ov::Output<ov::Node> x,
     return std::make_shared<v0::Convert>(result_clamped, ov::element::u8);
 }
 }  // namespace
-namespace op {
-namespace set_1 {
+namespace ai_onnx::opset_1 {
 ov::OutputVector dynamic_quantize_linear(const ov::frontend::onnx::Node& node) {
     const ov::OutputVector& inputs = node.get_ov_inputs();
     const auto& x = inputs.at(0);
@@ -106,8 +101,6 @@ ov::OutputVector dynamic_quantize_linear(const ov::frontend::onnx::Node& node) {
 
     return {y, y_scale, y_zero_point};
 }
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("DynamicQuantizeLinear", OPSET_SINCE(1), ai_onnx::opset_1::dynamic_quantize_linear);
+}  // namespace ai_onnx::opset_1
+}  // namespace ov::frontend::onnx

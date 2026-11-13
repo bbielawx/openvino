@@ -1,28 +1,32 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
 #include <cassert>
-#include <transformations/utils/utils.hpp>
+#include <cstddef>
+#include <map>
+#include <memory>
+#include <string>
 
+#include "openvino/core/any.hpp"
+#include "openvino/core/except.hpp"
+#include "openvino/core/node.hpp"
 #include "transformations/rt_info/primitives_priority_attribute.hpp"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
-inline std::string getRTInfoValue(const std::map<std::string, ov::Any>& rtInfo, std::string paramName) {
+inline std::string getRTInfoValue(const std::map<std::string, ov::Any>& rtInfo, const std::string& paramName) {
     auto it = rtInfo.find(paramName);
     if (it != rtInfo.end()) {
         return it->second.as<std::string>();
-    } else {
-        return {};
     }
+    return {};
 }
 
-inline std::string getImplPriorityValue(const std::shared_ptr<ov::Node> &node) {
-    const auto &rtInfo = node->get_rt_info();
+inline std::string getImplPriorityValue(const std::shared_ptr<ov::Node>& node) {
+    const auto& rtInfo = node->get_rt_info();
 
     auto it_info = rtInfo.find(ov::PrimitivesPriority::get_type_info_static());
 
@@ -34,10 +38,9 @@ inline std::string getImplPriorityValue(const std::shared_ptr<ov::Node> &node) {
 }
 
 template <typename T>
-inline const std::shared_ptr<T> getNgraphOpAs(const std::shared_ptr<ov::Node>& op) {
+inline std::shared_ptr<T> getNgraphOpAs(const std::shared_ptr<ov::Node>& op) {
     auto typedOp = ov::as_type_ptr<T>(op);
-    if (!typedOp)
-        OPENVINO_THROW("Can't get ngraph node ", op->get_type_name(), " with name ", op->get_friendly_name());
+    OPENVINO_ASSERT(typedOp, "Can't get ngraph node ", op->get_type_name(), " with name ", op->get_friendly_name());
     return typedOp;
 }
 
@@ -49,5 +52,4 @@ inline bool isDynamicNgraphNode(const std::shared_ptr<const ov::Node>& op) {
     return ret;
 }
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

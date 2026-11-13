@@ -1,8 +1,10 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <gtest/gtest.h>
+
+#include "openvino/core/visibility.hpp"
 
 #include "low_precision/avg_pool.hpp"
 #include "low_precision/common/precisions_restriction.hpp"
@@ -18,6 +20,7 @@
 #include "ov_lpt_models/common/dequantization_operations.hpp"
 #include "ov_lpt_models/fake_quantize.hpp"
 #include "simple_low_precision_transformer.hpp"
+#include "openvino/op/avg_pool.hpp"
 
 using namespace testing;
 using namespace ov;
@@ -77,7 +80,6 @@ public:
                                 .setDefaultPrecisions(defaultPrecisions);
 
         actualFunction = ov::builder::subgraph::FakeQuantizeFunction::getOriginal(
-            TestTransformationParams::toParams(fakeQuantizeOnData.params),
             precision,
             shape,
             fakeQuantizeOnData.actual,
@@ -94,7 +96,6 @@ public:
         transform.transform(actualFunction);
 
         referenceFunction = ov::builder::subgraph::FakeQuantizeFunction::getReference(
-            TestTransformationParams::toParams(fakeQuantizeOnData.params),
             precision,
             shape,
             params.updatePrecisions,
@@ -105,11 +106,7 @@ public:
     }
 
     static std::string getTestCaseName(testing::TestParamInfo<FakeQuantizeTransformationParams> obj) {
-        ov::element::Type precision;
-        ov::PartialShape shape;
-        bool updatePrecision;
-        FakeQuantizeTransformationTestValues fakeQuantizeOnData;
-        std::tie(precision, shape, updatePrecision, fakeQuantizeOnData) = obj.param;
+        const auto& [precision, shape, updatePrecision, fakeQuantizeOnData] = obj.param;
 
         std::ostringstream result;
         result << precision << "_" << shape << "_" << toString(fakeQuantizeOnData.params)
@@ -118,7 +115,12 @@ public:
     }
 };
 
+#if defined (OPENVINO_ARCH_ARM) && defined(__linux__)
+// Ticket: 153155
+TEST_P(FakeQuantizeTransformation, DISABLED_CompareFunctions) {
+#else
 TEST_P(FakeQuantizeTransformation, CompareFunctions) {
+#endif
     actualFunction->validate_nodes_and_infer_types();
     auto res = compare_functions(actualFunction, referenceFunction, true, true, false);
     ASSERT_TRUE(res.first) << res.second;

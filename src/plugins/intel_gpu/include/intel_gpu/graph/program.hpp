@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,12 +11,15 @@
 #include "intel_gpu/runtime/lru_cache.hpp"
 #include "intel_gpu/runtime/execution_config.hpp"
 #include "intel_gpu/graph/kernel_impl_params.hpp"
+#include "intel_gpu/runtime/internal_properties.hpp"
 
 #include <list>
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include <map>
+#include <optional>
 #include <utility>
 #include <set>
 
@@ -29,7 +32,9 @@ class pass_manager;
 class base_pass;
 class program_wrapper;
 class kernels_cache;
+class tensor_conversion;
 class ICompilationContext;
+using tensor_conversion_key = std::pair<data_types, data_types>;
 
 
 struct program {
@@ -42,7 +47,6 @@ struct program {
     friend class pre_replace_deconv;                // to be removed when possible
     friend class prepare_primitive_fusing;          // to be removed when possible
     friend class prepare_quantization;              // to be removed when possible
-    friend class prepare_conv_eltw_fusing;          // to be removed when possible
     friend class reorder_inputs;                    // to be removed when possible
     friend class remove_redundant_reorders;         // to be removed when possible
     friend class post_optimize_weights;             // to be removed when possible
@@ -54,11 +58,11 @@ struct program {
 public:
     struct nodes_ordering {
     public:
-        typedef std::list<program_node*> list_of_nodes;
-        typedef list_of_nodes::const_iterator const_iterator;
-        typedef list_of_nodes::const_reverse_iterator const_reverse_iterator;
-        typedef list_of_nodes::iterator node_iterator;
-        typedef list_of_nodes::reverse_iterator node_reverse_iterator;
+        using list_of_nodes = std::list<program_node *>;
+        using const_iterator = list_of_nodes::const_iterator;
+        using const_reverse_iterator = list_of_nodes::const_reverse_iterator;
+        using node_iterator = list_of_nodes::iterator;
+        using node_reverse_iterator = list_of_nodes::reverse_iterator;
         const_iterator begin() const { return _processing_order.begin(); }
         const_iterator end() const { return _processing_order.end(); }
         const_reverse_iterator rbegin() const { return _processing_order.rbegin(); }
@@ -74,7 +78,7 @@ public:
         }
         void calculate_BFS_processing_order();
         size_t size() { return _processing_order.size(); }
-        bool is_correct(program_node* node);
+        bool is_correct() const;
 
         node_iterator get_processing_iterator(program_node& node) const { return processing_order_iterators.at(&node); }
         void clear() {
@@ -126,9 +130,9 @@ public:
         T* elem;
     };
 
-    typedef std::vector<primitive_info> primitives_info;
-    typedef std::vector<std::pair<std::string, primitives_info>> graph_optimizer_info;
-    typedef std::pair<primitive_id, std::vector<primitive_id>> optimized_info;
+    using primitives_info = std::vector<primitive_info>;
+    using graph_optimizer_info = std::vector<std::pair<std::string, primitives_info>>;
+    using optimized_info = std::pair<primitive_id, std::vector<primitive_id>>;
 
     program(engine& engine_ref,
             topology const& topology,
@@ -143,7 +147,8 @@ public:
             std::set<std::shared_ptr<program_node>> const& nodes,
             const ExecutionConfig& config,
             std::shared_ptr<ov::threading::IStreamsExecutor> task_executor,
-            bool is_internal);
+            bool is_internal,
+            std::optional<std::map<primitive_type_id, bool>> onednn_impls = std::nullopt);
 
     explicit program(engine& engine,
                 const ExecutionConfig& config = {});
@@ -174,6 +179,11 @@ public:
     program_node const& get_node(primitive_id const& id) const;
     std::shared_ptr<program_node> get_node_ptr(const primitive_id& prim) { return nodes_map.at(prim); }
     std::shared_ptr<program_node> get_node_ptr(const primitive_id& prim) const { return nodes_map.at(prim); }
+    void set_state_initializers(const std::string& variable_id, const primitive_id& id);
+    bool has_state_initializers(const std::string& variable_id, const primitive_id& id);
+    bool contains_state(const std::string& variable_id);
+    const std::vector<primitive_id>& get_initializers(const std::string& variable_id) { return state_initializers.at(variable_id); }
+    const std::map<std::string, std::vector<primitive_id>>& get_state_initializers() const { return state_initializers; }
 
     // returns already existing program_node for given primitive 'prim' (lookup in 'nodes_map')
     // if it was previously created, otherwise creates and then returns program_node
@@ -203,7 +213,7 @@ public:
                           bool connect_int_node_with_old_dep = true,
                           bool move_usrs_of_prev_to_node = false);
 
-    void add_connection(program_node& prev, program_node& next);
+    void add_connection(program_node& prev, program_node& next, int32_t port_idx = -1);
 
     // removes a node from the graph and deletes it afterwards,
     // prereq: node cannot be marked as output and has to have exactly one dependency
@@ -227,6 +237,7 @@ public:
     void mark_if_constant(program_node& node);
     // mark if the node is in data flow assuming that all dependencies are marked properly
     void mark_if_data_flow(program_node& node);
+    void mark_if_gemm_data_flow();
     // Reverses connection - user becomes dependency.
 
     void remove_nodes(std::vector<program_node*>& to_remove);
@@ -267,9 +278,12 @@ public:
                              const std::set<std::shared_ptr<program_node>>& nodes,
                              const ExecutionConfig& config,
                              std::shared_ptr<ov::threading::IStreamsExecutor> task_executor,
-                             bool is_internal);
+                             bool is_internal,
+                             std::optional<std::map<primitive_type_id, bool>> onednn_impls = std::nullopt);
     static void init_primitives();
     kernels_cache& get_kernels_cache() const;
+    std::shared_ptr<tensor_conversion> get_tensor_conversion(bool create_if_not_exist = true) const;
+    void prepare_tensor_conversions(const std::vector<tensor_conversion_key>& keys);
 
     // returns {-1, -1} if it failed to estimate by allocating given batch size
     std::pair<int64_t/*const alloc*/, int64_t/*general alloc*/> get_estimated_device_mem_usage();
@@ -277,6 +291,16 @@ public:
     using ImplementationsCache = cldnn::LruCacheThreadSafe<kernel_impl_params, std::shared_ptr<primitive_impl>, kernel_impl_params::Hasher>;
 
     ImplementationsCache& get_implementations_cache() const { return *_impls_cache; }
+    // Primitive types that ever had a static impl added to the implementations cache (entries may be evicted later,
+    // the type stays). A cache lookup for any other type cannot hit.
+    void add_static_impl_type(primitive_type_id type) {
+        std::lock_guard<std::mutex> lock(_static_impl_types_mutex);
+        _static_impl_types.insert(type);
+    }
+    bool has_static_impl_type(primitive_type_id type) const {
+        std::lock_guard<std::mutex> lock(_static_impl_types_mutex);
+        return _static_impl_types.count(type) != 0;
+    }
     ICompilationContext& get_compilation_context() const { return *_compilation_context; }
     std::shared_ptr<ICompilationContext> get_compilation_context_ptr() const { return _compilation_context; }
     void cancel_compilation_context();
@@ -285,8 +309,13 @@ public:
     static std::shared_ptr<ICompilationContext> make_compilation_context(const ExecutionConfig& config);
 
     void save(cldnn::BinaryOutputBuffer& ob) const;
-    void load(cldnn::BinaryInputBuffer& ib);
+    void load(cldnn::BinaryInputBuffer& ib, std::shared_ptr<const ov::Model> model_ptr = nullptr,
+              std::shared_ptr<ov::intel_gpu::GpuWeightlessCacheMap> cache_attr_map = nullptr);
+
     bool is_loaded_from_cache() const { return _loaded_from_cache; }
+
+    bool is_new_shape_infer() const { return new_shape_infer; }
+    layout_optimizer& get_layout_optimizer() const { return *_layout_optimizer; }
 
 private:
     uint32_t prog_id = 0;
@@ -294,6 +323,8 @@ private:
     stream::ptr _stream;
     // TODO: Consider moving it to engine
     std::unique_ptr<kernels_cache> _kernels_cache;
+    mutable std::shared_ptr<tensor_conversion> _tensor_conversion;
+    mutable std::mutex _tensor_conversion_mutex;
     ExecutionConfig _config;
     std::shared_ptr<ov::threading::IStreamsExecutor> _task_executor = nullptr;
     std::list<program_node*> inputs;
@@ -301,14 +332,20 @@ private:
     nodes_ordering processing_order;
     std::vector<primitive_id> allocating_order;
     std::unique_ptr<pass_manager> pm;
-    bool is_internal;
-    bool _is_body_program;
+    std::unique_ptr<layout_optimizer> _layout_optimizer;
+    bool is_internal = false;
+    // Forced oneDNN impls optimization attribute
+    std::optional<std::map<primitive_type_id, bool>> _onednn_impls;
+    bool _is_body_program = false;
     // if subgraph can be optimized if it consists of only inputs and corresponding outputs
     bool _can_be_optimized;
     std::unique_ptr<ImplementationsCache> _impls_cache;
-    const size_t _impls_cache_capacity = 300;
+    mutable std::mutex _static_impl_types_mutex;
+    std::set<primitive_type_id> _static_impl_types;
     std::shared_ptr<ICompilationContext> _compilation_context;
     bool _loaded_from_cache = false;
+
+    bool new_shape_infer = false;
 
     std::map<primitive_id, std::shared_ptr<program_node>> nodes_map;
     std::list<primitive_id> optimized_out;
@@ -316,6 +353,8 @@ private:
     std::list<optimized_info> optimized;
     primitives_info prim_info;
     graph_optimizer_info optimizer_passes_info;
+
+    std::map<std::string, std::vector<primitive_id>> state_initializers;
 
     primitives_info get_current_stage_info() const;
     /*

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,8 +9,7 @@
 
 #include "intel_gpu/primitives/detection_output.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 static cldnn::prior_box_code_type PriorBoxCodeFromString(const std::string& str) {
     static const std::map<std::string, cldnn::prior_box_code_type> CodeNameToType = {
@@ -21,9 +20,9 @@ static cldnn::prior_box_code_type PriorBoxCodeFromString(const std::string& str)
     auto it = CodeNameToType.find(str);
     if (it != CodeNameToType.end()) {
         return it->second;
-    } else {
-        OPENVINO_THROW("Unknown Prior-Box code type: ", str);
     }
+    OPENVINO_THROW("Unknown Prior-Box code type: ", str);
+
     return cldnn::prior_box_code_type::corner;
 }
 
@@ -52,8 +51,8 @@ static void CreateCommonDetectionOutputOp(ProgramBuilder& p,
     float objectness_score          = attrs.objectness_score;
 
     cldnn::prior_box_code_type cldnnCodeType = PriorBoxCodeFromString(code_type);
-    int32_t prior_info_size = normalized != 0 ? 4 : 5;
-    int32_t prior_coordinates_offset = normalized != 0 ? 0 : 1;
+    int32_t prior_info_size = static_cast<int>(normalized) != 0 ? 4 : 5;
+    int32_t prior_coordinates_offset = static_cast<int>(normalized) != 0 ? 0 : 1;
 
     auto detectionPrim = cldnn::detection_output(layerName,
                                                  inputs,
@@ -96,5 +95,4 @@ static void CreateDetectionOutputOp(ProgramBuilder& p, const std::shared_ptr<ov:
 REGISTER_FACTORY_IMPL(v0, DetectionOutput);
 REGISTER_FACTORY_IMPL(v8, DetectionOutput);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

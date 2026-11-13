@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 #
@@ -9,7 +9,11 @@ import sys
 
 import numpy as np
 import paddle
-from paddle.fluid.layer_helper import LayerHelper
+
+if paddle.__version__ >= '2.6.0':
+    from paddle.base.layer_helper import LayerHelper
+else:
+    from paddle.fluid.layer_helper import LayerHelper
 
 from save_model import saveModel
 
@@ -45,7 +49,7 @@ def p_norm(name: str, x, axis, p, keepdim):
         outs = exe.run(
             feed={'x': x},
             fetch_list=[out])
-        saveModel(name, exe, feedkeys=['x'], fetchlist=[out], inputs=[x], outputs=[outs[0]], target_dir=sys.argv[1])
+        saveModel(name, exe, feed_vars=[node_x], fetchlist=[out], inputs=[x], outputs=[outs[0]], target_dir=sys.argv[1])
 
     return outs[0]
 
@@ -70,7 +74,7 @@ def main():
     input_shape = (3, 5, 6)
     input_data = np.random.rand(*input_shape).astype(np.float32)
     paddle_result = p_norm('p_norm5', input_data, axis=1, p=float('-inf'), keepdim=True)
-    
+
     input_shape = (3, 6, 7)
     input_data = np.zeros(input_shape).astype(np.float32)
     paddle_result = p_norm('p_norm6', input_data, axis=0, p=0.0, keepdim=None)

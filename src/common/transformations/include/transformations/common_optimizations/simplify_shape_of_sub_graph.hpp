@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 
-#include "openvino/pass/graph_rewrite.hpp"
+#include "openvino/pass/matcher_pass.hpp"
 #include "transformations_visibility.hpp"
 
 namespace ov {
@@ -18,6 +18,7 @@ class TRANSFORMATIONS_API GroupedGatherElimination;
 class TRANSFORMATIONS_API GatherNopElimination;
 class TRANSFORMATIONS_API SimplifyGatherShapeOf;
 class TRANSFORMATIONS_API SimplifySecondInputOfReshape;
+class TRANSFORMATIONS_API AbsSinking;
 
 }  // namespace pass
 }  // namespace ov
@@ -30,7 +31,7 @@ class TRANSFORMATIONS_API SimplifySecondInputOfReshape;
  */
 class ov::pass::GroupedGatherElimination : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("GroupedGatherElimination", "0");
+    OPENVINO_MATCHER_PASS_RTTI("GroupedGatherElimination");
     GroupedGatherElimination();
 };
 
@@ -40,8 +41,8 @@ public:
  */
 class ov::pass::SimplifyShapeOfSubGraph : public ov::pass::ModelPass {
 public:
-    OPENVINO_RTTI("SimplifyShapeOfSubGraph", "0");
-    explicit SimplifyShapeOfSubGraph(bool use_shapes = true) : m_use_shapes(use_shapes){};
+    OPENVINO_MODEL_PASS_RTTI("SimplifyShapeOfSubGraph");
+    explicit SimplifyShapeOfSubGraph(bool use_shapes = true) : m_use_shapes(use_shapes) {};
     bool run_on_model(const std::shared_ptr<ov::Model>& m) override;
 
 private:
@@ -54,7 +55,7 @@ private:
  */
 class ov::pass::GatherNopElimination : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("GatherNopElimination", "0");
+    OPENVINO_MATCHER_PASS_RTTI("GatherNopElimination");
     GatherNopElimination();
 };
 
@@ -66,7 +67,7 @@ public:
  */
 class ov::pass::SimplifyGatherShapeOf : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("SimplifyGatherShapeOf", "0");
+    OPENVINO_MATCHER_PASS_RTTI("SimplifyGatherShapeOf");
     SimplifyGatherShapeOf();
 };
 
@@ -77,6 +78,18 @@ public:
  */
 class ov::pass::SimplifySecondInputOfReshape : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("SimplifySecondInputOfReshape", "0");
+    OPENVINO_MATCHER_PASS_RTTI("SimplifySecondInputOfReshape");
     SimplifySecondInputOfReshape();
+};
+
+/**
+ * @ingroup ov_transformation_common_api
+ * @brief AbsSinking optimizes out the Abs which input is non negative. Has a special case for Concat -> Abs graph, it
+ * moves Abs up through Concat to its inputs, tries to constant fold new Abs ops. In case folding fails applies
+ * optimization to the leftover Abs ops
+ */
+class ov::pass::AbsSinking : public ov::pass::MatcherPass {
+public:
+    OPENVINO_MATCHER_PASS_RTTI("AbsSinking");
+    AbsSinking();
 };

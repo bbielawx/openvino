@@ -1,13 +1,13 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "multi_cache.h"
 
-namespace ov {
-namespace intel_cpu {
+#include <atomic>
+
+namespace ov::intel_cpu {
 
 std::atomic_size_t MultiCache::_typeIdCounter{0};
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

@@ -1,74 +1,256 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "registry/implementation_manager.hpp"
+#include "intel_gpu/primitives/implementation_desc.hpp"
+#include "intel_gpu/runtime/internal_properties.hpp"
 #include "pass_manager.h"
-#include "data_inst.h"
-#include "mutable_data_inst.h"
-#include "fully_connected_inst.h"
-#include "gemm_inst.h"
 #include "program_node.h"
+#include "permute_inst.h"
+#include "reorder_inst.h"
+#include "reshape_inst.h"
+#include "openvino/core/except.hpp"
+#include "intel_gpu/primitives/deconvolution.hpp"
 #include "intel_gpu/runtime/engine.hpp"
 #include "intel_gpu/runtime/itt.hpp"
-#include <iostream>
-
-#ifdef ENABLE_ONEDNN_FOR_GPU
-#include <oneapi/dnnl/dnnl.hpp>
 #include "intel_gpu/runtime/debug_configuration.hpp"
-#include "impls/onednn/utils.hpp"
-#include "impls/onednn/convolution_onednn.hpp"
-#include "impls/onednn/deconvolution_onednn.hpp"
-#endif
+#include "to_string_utils.h"
+#include <iostream>
+#include <sstream>
+#include <intel_gpu/primitives/fully_connected.hpp>
+
 
 using namespace cldnn;
+
+namespace {
+
+void print_selected_formats(const program_node& n) {
+    std::stringstream ss;
+    ov::write_all_to_stream(ss, "select_preferred_formats:", n.id(), ":\n");
+
+    const auto& in_fmts = n.get_preferred_input_fmts();
+    const auto& out_fmts = n.get_preferred_output_fmts();
+
+    for (size_t i = 0; i < in_fmts.size(); i++) {
+        ss << "\tIn " << i << ": " << fmt_to_str(in_fmts[i]) << std::endl;
+    }
+
+    for (size_t i = 0; i < out_fmts.size(); i++) {
+        ss << "\tOut " << i << ": " << fmt_to_str(out_fmts[i]) << std::endl;
+    }
+    GPU_DEBUG_LOG << ss.str() << std::endl;
+}
+
+static void optimize_conv_permute(program_node& node) {
+    // In conv-permute pattern, sets the output format of conv to byxf so that permute can be optimized.
+    // ex) oneDNN convolution -> (byxf) -> permute -> (bfyx) -> output
+    //     output layout of convolution: byxf [b:1, f:128, y:2, x:2]
+    //     output layout of permute:     bfyx [b:1, f:2, y:2, x:128]
+    // In this case, it can be handled by changing only the shape of permute without the kernel execution.
+    if (node.get_output_layout().get_rank() == 4
+        && node.get_users().size() == 1 && node.get_users().front()->is_type<permute>()) {
+        auto& pnode = node.get_users().front()->as<permute>();
+        auto can_optimize_permute = pnode.get_output_layout().data_type == node.get_output_layout().data_type
+            && !pnode.has_fused_primitives()
+            && !pnode.is_output() && pnode.get_input_layout(0).is_static()
+            && pnode.is_rotating_except_batch();
+        if (can_optimize_permute) {
+            node.set_preferred_output_fmt(0, format::byxf);
+            pnode.init_preferred_fmt(1, 1);
+            pnode.set_preferred_input_fmt(0, cldnn::format::byxf);
+            pnode.set_preferred_output_fmt(0, cldnn::format::bfyx);
+            pnode.can_be_optimized(true);
+        }
+    }
+}
+
+static void optimize_permute_conv(program_node& node) {
+    // Goal: Eliminate the Reorder by aligning connection to byxf
+    if (node.get_dependencies().empty()) {
+        return;
+    }
+
+    auto& dep = node.get_dependency(0);
+
+    // Dependency must be a Permute node (not network output)
+    if (!dep.is_type<permute>() || dep.is_output()) {
+        return;
+    }
+
+    if ((node.get_users().size() != 1) || (node.get_output_layout().get_rank() != 4)) {
+        return;
+    }
+
+    auto& pnode = dep.as<permute>();
+
+    if (pnode.get_output_layout().data_type != node.get_output_layout().data_type) {
+        return;
+    }
+
+    // NHWC <-> NCHW (ensures reverse rotation pattern)
+    if (!pnode.is_reverse_rotating_except_batch()) {
+        return;
+    }
+
+    auto pnode_upstream_fmt = pnode.get_dependency(0).get_preferred_output_fmt();
+    auto node_fmt = node.get_preferred_output_fmt();
+
+    bool is_compatible_format = ((pnode_upstream_fmt == format::bfyx || pnode_upstream_fmt == format::any)
+                                && (node_fmt == format::byxf));
+
+    if (!is_compatible_format) {
+        return;
+    }
+
+    // Set the layouts so that the memory buffer is re-interpreted rather than physically shuffled.
+    node.set_preferred_input_fmt(0, format::byxf);
+
+    // Set Permute Input to match upstream format
+    pnode.set_preferred_input_fmt(0, format::bfyx);
+
+    // This aligns with the Pre-Transpose memory, allowing it to be a zero copy optimization.
+    // alternative approach is to force the Permute node to set output fmt to match convolution input fmt
+    // which will eliminate reorder before convolution: pnode.set_preferred_output_fmt(0, node.get_preferred_input_fmt())
+    // however, for non planar blocked format (b_fs_yx_fsv16) The kernel has to calculate complex offsets to pack 16 channels together into a block.
+    // and may degrade performance which may possibly be not visible for small input like 56x56
+    // as small working set the working set fits largely in the GPU L2 cache. And penalty for complex addressing calculation
+    // may get masked by high L2 bandwidth.
+    pnode.set_preferred_output_fmt(0, format::byxf);
+
+    if (!pnode.has_fused_primitives()) {
+        pnode.can_be_optimized(true);
+    }
+}
+
+static void optimize_conv_reshape_reorder(program_node& node) {
+    // A rank-changing ov::Reshape is lowered to "reorder(planar) -> reshape" at plugin build time
+    // (see CreateCommonReshapeOp in plugin/ops/reshape.cpp), because cldnn reshape assumes a planar
+    // input. If the producing convolution emits that planar format itself, the reorder becomes a
+    // pure buffer reinterpret and remove_redundant_reorders drops it.
+    // ex) conv (b_fs_yx_fsv16 [b:6, f:256, y:108, x:108]) -> reorder (bfyx [b:6, f:256, y:11664, x:1]) -> reshape
+    //     becomes conv (bfyx) -> (reorder optimized out) -> reshape
+    if (node.is_output() || node.get_users().size() != 1)
+        return;
+
+    auto& user = *node.get_users().front();
+    if (!user.is_type<reorder>() || user.is_output() || user.get_users().size() != 1)
+        return;
+
+    auto& r_node = user.as<reorder>();
+    if (!r_node.is_simple_reorder() || !r_node.get_users().front()->is_type<reshape>())
+        return;
+
+    const auto& conv_layout = node.get_output_layout(false);
+    const auto& reorder_layout = r_node.get_output_layout(false);
+    if (conv_layout.is_dynamic() || reorder_layout.is_dynamic())
+        return;
+
+    // Mirror the default-format branch of layout::compatible(), which is what lets
+    // remove_redundant_reorders reinterpret the buffer instead of copying it.
+    if (!format::is_default_format(reorder_layout.format))
+        return;
+
+    if (conv_layout.get_rank() != reorder_layout.format.dimension())
+        return;
+
+    if (conv_layout.data_type != reorder_layout.data_type)
+        return;
+
+    if (conv_layout.data_padding || reorder_layout.data_padding)
+        return;
+
+    if (conv_layout.get_linear_size() != reorder_layout.get_linear_size())
+        return;
+
+    node.set_preferred_output_fmt(0, reorder_layout.format);
+}
+
+} // namespace
 
 void select_preferred_formats::run(program& p) {
     OV_ITT_SCOPED_TASK(ov::intel_gpu::itt::domains::intel_gpu_plugin, "pass::select_preferred_formats");
 
-    auto& engine = p.get_engine();
-    const auto& device_info = engine.get_device_info();
-
-    if (!device_info.supports_immad)
-        return;
-
 #ifdef ENABLE_ONEDNN_FOR_GPU
-    auto forcing_map = _lo.get_implementation_forcing();
+    auto& engine = p.get_engine();
+    if (!p.get_layout_optimizer().is_empty_onednn_impls_optimization_attribute()) {
+        engine.create_onednn_engine(p.get_config());
+    }
+#endif  // ENABLE_ONEDNN_FOR_GPU
 
-    engine.create_onednn_engine(p.get_config());
-    for (auto n : p.get_processing_order()) {
-        if (n->is_input() || !layout_optimizer::is_node_suitable_for_onednn(*n)) {
+    auto forcing_map = p.get_config().get_force_implementations();
+
+    for (auto* n : p.get_processing_order()) {
+        n->recalc_output_layout();
+        if (n->is_input() || !n->is_in_data_flow()) {
             continue;
         }
 
-        // skip to set preferred_formats if forcing_impl is not onednn.
-        if (std::find_if(forcing_map.begin(), forcing_map.end(),
-                [&n](std::map<primitive_id, std::pair<format::type, impl_types>>::value_type const& it) {
-                    return (it.first == n->id() && it.second.second != impl_types::onednn);
-                }) != forcing_map.end())
-            continue;
+        auto forced_fmt = format::any;
+        auto forced_impl = impl_types::any;
 
-        // Onednn primitive descriptor creation may fail, for example, due to asymmetric weight.
-        try {
-            if (n->is_type<convolution>()) {
-                if (n->as<convolution>().weights_zero_points_term())
-                    continue;
-                auto prim_desc = onednn::get_convolution_primitive_descriptor(*n->get_kernel_impl_params(),
-                                                                              dnnl::primitive_attr(),
-                                                                              dnnl::memory::format_tag::any);
-                _lo.select_preferred_formats_for_onednn(*n, *prim_desc);
-            } else if (n->is_type<deconvolution>()) {
-                auto prim_desc = onednn::get_deconvolution_primitive_descriptor(*n->get_kernel_impl_params(),
-                                                                                dnnl::primitive_attr(),
-                                                                                dnnl::memory::format_tag::any);
-                _lo.select_preferred_formats_for_onednn(*n, *prim_desc);
-            } else if (n->is_type<fully_connected>() || n->is_type<gemm>()) {
-                _lo.select_preferred_formats_for_onednn(*n);
+        if (std::find_if(forcing_map.begin(), forcing_map.end(),
+                [&n](const std::pair<std::string, ov::intel_gpu::ImplementationDesc>& it) {
+                    return (it.first == n->id() && it.second.output_format != format::any);
+                }) != forcing_map.end()) {
+            forced_fmt = forcing_map.at(n->id()).output_format;
+            forced_impl = forcing_map.at(n->id()).impl_type;
+        }
+
+        const auto& params = n->get_kernel_impl_params();
+        auto shape_type = ImplementationManager::get_shape_type(*params);
+        // temporary set format to any as we need to query that from impl and don't want impl to be rejected
+        // also drop padding as it may be handled later
+        auto factory = test_format<std::shared_ptr<ImplementationManager>>(*n, format::any,
+            [&shape_type](program_node& n) {
+                return test_no_input_pad<std::shared_ptr<ImplementationManager>>(n, [&shape_type](program_node& n) {
+                    return n.type()->choose_impl(n, shape_type);
+            });
+        });
+
+        if (factory) {
+            try {
+                auto fmts = factory->query_formats(*n);
+                for (size_t i = 0; i < fmts.first.size(); i++) {
+                    n->set_preferred_input_fmt(i, fmts.first[i]);
+                }
+                for (size_t i = 0; i < fmts.second.size(); i++) {
+                    n->set_preferred_output_fmt(i, fmts.second[i]);
+                }
+
+                if ((forced_impl & factory->get_impl_type()) == factory->get_impl_type() && forced_fmt != format::any) {
+                    n->set_preferred_output_fmt(0, forced_fmt);
+                }
+                if (factory->get_impl_type() == impl_types::onednn && (n->is_type<convolution>() || n->is_type<deconvolution>())) {
+                    optimize_conv_permute(*n);
+                    optimize_permute_conv(*n);
+                    optimize_conv_reshape_reorder(*n);
+                }
+            } catch (std::exception& exception) {
+                GPU_DEBUG_LOG << "WARNING(select_preferred_formats): " << exception.what() << std::endl;
             }
-        } catch(std::exception &exception) {
-            GPU_DEBUG_INFO << "WARNING(select_preferred_formats): " << exception.what() << std::endl;
+            print_selected_formats(*n);
+        } if (n->is_type<fully_connected>()) {
+            const auto& fc_prim = n->as<fully_connected>().get_primitive();
+            size_t decompression_param_idx =
+                fc_prim->bias.is_valid() ? 3 : 2;
+
+            if (fc_prim->decompression_scale.is_valid()) {
+                if (n->get_preferred_input_fmt(decompression_param_idx) == format::any) {
+                    n->set_preferred_input_fmt(
+                        decompression_param_idx,
+                        n->get_input_layout(decompression_param_idx).format);
+                }
+                // The index must advance even when the format was already chosen (e.g. by oneDNN
+                // query_formats), otherwise the zero-point slot below would re-check the scale index.
+                decompression_param_idx++;
+            } if (fc_prim->decompression_zero_point.is_valid()) {
+                if (n->get_preferred_input_fmt(decompression_param_idx) == format::any) {
+                    n->set_preferred_input_fmt(
+                        decompression_param_idx,
+                        n->get_input_layout(decompression_param_idx).format);
+                }
+            }
         }
     }
-#else
-    (void)_lo;
-#endif  // ENABLE_ONEDNN_FOR_GPU
 }

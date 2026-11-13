@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -23,14 +23,21 @@ public:
     Manager();
     virtual ~Manager();
 
+    //// \brief Construct Manager with a provided name.
+    explicit Manager(std::string name);
+
     //// \brief Construct Manager with shared PassConfig instance
-    explicit Manager(std::shared_ptr<PassConfig> pass_config);
+    explicit Manager(std::shared_ptr<PassConfig> pass_config, std::string name = "UnnamedManager");
+
+    //// \brief Construct Manager with a copied PassConfig instance; it will not share PassConfig as in the constructor
+    /// above
+    explicit Manager(const PassConfig& pass_config, std::string name = "UnnamedManager");
 
     /// \brief Register given transformation class type to execution list
     /// Example below show the basic usage of pass::Manager
     ///
     ///     pass::Manager manager;
-    ///     manager.register_pass<MyTransformation>(/*transformation constructor ars*/);
+    ///     manager.register_pass<MyTransformation>(/* transformation constructor args */);
     ///     manager.run_passes(f);
     ///
     /// For some purposes transformation can be registered and disabled by default.
@@ -42,8 +49,8 @@ public:
     std::shared_ptr<T> register_pass(Args&&... args) {
         auto rc = push_pass<T>(std::forward<Args>(args)...);
         rc->set_pass_config(m_pass_config);
-        if (m_per_pass_validation) {
-            push_pass<Validate>();
+        if (m_per_pass_validation && T::get_type_info_static() != Validate::get_type_info_static()) {
+            push_validate_pass();
         }
         if (!Enable && !m_pass_config->is_enabled<T>()) {
             m_pass_config->disable<T>();
@@ -54,8 +61,8 @@ public:
     std::shared_ptr<PassBase> register_pass_instance(std::shared_ptr<PassBase> pass) {
         pass->set_pass_config(m_pass_config);
         m_pass_list.push_back(pass);
-        if (m_per_pass_validation) {
-            push_pass<Validate>();
+        if (m_per_pass_validation && !ov::as_type_ptr<Validate>(pass)) {
+            push_validate_pass();
         }
         return pass;
     }
@@ -66,11 +73,8 @@ public:
     ///
     /// \return     Returns true if the model was changed by transformations,
     ///             false otherwise.
-    bool run_passes(std::shared_ptr<Model> model);
+    bool run_passes(const std::shared_ptr<Model>& model);
 
-    void set_pass_visualization(bool new_state) {
-        m_visualize = new_state;
-    }
     /// \brief Set flag to enable/disable running Validate pass after executing
     /// each registered pass
     /// \param new_state Value "true" enables Validate pass run; "false", otherwise
@@ -80,7 +84,7 @@ public:
     /// configuration.
     /// This object allows to disable/enable transformations execution, set callback to
     /// particular
-    /// transformation. For mo details see PassConfig class.
+    /// transformation. For more details see PassConfig class.
     std::shared_ptr<PassConfig> get_pass_config() {
         return m_pass_config;
     }
@@ -90,15 +94,21 @@ protected:
     std::shared_ptr<T> push_pass(Args&&... args) {
         static_assert(std::is_base_of<pass::PassBase, T>::value, "pass not derived from pass base");
         auto pass = std::make_shared<T>(std::forward<Args>(args)...);
-        auto pass_base = std::static_pointer_cast<PassBase>(pass);
-        m_pass_list.push_back(pass_base);
+        m_pass_list.push_back(pass);
         return pass;
+    }
+
+    virtual void push_validate_pass() {
+        push_pass<Validate>();
     }
 
     std::shared_ptr<PassConfig> m_pass_config;
     std::vector<std::shared_ptr<PassBase>> m_pass_list;
-    bool m_visualize = false;
     bool m_per_pass_validation = true;
+    std::string m_name = "UnnamedManager";
+
+private:
+    bool run_pass(const std::shared_ptr<PassBase>& pass, const std::shared_ptr<Model>& model);
 };
 }  // namespace pass
 }  // namespace ov

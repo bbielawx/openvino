@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,6 +12,7 @@
 #include <intel_gpu/graph/network.hpp>
 
 #include <cmath>
+#include <cstddef>
 
 using namespace cldnn;
 using namespace ::tests;
@@ -81,8 +82,9 @@ public:
         ASSERT_EQ(outputs_ref.size(), outputs_fused.size());
         ASSERT_EQ(outputs_ref.size(), size_t(1));
 
+        std::vector<float> val_opt;
         auto val_ref = get_output_values_to_float(not_fused, outputs_ref.begin()->second);
-        auto val_opt = get_output_values_to_float(fused, outputs_fused.begin()->second);
+        ASSERT_NO_THROW(val_opt = get_output_values_to_float(fused, outputs_fused.begin()->second));
         ASSERT_EQ(val_ref.size(), val_opt.size());
         for (size_t i = 0; i < val_ref.size(); i++) {
             ASSERT_NEAR(val_ref[i], val_opt[i], tolerance)
@@ -111,6 +113,40 @@ public:
         }
     }
 
+    // Zeroes padding
+    void zero_padding(cldnn::memory::ptr mem) {
+        const auto& l = mem->get_layout();
+        if (!l.data_padding) {
+            return;
+        }
+        // Elements are copied as raw bytes, so any type works as long as its elements are byte-addressable
+        OPENVINO_ASSERT(ov::element::Type(l.data_type).bitwidth() >= 8, "[GPU] zero_padding doesn't support sub-byte types, got ", l.data_type);
+
+        const tensor t = l.get_tensor();
+        const size_t elem_size = data_type_traits::size_of(l.data_type);
+
+        cldnn::mem_lock<std::byte, cldnn::mem_lock_type::read_write> ptr(mem, get_test_stream());
+        // Create buffer filled with 0 bytes
+        std::vector<std::byte> data_only(ptr.size());
+        // Copy everything except padding
+        for (int b = 0; b < t.batch[0]; ++b) {
+            for (int f = 0; f < t.feature[0]; ++f) {
+                for (int w = 0; w < t.spatial[3]; ++w) {
+                    for (int z = 0; z < t.spatial[2]; ++z) {
+                        for (int y = 0; y < t.spatial[1]; ++y) {
+                            for (int x = 0; x < t.spatial[0]; ++x) {
+                                const auto offset = l.get_linear_offset(tensor(batch(b), feature(f), spatial(x, y, z, w))) * elem_size;
+                                std::copy_n(ptr.begin() + offset, elem_size, data_only.begin() + offset);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Update original memory
+        std::copy(data_only.begin(), data_only.end(), ptr.begin());
+    }
+
     cldnn::memory::ptr get_mem(cldnn::layout l) {
         auto prim = engine.allocate_memory(l);
         tensor s = l.get_tensor();
@@ -123,10 +159,14 @@ public:
         } else if (l.data_type == data_types::f16) {
             VF<ov::float16> rnd_vec = rg.generate_random_1d<ov::float16>(s.count(), -1, 1);
             set_values(prim, rnd_vec);
+        } else if (l.data_type == data_types::bf16) {
+            VF<ov::bfloat16> rnd_vec = rg.generate_random_1d<ov::bfloat16>(s.count(), -1, 1);
+            set_values(prim, rnd_vec);
         } else {
             VF<float> rnd_vec = rg.generate_random_1d<float>(s.count(), -1, 1);
             set_values(prim, rnd_vec);
         }
+        zero_padding(prim);
 
         return prim;
     }
@@ -137,6 +177,9 @@ public:
         if (l.data_type == data_types::f16) {
             VF<uint16_t> rnd_vec(s.count(), ov::float16(fill_value).to_bits());
             set_values(prim, rnd_vec);
+        } else if (l.data_type == data_types::bf16) {
+            VF<uint16_t> rnd_vec(s.count(), ov::bfloat16(fill_value).to_bits());
+            set_values(prim, rnd_vec);
         } else if (l.data_type == data_types::f32) {
             VF<float> rnd_vec(s.count(), fill_value);
             set_values(prim, rnd_vec);
@@ -146,9 +189,16 @@ public:
         } else if (l.data_type == data_types::i8) {
             VF<int8_t> rnd_vec(s.count(), static_cast<int8_t>(fill_value));
             set_values(prim, rnd_vec);
+        } else if (l.data_type == data_types::u4) {
+            VF<uint8_t> rnd_vec(s.count()/2, static_cast<uint8_t>(fill_value));
+            set_values(prim, rnd_vec);
+        } else if (l.data_type == data_types::i4) {
+            VF<int8_t> rnd_vec(s.count()/2, static_cast<int8_t>(fill_value));
+            set_values(prim, rnd_vec);
         } else {
             throw std::runtime_error("get_mem: Unsupported precision");
         }
+        zero_padding(prim);
 
         return prim;
     }
@@ -162,10 +212,14 @@ public:
         } else if (l.data_type == data_types::f16) {
             VF<ov::float16> rnd_vec = rg.generate_random_norepetitions<ov::float16>(s.count(), min, max);
             set_values(prim, rnd_vec);
+        } else if (l.data_type == data_types::bf16) {
+            VF<ov::bfloat16> rnd_vec = rg.generate_random_norepetitions<ov::bfloat16>(s.count(), min, max);
+            set_values(prim, rnd_vec);
         } else if (l.data_type == data_types::i8) {
             VF<int8_t> rnd_vec = rg.generate_random_norepetitions<int8_t>(s.count(), min, max);
             set_values(prim, rnd_vec);
         }
+        zero_padding(prim);
 
         return prim;
     }
@@ -179,13 +233,23 @@ public:
         } else if (l.data_type == data_types::f16) {
             VF<ov::float16> rnd_vec = rg.generate_random_1d<ov::float16>(s.count(), min, max);
             set_values(prim, rnd_vec);
+        } else if (l.data_type == data_types::bf16) {
+            VF<ov::bfloat16> rnd_vec = rg.generate_random_1d<ov::bfloat16>(s.count(), min, max);
+            set_values(prim, rnd_vec);
         } else if (l.data_type == data_types::i8) {
             VF<int8_t> rnd_vec = rg.generate_random_1d<int8_t>(s.count(), min, max);
             set_values(prim, rnd_vec);
         } else if (l.data_type == data_types::u8) {
             VF<uint8_t> rnd_vec = rg.generate_random_1d<uint8_t>(s.count(), min, max);
             set_values(prim, rnd_vec);
+        } else if (l.data_type == data_types::i4) {
+            VF<int8_t> rnd_vec = rg.generate_random_1d<int8_t>(s.count()/2, min, max);
+            set_values(prim, rnd_vec);
+        } else if (l.data_type == data_types::u4) {
+            VF<uint8_t> rnd_vec = rg.generate_random_1d<uint8_t>(s.count()/2, min, max);
+            set_values(prim, rnd_vec);
         }
+        zero_padding(prim);
 
         return prim;
     }

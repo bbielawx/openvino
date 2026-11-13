@@ -3,6 +3,8 @@ dist
 build
 types
 ov_runtime
+tests/unit/test_models
+bin
 
 
 *.exp

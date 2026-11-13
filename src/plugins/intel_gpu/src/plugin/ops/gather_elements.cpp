@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,8 +10,7 @@
 
 #include "intel_gpu/primitives/gather_elements.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 static void CreateGatherElementsOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v6::GatherElements>& op) {
     validate_inputs_count(op, {2});
@@ -20,8 +19,9 @@ static void CreateGatherElementsOp(ProgramBuilder& p, const std::shared_ptr<ov::
 
     size_t rank = op->get_input_partial_shape(0).size();
     int64_t axis = op->get_axis();
-    if (axis < 0)
+    if (axis < 0) {
         axis += rank;
+    }
     OPENVINO_ASSERT(axis >= 0 && axis < static_cast<int64_t>(rank),
                     "GatherElements axis is not correspond to number of dimensions");
 
@@ -43,5 +43,4 @@ static void CreateGatherElementsOp(ProgramBuilder& p, const std::shared_ptr<ov::
 
 REGISTER_FACTORY_IMPL(v6, GatherElements);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

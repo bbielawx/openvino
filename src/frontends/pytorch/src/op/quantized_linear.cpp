@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,18 +8,14 @@
 #include "utils.hpp"
 #include "utils_quantize.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 OutputVector translate_quantized_linear(const NodeContext& context) {
     // "quantized::linear(Tensor X, __torch__.torch.classes.quantized.LinearPackedParamsBase W_prepack, float Y_scale_i,
     // int Y_zero_point_i) -> Tensor Y"
     num_inputs_check(context, 4, 4);
     auto x = context.get_input(0);
-    auto packed_params_node =
-        std::dynamic_pointer_cast<ov::op::util::FrameworkNode>(context.get_input(1).get_node_shared_ptr());
+    auto packed_params_node = ov::as_type_ptr<ov::op::util::FrameworkNode>(context.get_input(1).get_node_shared_ptr());
     PYTORCH_OP_CONVERSION_CHECK(packed_params_node, "Packed params input node type is required to be FrameworkNode.");
     const auto& attrs = packed_params_node->get_attrs();
     PYTORCH_OP_CONVERSION_CHECK((attrs.find(PtFrameworkNode::op_type_key) != attrs.end()),
@@ -40,7 +36,4 @@ OutputVector translate_quantized_linear(const NodeContext& context) {
     return {quantize(context, linear, scale, zero_point, x)};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

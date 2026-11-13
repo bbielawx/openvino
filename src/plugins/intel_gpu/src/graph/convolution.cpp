@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include <string>
@@ -31,7 +31,7 @@ std::vector<layout> calc_output_layout_impl(convolution_node const& node, kernel
     auto input_type = input_layout.data_type;
     auto output_type = (input_type == data_types::u8 || input_type == data_types::i8) ? data_types::f32 : input_type;
     if (impl_param.has_fused_primitives()) {
-        output_type = impl_param.get_fused_output_layout().data_type;
+        output_type = impl_param.get_output_element_type();
     }
 
     auto weights_layout = *impl_param.weights_layout;
@@ -41,18 +41,21 @@ std::vector<layout> calc_output_layout_impl(convolution_node const& node, kernel
         input_layout.format == format::winograd_2x3_s1_fused_weights ||
         input_layout.format == format::winograd_6x3_s1_fused_weights ||
         input_layout.format == format::image_2d_weights_winograd_6x3_s1_fbxyb ||
-        input_layout.format == format::image_2d_weights_winograd_6x3_s1_xfbyb)
+        input_layout.format == format::image_2d_weights_winograd_6x3_s1_xfbyb) {
         CLDNN_ERROR_MESSAGE(
             desc->id,
             "Input for convolution should not be in winograd weights format - it is reserved for weights only");
+    }
 
     if (input_layout.format == format::winograd_2x3_s1_data) {
-        if (input_layout.feature() % 32 != 0)
+        if (input_layout.feature() % 32 != 0) {
             CLDNN_ERROR_MESSAGE(desc->id,
                                 "Input for winograd 2x3 convolution should have features count divisable by 32");
-        if (weights_layout.ofm() % 32 != 0)
+        }
+        if (weights_layout.ofm() % 32 != 0) {
             CLDNN_ERROR_MESSAGE(desc->id,
                                 "Number of filters (OFM) for winograd 2x3 convolution should be divisable by 32");
+        }
 
         CLDNN_ERROR_LESS_THAN(desc->id,
                               "input width",
@@ -126,8 +129,15 @@ std::vector<layout> calc_output_layout_impl(convolution_node const& node, kernel
         auto& weights_shape = input_shapes[1];
         // WA for legacy flow, mostly for unit tests as sometimes grouped conv has non-grouped weights
         if (legacy_flow && input_shapes[1].size() == 4 && input_shapes[0].size() == 4) {
-            weights_shape.insert(weights_shape.begin(), desc->groups);
-            weights_shape[1] /= desc->groups;
+            // Extend grouped 1d conv weights shape from 4d to 5d when conv input shape is canonicalized to 4d by allow_new_shape_infer=false
+            const bool is_1d_group_conv = (desc->filter_rank == 4) && desc->grouped_weights_shape && desc->groups > 1;
+            if (is_1d_group_conv && (static_cast<int64_t>(desc->groups) == input_shapes[1][0].get_length())) {
+                // 1d convolution with groups, e.g. shape [g,oc,ic,x] -> [g,oc,ic,x,1]
+                weights_shape.insert(weights_shape.end(), 1);
+            } else {
+                weights_shape.insert(weights_shape.begin(), desc->groups);
+                weights_shape[1] /= desc->groups;
+            }
         }
         output_shapes = ov::op::v1::shape_infer(&op, input_shapes, pads_begin, pads_end);
     } else {
@@ -166,8 +176,8 @@ std::string convolution_inst::to_string(convolution_node const& node) {
 
     std::stringstream primitive_description;
 
-    std::string w_zp = desc->weights_zero_points.empty() ? "false" : "true";
-    std::string a_zp = desc->activations_zero_points.empty() ? "false" : "true";
+    std::string w_zp = desc->weights_zero_points.is_valid() ? "true" : "false";
+    std::string a_zp = desc->activations_zero_points.is_valid() ? "true" : "false";
 
     json_composite conv_info;
     conv_info.add("stride", cldnn::to_string(strd));
@@ -178,8 +188,8 @@ std::string convolution_inst::to_string(convolution_node const& node) {
     conv_info.add("dilation", cldnn::to_string(dilation));
     conv_info.add("deformable_groups", desc->deformable_groups);
     conv_info.add("groups", desc->groups);
-    conv_info.add("has zero points for weights: ", w_zp);
-    conv_info.add("has zero points for activations: ", a_zp);
+    conv_info.add("has zero points for weights", w_zp);
+    conv_info.add("has zero points for activations", a_zp);
     node_info->add("convolution info", conv_info);
     node_info->dump(primitive_description);
 
@@ -189,8 +199,9 @@ std::string convolution_inst::to_string(convolution_node const& node) {
 convolution_inst::typed_primitive_inst(network& network, convolution_node const& node) :
     parent(network, node),
     _deform_conv_dep_offset(node.get_deform_conv_dep_offset()) {
-    if (node.is_dynamic())
+    if (node.is_dynamic()) {
         return;
+    }
     OPENVINO_ASSERT(all_not_zeroes(argument->stride), "[GPU] Convolution strides must be positive numbers");
     OPENVINO_ASSERT(all_not_zeroes(argument->dilation), "[GPU] Convolution dilations must be positive numbers");
 
@@ -206,6 +217,17 @@ convolution_inst::typed_primitive_inst(network& network, convolution_node const&
                           "Input/output rank mismatch");
 
     auto filter_inst = node.weights().get_output_layout().convert_to_weights_layout(argument->grouped_weights_shape);
+
+    // Extend grouped 1d conv weights shape from 4d to 5d when conv input shape is canonicalized to 4d by allow_new_shape_infer=false
+    const bool is_1d_group_conv = (argument->filter_rank == 4) && argument->grouped_weights_shape && argument->groups > 1;
+    const bool needs_filter_extension = !network.get_program()->is_new_shape_infer() &&
+                                        is_1d_group_conv &&
+                                        filter_inst.get_rank() == 4 &&
+                                        !format::is_grouped(filter_inst.format);
+
+    if (needs_filter_extension) {
+        filter_inst = extend_weights_layout_to_5d(filter_inst);
+    }
 
     if (bias_term()) {
         auto bias_inst = node.bias().get_output_layout();
@@ -241,12 +263,6 @@ convolution_inst::typed_primitive_inst(network& network, convolution_node const&
                                 "Biases isn't 1D vector.");
     }
 
-    CLDNN_ERROR_NOT_EQUAL(node.id(),
-                            "Convolution padding mode",
-                            node.get_output_layout().data_padding.filling_value(),
-                            "padding value",
-                            0.0f,
-                            "Unknown padding mode.");
     CLDNN_ERROR_NOT_EQUAL(node.id(),
                             "Output feature size",
                             output_size.feature.size(),

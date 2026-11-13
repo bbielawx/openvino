@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,9 +10,12 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <iomanip>
 #include <istream>
+#include <limits>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -22,6 +25,7 @@
 #include "openvino/core/except.hpp"
 #include "openvino/core/type/element_type.hpp"
 #include "openvino/runtime/common.hpp"
+#include "openvino/runtime/tensor.hpp"
 
 namespace ov {
 
@@ -135,19 +139,45 @@ class Property : public util::BaseProperty<T, mutability_> {
         }
 
         template <typename U,
-                  typename std::enable_if<!std::is_same<typename std::decay<U>::type, std::string>::value &&
+                  typename std::enable_if<!std::is_same<std::decay_t<U>, std::string>::value &&
                                               std::is_convertible<V, std::string>::value,
                                           bool>::type = true>
         explicit operator U() {
+            using UType = std::decay_t<U>;
+            if constexpr (std::is_integral_v<UType> && std::is_unsigned_v<UType>) {
+                const std::string str_value = value;
+                // Find first non-whitespace character
+                const auto pos = str_value.find_first_not_of(" \t\n\r");
+                if (pos != std::string::npos && str_value[pos] == '-') {
+                    OPENVINO_THROW("Cannot assign negative value ", str_value, " to unsigned property");
+                }
+            }
             return Any{value}.as<U>();
         }
 
         template <typename U,
-                  typename std::enable_if<!std::is_same<typename std::decay<U>::type, std::string>::value &&
+                  typename std::enable_if<!std::is_same<std::decay_t<U>, std::string>::value &&
                                               !std::is_convertible<V, std::string>::value,
                                           bool>::type = true>
         explicit operator U() {
-            return value;
+            using UType = std::decay_t<U>;
+            using VType = std::decay_t<V>;
+
+            if constexpr (std::is_integral_v<UType> && std::is_unsigned_v<UType> && !std::is_same_v<UType, bool> &&
+                          std::is_integral_v<VType> && std::is_signed_v<VType>) {
+                if (value < 0) {
+                    OPENVINO_THROW("Cannot assign negative value ", value, " to unsigned property");
+                }
+                if constexpr (sizeof(VType) > sizeof(UType)) {
+                    if (value > static_cast<VType>((std::numeric_limits<UType>::max)())) {
+                        OPENVINO_THROW("Value ", value, " exceeds maximum for target unsigned type");
+                    }
+                }
+
+                return static_cast<U>(static_cast<std::make_unsigned_t<VType>>(value));
+            } else {
+                return static_cast<U>(value);
+            }
         }
 
         V&& value;
@@ -191,7 +221,11 @@ struct PropertyName : public std::string {
      * @return true if property is mutable
      */
     bool is_mutable() const {
-        return _mutability == PropertyMutability::RW;
+        return _mutability != PropertyMutability::RO;
+    }
+
+    PropertyMutability get_mutability() const {
+        return _mutability;
     }
 
 private:
@@ -291,6 +325,8 @@ inline std::istream& operator>>(std::istream& is, Priority& priority) {
 /**
  * @brief High-level OpenVINO model priority hint
  * Defines what model should be provided with more performant bounded resource first
+ * AUTO ignores this hint when it selects the target device for every inference (see
+ * ov::intel_auto::devices_utilization_threshold), since no device stays reserved for the model.
  * @ingroup ov_runtime_cpp_prop_api
  */
 static constexpr Property<Priority> model_priority{"MODEL_PRIORITY"};
@@ -478,6 +514,23 @@ static constexpr Property<std::set<ModelDistributionPolicy>> model_distribution_
 static constexpr Property<bool> enable_cpu_pinning{"ENABLE_CPU_PINNING"};
 
 /**
+ * @brief This property allows CPU reservation during inference.
+ * @ingroup ov_runtime_cpp_prop_api
+ *
+ * Cpu Reservation means reserve cpus which will not be used by other plugin or compiled model. Developer can use this
+ * property to enable or disable CPU reservation during inference on Windows and Linux. MacOS does not support CPU
+ * reservation, and this property is always disabled. This property defaults to false.
+ *
+ * The following code is example to use this property.
+ *
+ * @code
+ * ie.set_property(ov::hint::enable_cpu_reservation(true));
+ * ie.set_property(ov::hint::enable_cpu_reservation(false));
+ * @endcode
+ */
+static constexpr Property<bool> enable_cpu_reservation{"ENABLE_CPU_RESERVATION"};
+
+/**
  * @brief This property define if using hyper threading during inference.
  * @ingroup ov_runtime_cpp_prop_api
  *
@@ -506,7 +559,7 @@ static constexpr Property<uint32_t> num_requests{"PERFORMANCE_HINT_NUM_REQUESTS"
  * ov::optimal_batch_size)
  * @ingroup ov_runtime_cpp_prop_api
  */
-static constexpr Property<std::shared_ptr<ov::Model>> model{"MODEL_PTR"};
+static constexpr Property<std::shared_ptr<const ov::Model>> model{"MODEL_PTR"};
 
 /**
  * @brief Special key for auto batching feature configuration. Enabled by default
@@ -578,6 +631,19 @@ static constexpr Property<uint64_t, PropertyMutability::RW> dynamic_quantization
  */
 static constexpr Property<element::Type, PropertyMutability::RW> kv_cache_precision{"KV_CACHE_PRECISION"};
 
+/**
+ * @brief This property scales down activations to prevent overflows when inference precision is f16.
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+static constexpr Property<float, PropertyMutability::RW> activations_scale_factor{"ACTIVATIONS_SCALE_FACTOR"};
+
+/** @brief  Hint for device to use model compiled blob.
+ * @ingroup ov_runtime_cpp_prop_api
+ *
+ * The property is used pass compiled blob as ov::Tensor.
+ * The blob can be regular or weightless model. The `weights_path` property is hint where to look for weights.
+ */
+inline constexpr Property<Tensor, PropertyMutability::RW> compiled_blob{"COMPILED_BLOB"};
 }  // namespace hint
 
 /**
@@ -685,10 +751,111 @@ static constexpr Property<Level> level{"LOG_LEVEL"};
 static constexpr Property<std::string> cache_dir{"CACHE_DIR"};
 
 /**
+ * @brief This property defines the path which will be used to store any data cached by plugins.
+ * @ingroup ov_runtime_cpp_prop_api
+ *
+ * The underlying cache structure is not defined and might differ between OpenVINO releases
+ * Cached data might be platform / device specific and might be invalid after OpenVINO version change
+ *
+ * If the path is a directory, it has the same effect as the `cache_dir` property. Regular caching is used in this case.
+ *
+ * If this property is not specified or value is empty string, then caching is disabled.
+ * The property might enable caching for the plugin using the following code:
+ *
+ * @code
+ * ie.set_property("GPU", ov::cache_path("cache/")); // enables cache for GPU plugin
+ * @endcode
+ *
+ * The following code enables caching of compiled network blobs for devices where import/export is supported
+ *
+ * @code
+ * ie.set_property(ov::cache_path("cache/")); // enables models cache
+ * @endcode
+ */
+inline constexpr Property<std::filesystem::path> cache_path{"CACHE_PATH"};
+
+/**
  * @brief Read-only property to notify user that compiled model was loaded from the cache
  * @ingroup ov_runtime_cpp_prop_api
  */
 static constexpr Property<bool, PropertyMutability::RO> loaded_from_cache{"LOADED_FROM_CACHE"};
+
+/**
+ * @brief Write property to specify the origin path of compiled model to speed cache model ID calculation.
+ * @ingroup ov_runtime_cpp_prop_api
+ *
+ * The property has meaning when used in `core::compile_model(const std::shared_ptr<const ov::Model>& model, ...)` and
+ * cache feature is enabled.
+ */
+static inline constexpr Property<std::filesystem::path, PropertyMutability::WO> cache_model_path{"CACHE_MODEL_PATH"};
+
+/**
+ * @brief The property allows setting a user ID for a cache entry.
+ *
+ * This overrides the internal ID generation mechanism and the user must manage the ID. If defined by the user, the
+ * same ID must be used to restore the model from the cache; otherwise, the model will be compiled.
+ * The custom ID can allow importing a model from the cache file without the original model.
+ *
+ * The following code allows to compile a model with a custom ID.
+ * @code
+ * // store compiled model to cache with ID "746352"
+ * core.compile_model(model, "NPU", ov::AnyMap{ov::cache_blob_id("746352"), ov::cache_path("cache_dir")});
+ * @endcode
+ *
+ * The following code allows to import a model from the cache if the original model is not available.
+ * @code
+ * core.compile_model(empty_model, "NPU", ov::AnyMap{ov::cache_blob_id("746352"), ov::cache_path("cache_dir")});
+ * @endcode
+ */
+inline constexpr Property<uint64_t, PropertyMutability::RW> cache_blob_id{"CACHE_BLOB_ID"};
+
+/**
+ * @brief Enum to define possible workload types
+ *
+ * Workload type represents the execution priority for an inference.
+ *
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+enum class WorkloadType {
+    DEFAULT = 0,    // Default execution priority
+    EFFICIENT = 1,  // Lower execution priority
+};
+
+/** @cond INTERNAL */
+inline std::ostream& operator<<(std::ostream& os, const WorkloadType& mode) {
+    switch (mode) {
+    case WorkloadType::DEFAULT:
+        return os << "DEFAULT";
+    case WorkloadType::EFFICIENT:
+        return os << "EFFICIENT";
+    default:
+        OPENVINO_THROW("Unsupported workload type");
+    }
+}
+
+inline std::istream& operator>>(std::istream& is, WorkloadType& mode) {
+    std::string str;
+    is >> str;
+    std::transform(str.begin(), str.end(), str.begin(), [](unsigned char c) {
+        return std::tolower(c);
+    });
+    if (str == "default") {
+        mode = WorkloadType::DEFAULT;
+    } else if (str == "efficient") {
+        mode = WorkloadType::EFFICIENT;
+    } else {
+        OPENVINO_THROW("Unsupported workload type: ", str);
+    }
+    return is;
+}
+/** @endcond */
+
+/**
+ * @brief Read-write property to select in which mode the workload will be executed
+ * This is only supported by NPU.
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+static constexpr Property<WorkloadType, PropertyMutability::RW> workload_type{"WORKLOAD_TYPE"};
 
 /**
  * @brief Enum to define possible cache mode
@@ -726,12 +893,35 @@ inline std::istream& operator>>(std::istream& is, CacheMode& mode) {
 /** @endcond */
 
 /**
- * @brief Read-write property to select the cache mode between optimize_size and optimize_speed.
- * If optimize_size is selected, smaller cache files will be created.
- * And if optimize_speed is selected, loading time will decrease but the cache file size will increase.
+ * @brief Read-write property to select the cache mode between OPTIMIZE_SIZE and OPTIMIZE_SPEED.
+ * If OPTIMIZE_SPEED is selected (default), loading time will decrease but the cache file size will increase.
+ * If OPTIMIZE_SIZE is selected, smaller cache files will be created.
+ * The cache model default behaviour can be overridden by ENABLE_WEIGHTLESS property.
  * @ingroup ov_runtime_cpp_prop_api
  */
 static constexpr Property<CacheMode, PropertyMutability::RW> cache_mode{"CACHE_MODE"};
+
+struct EncryptionCallbacks {
+    std::function<std::string(const std::string&)> encrypt;
+    std::function<std::string(const std::string&)> decrypt;
+};
+
+/**
+ * @brief Read-write property to enable/disable weightless cache.
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+static constexpr Property<bool, PropertyMutability::RW> enable_weightless{"ENABLE_WEIGHTLESS"};
+
+/**
+ * @brief Write-only property to set encryption/decryption function for saving/loading model cache.
+ * If cache_encryption_callbacks is set, the model topology will be encrypted when saving to the cache and decrypted
+ * when loading from the cache. This property is set in core.compile_model only.
+ * - First value of the struct is encryption function.
+ * - Second value of the struct is decryption function.
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+static constexpr Property<EncryptionCallbacks, PropertyMutability::WO> cache_encryption_callbacks{
+    "CACHE_ENCRYPTION_CALLBACKS"};
 
 /**
  * @brief Read-only property to provide information about a range for streams on platforms where streams are supported.
@@ -809,7 +999,6 @@ static constexpr Property<bool, PropertyMutability::RW> enable_mmap{"ENABLE_MMAP
  * @brief Namespace with device properties
  */
 namespace device {
-
 /**
  * @brief the property for setting of required device to execute on
  * values: device id starts from "0" - first device, "1" - second device, etc
@@ -892,7 +1081,8 @@ struct Properties : public Property<std::map<std::string, std::map<std::string, 
     inline util::EnableIfAllStringAny<std::pair<std::string, Any>, Properties...> operator()(
         const std::string& device_name,
         Properties&&... configs) const {
-        return {name() + std::string("_") + device_name, AnyMap{std::pair<std::string, Any>{configs}...}};
+        return {name() + std::string("_") + device_name,
+                AnyMap{std::pair<std::string, Any>{std::forward<Properties>(configs)}...}};
     }
 };
 
@@ -1041,11 +1231,56 @@ inline std::istream& operator>>(std::istream& is, Type& device_type) {
 static constexpr Property<Type, PropertyMutability::RO> type{"DEVICE_TYPE"};
 
 /**
- * @brief Read-only property which defines Giga OPS per second count (GFLOPS or GIOPS) for a set of precisions supported
- * by specified device
+ * @brief Read-only property which defines Giga OPS per second count (GFLOPS or GIOPS) for a set of precisions
+ * supported by specified device
  * @ingroup ov_runtime_cpp_prop_api
  */
 static constexpr Property<std::map<element::Type, float>, PropertyMutability::RO> gops{"DEVICE_GOPS"};
+
+/**
+ * @brief Structure to store PCI bus information of device (Domain/Bus/Device/Function)
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+struct PCIInfo {
+    /**
+     * @brief PCI domain ID
+     */
+    uint32_t domain;
+    /**
+     * @brief PCI bus ID
+     */
+    uint32_t bus;
+    /**
+     * @brief PCI device ID
+     */
+    uint32_t device;
+    /**
+     * @brief PCI function ID
+     */
+    uint32_t function;
+};
+
+/** @cond INTERNAL */
+inline std::ostream& operator<<(std::ostream& os, const PCIInfo& pci_info) {
+    return os << "{domain: " << pci_info.domain << " bus: " << pci_info.bus << " device: 0x" << std::hex
+              << pci_info.device << " function: " << std::dec << pci_info.function << "}";
+}
+
+inline std::istream& operator>>(std::istream& is, PCIInfo& pci_info) {
+    std::string delim;
+    if (!(is >> delim >> pci_info.domain >> delim >> pci_info.bus >> delim >> std::hex >> pci_info.device >> delim >>
+          std::dec >> pci_info.function)) {
+        OPENVINO_THROW("Could not deserialize PCIInfo. Invalid format!");
+    }
+    return is;
+}
+/** @endcond */
+
+/**
+ * @brief Read-only property to get PCI bus information of device. See PCIInfo struct definition for details
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+static constexpr Property<PCIInfo, PropertyMutability::RO> pci_info{"DEVICE_PCI_INFO"};
 
 /**
  * @brief Read-only property to get a float of device thermal
@@ -1170,67 +1405,127 @@ static constexpr Property<int32_t, PropertyMutability::RW> inference_num_threads
 static constexpr Property<int32_t, PropertyMutability::RW> compilation_num_threads{"COMPILATION_NUM_THREADS"};
 
 /**
- * @brief Enum to define possible affinity patterns
+ * @brief The devices that the inference task been executed.
  * @ingroup ov_runtime_cpp_prop_api
  */
-enum class Affinity {
-    NONE = -1,  //!<  Disable threads affinity pinning
-    CORE = 0,   //!<  Pin threads to cores, best for static benchmarks
-    NUMA = 1,   //!<  Pin threads to NUMA nodes, best for real-life, contented cases. On the Windows and MacOS* this
-                //!<  option behaves as CORE
-    HYBRID_AWARE = 2,  //!< Let the runtime to do pinning to the cores types, e.g. prefer the "big" cores for latency
-                       //!< tasks. On the hybrid CPUs this option is default
+static constexpr Property<std::vector<std::string>, PropertyMutability::RO> execution_devices{"EXECUTION_DEVICES"};
+
+/**
+ * @brief Path to the file with model's weights.
+ *
+ * @note This property is used for weightless caching. Only used when ov::CacheMode Property is set to "OPTIMIZE_SIZE".
+ */
+static constexpr Property<std::string, PropertyMutability::RW> weights_path{"WEIGHTS_PATH"};
+
+/**
+ * @brief The precision of key cache compression
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+static constexpr Property<element::Type, PropertyMutability::RW> key_cache_precision{"KEY_CACHE_PRECISION"};
+
+/**
+ * @brief The precision of value cache compression
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+static constexpr Property<element::Type, PropertyMutability::RW> value_cache_precision{"VALUE_CACHE_PRECISION"};
+
+/**
+ * @brief The group_size of key cache compression
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+static constexpr Property<uint64_t, PropertyMutability::RW> key_cache_group_size{"KEY_CACHE_GROUP_SIZE"};
+
+/**
+ * @brief The group_size of value cache compression
+ * @ingroup ov_runtime_cpp_prop_api
+ */
+static constexpr Property<uint64_t, PropertyMutability::RW> value_cache_group_size{"VALUE_CACHE_GROUP_SIZE"};
+
+/**
+ * @brief Enum to describe the compatibility of a compiled model blob with the current device environment.
+ * @ingroup ov_runtime_cpp_prop_api
+ *
+ * Returned by ov::compatibility_check when queried with an ov::runtime_requirements string argument.
+ */
+enum class CompatibilityCheck {
+    NOT_APPLICABLE = 0,  //!< The device does not support this check, or no requirements string was provided.
+    SUPPORTED = 1,       //!< Requirements are met; import is expected to succeed with optimal performance.
+    UNSUPPORTED = 2,     //!< Requirements are not met; import will fail.
 };
 
 /** @cond INTERNAL */
-inline std::ostream& operator<<(std::ostream& os, const Affinity& affinity) {
-    switch (affinity) {
-    case Affinity::NONE:
-        return os << "NONE";
-    case Affinity::CORE:
-        return os << "CORE";
-    case Affinity::NUMA:
-        return os << "NUMA";
-    case Affinity::HYBRID_AWARE:
-        return os << "HYBRID_AWARE";
+inline std::ostream& operator<<(std::ostream& os, const CompatibilityCheck& compatibility) {
+    switch (compatibility) {
+    case CompatibilityCheck::NOT_APPLICABLE:
+        return os << "NOT_APPLICABLE";
+    case CompatibilityCheck::SUPPORTED:
+        return os << "SUPPORTED";
+    case CompatibilityCheck::UNSUPPORTED:
+        return os << "UNSUPPORTED";
     default:
-        OPENVINO_THROW("Unsupported affinity pattern");
+        OPENVINO_THROW("Unsupported CompatibilityCheck value");
     }
 }
 
-inline std::istream& operator>>(std::istream& is, Affinity& affinity) {
+inline std::istream& operator>>(std::istream& is, CompatibilityCheck& compatibility) {
     std::string str;
     is >> str;
-    if (str == "NONE") {
-        affinity = Affinity::NONE;
-    } else if (str == "CORE") {
-        affinity = Affinity::CORE;
-    } else if (str == "NUMA") {
-        affinity = Affinity::NUMA;
-    } else if (str == "HYBRID_AWARE") {
-        affinity = Affinity::HYBRID_AWARE;
+    if (str == "NOT_APPLICABLE") {
+        compatibility = CompatibilityCheck::NOT_APPLICABLE;
+    } else if (str == "SUPPORTED") {
+        compatibility = CompatibilityCheck::SUPPORTED;
+    } else if (str == "UNSUPPORTED") {
+        compatibility = CompatibilityCheck::UNSUPPORTED;
     } else {
-        OPENVINO_THROW("Unsupported affinity pattern: ", str);
+        OPENVINO_THROW("Unsupported CompatibilityCheck value: ", str);
     }
     return is;
 }
 /** @endcond */
 
 /**
- * @deprecated Use ov::hint::enable_cpu_pinning
- * @brief The name for setting CPU affinity per thread option.
+ * @brief Read-only property carrying plugin-specific runtime requirements of a compiled model blob.
  * @ingroup ov_runtime_cpp_prop_api
- * @note The setting is ignored, if the OpenVINO compiled with OpenMP and any affinity-related OpenMP's
- * environment variable is set (as affinity is configured explicitly)
+ *
+ * The property value is a std::string encoding the device environment requirements at the time
+ * a model was compiled. The format and content are plugin-dependent and may encode information such as
+ * plugin version, required hardware capabilities, or driver version.
+ *
+ * **Reading** — query on a compiled model to obtain requirements to persist alongside the blob:
+ * @code
+ * ov::Core core;
+ * auto compiled_model = core.compile_model(model, "NPU");
+ * std::string requirements = compiled_model.get_property(ov::runtime_requirements);
+ * @endcode
+ *
+ * **Passing as a hint** — use the property name to construct a hint pair when querying ov::compatibility_check:
+ * @code
+ * auto compat = core.get_property("NPU", ov::compatibility_check, {{ov::runtime_requirements.name(), requirements}});
+ * @endcode
  */
-OPENVINO_DEPRECATED(
-    "This property is deprecated and will be removed soon. Use ov::hint::enable_cpu_pinning instead of it.")
-static constexpr Property<Affinity> affinity{"AFFINITY"};
+inline constexpr Property<std::string, PropertyMutability::RO> runtime_requirements{"RUNTIME_REQUIREMENTS"};
 
 /**
- * @brief The devices that the inference task been executed.
+ * @brief Read-only property to check whether a device satisfies the runtime requirements of a compiled model blob.
  * @ingroup ov_runtime_cpp_prop_api
+ *
+ * Returns an ov::CompatibilityCheck value describing whether the current device environment is compatible
+ * with the requirements string passed as an argument via ov::runtime_requirements.
+ * The requirements string is obtained from a previously compiled model via ov::CompiledModel::get_property().
+ *
+ * @note The property must be queried with an ov::runtime_requirements argument.
+ * Querying without arguments returns ov::CompatibilityCheck::NOT_APPLICABLE.
+ *
+ * **Check requirements before import**
+ *
+ * @code
+ * auto compiled_model = core.compile_model(model, "NPU");
+ * auto requirements = compiled_model.get_property(ov::runtime_requirements);
+ * auto compat = core.get_property("NPU", ov::compatibility_check, {{ov::runtime_requirements.name(), requirements}});
+ * if (compat == ov::CompatibilityCheck::SUPPORTED) {
+ *     auto imported = core.import_model(blob_stream, "NPU");
+ * }
+ * @endcode
  */
-static constexpr Property<std::vector<std::string>, PropertyMutability::RO> execution_devices{"EXECUTION_DEVICES"};
-
+static constexpr Property<CompatibilityCheck, PropertyMutability::RO> compatibility_check{"COMPATIBILITY_CHECK"};
 }  // namespace ov

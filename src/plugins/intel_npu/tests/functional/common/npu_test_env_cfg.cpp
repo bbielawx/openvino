@@ -1,0 +1,276 @@
+// Copyright (C) 2018-2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+//
+
+#include "common/npu_test_env_cfg.hpp"
+
+#include <cstdlib>
+#include <stdexcept>
+
+#include "intel_npu/config/config.hpp"
+#include "intel_npu/config/options.hpp"
+
+namespace {
+
+bool envVarStrToBool(const char* varName, const char* varValue) {
+    try {
+        const auto intVal = std::stoi(varValue);
+        if (intVal != 0 && intVal != 1) {
+            throw std::invalid_argument("Only 0 and 1 values are supported");
+        }
+        return (intVal != 0);
+    } catch (const std::exception& e) {
+        OPENVINO_THROW(std::string("Environment variable ") + varName + " has wrong value : " + e.what());
+    }
+}
+
+}  // namespace
+
+namespace ov::test::utils {
+
+NpuTestEnvConfig::NpuTestEnvConfig() {
+    // start reading obsolete environment variables
+    if (auto var = std::getenv("IE_KMB_TESTS_DEVICE_NAME")) {
+        IE_NPU_TESTS_DEVICE_NAME = var;
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_DUMP_PATH")) {
+        IE_NPU_TESTS_DUMP_PATH = var;
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_LOG_LEVEL")) {
+        IE_NPU_TESTS_LOG_LEVEL = var;
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_RUN_COMPILER")) {
+        IE_NPU_TESTS_RUN_COMPILER = envVarStrToBool("IE_KMB_TESTS_RUN_COMPILER", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_RUN_EXPORT")) {
+        IE_NPU_TESTS_RUN_EXPORT = envVarStrToBool("IE_KMB_TESTS_RUN_EXPORT", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_RUN_IMPORT")) {
+        IE_NPU_TESTS_RUN_IMPORT = envVarStrToBool("IE_KMB_TESTS_RUN_IMPORT", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_RUN_INFER")) {
+        IE_NPU_TESTS_RUN_INFER = envVarStrToBool("IE_KMB_TESTS_RUN_INFER", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_EXPORT_INPUT")) {
+        IE_NPU_TESTS_EXPORT_INPUT = envVarStrToBool("IE_KMB_TESTS_EXPORT_INPUT", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_EXPORT_OUTPUT")) {
+        IE_NPU_TESTS_EXPORT_OUTPUT = envVarStrToBool("IE_KMB_TESTS_EXPORT_OUTPUT", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_EXPORT_REF")) {
+        IE_NPU_TESTS_EXPORT_REF = envVarStrToBool("IE_KMB_TESTS_EXPORT_REF", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_IMPORT_INPUT")) {
+        IE_NPU_TESTS_IMPORT_INPUT = envVarStrToBool("IE_KMB_TESTS_IMPORT_INPUT", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_IMPORT_REF")) {
+        IE_NPU_TESTS_IMPORT_REF = envVarStrToBool("IE_KMB_TESTS_IMPORT_REF", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_RAW_EXPORT")) {
+        IE_NPU_TESTS_RAW_EXPORT = envVarStrToBool("IE_KMB_TESTS_RAW_EXPORT", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_LONG_FILE_NAME")) {
+        IE_NPU_TESTS_LONG_FILE_NAME = envVarStrToBool("IE_KMB_TESTS_LONG_FILE_NAME", var);
+    }
+
+    if (auto var = std::getenv("IE_KMB_TESTS_PLATFORM")) {
+        IE_NPU_TESTS_PLATFORM = var;
+    }
+    // end reading obsolete environment variables
+
+    if (auto var = std::getenv("IE_NPU_TESTS_DEVICE_NAME")) {
+        IE_NPU_TESTS_DEVICE_NAME = var;
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_DUMP_PATH")) {
+        IE_NPU_TESTS_DUMP_PATH = var;
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_LOG_LEVEL")) {
+        IE_NPU_TESTS_LOG_LEVEL = var;
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_RUN_COMPILER")) {
+        IE_NPU_TESTS_RUN_COMPILER = envVarStrToBool("IE_NPU_TESTS_RUN_COMPILER", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_RUN_EXPORT")) {
+        IE_NPU_TESTS_RUN_EXPORT = envVarStrToBool("IE_NPU_TESTS_RUN_EXPORT", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_RUN_IMPORT")) {
+        IE_NPU_TESTS_RUN_IMPORT = envVarStrToBool("IE_NPU_TESTS_RUN_IMPORT", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_RUN_INFER")) {
+        IE_NPU_TESTS_RUN_INFER = envVarStrToBool("IE_NPU_TESTS_RUN_INFER", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_EXPORT_INPUT")) {
+        IE_NPU_TESTS_EXPORT_INPUT = envVarStrToBool("IE_NPU_TESTS_EXPORT_INPUT", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_EXPORT_OUTPUT")) {
+        IE_NPU_TESTS_EXPORT_OUTPUT = envVarStrToBool("IE_NPU_TESTS_EXPORT_OUTPUT", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_EXPORT_REF")) {
+        IE_NPU_TESTS_EXPORT_REF = envVarStrToBool("IE_NPU_TESTS_EXPORT_REF", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_IMPORT_INPUT")) {
+        IE_NPU_TESTS_IMPORT_INPUT = envVarStrToBool("IE_NPU_TESTS_IMPORT_INPUT", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_IMPORT_REF")) {
+        IE_NPU_TESTS_IMPORT_REF = envVarStrToBool("IE_NPU_TESTS_IMPORT_REF", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_RAW_EXPORT")) {
+        IE_NPU_TESTS_RAW_EXPORT = envVarStrToBool("IE_NPU_TESTS_RAW_EXPORT", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_LONG_FILE_NAME")) {
+        IE_NPU_TESTS_LONG_FILE_NAME = envVarStrToBool("IE_NPU_TESTS_LONG_FILE_NAME", var);
+    }
+
+    if (auto var = std::getenv("IE_NPU_TESTS_PLATFORM")) {
+        IE_NPU_TESTS_PLATFORM = var;
+    }
+
+    if (auto var = std::getenv("OV_NPU_TESTS_SKIP_CONFIG_FILE")) {
+        OV_NPU_TESTS_SKIP_CONFIG_FILE = var;
+    }
+
+    if (auto var = std::getenv("OV_NPU_TESTS_BLOBS_PATH")) {
+        OV_NPU_TESTS_BLOBS_PATH = var;
+    }
+}
+
+const NpuTestEnvConfig& NpuTestEnvConfig::getInstance() {
+    static NpuTestEnvConfig instance{};
+    return instance;
+}
+
+std::string driverTypeToString(DriverType type) {
+    switch (type) {
+    case DriverType::PV:
+        return "PV";
+    case DriverType::RELEASE:
+        return "RELEASE";
+    case DriverType::LATEST:
+        return "LATEST";
+    }
+    return "";
+}
+
+std::optional<DriverType> parseDriverType(const std::string& str) {
+    // accept any case ("PV", "pv", "Pv", ...) and ignore surrounding whitespace
+    const auto begin = std::find_if_not(str.begin(), str.end(), [](unsigned char c) {
+        return std::isspace(c);
+    });
+    const auto end = std::find_if_not(str.rbegin(), str.rend(), [](unsigned char c) {
+                         return std::isspace(c);
+                     }).base();
+
+    std::string normalized;
+    if (begin < end) {
+        normalized.reserve(static_cast<size_t>(end - begin));
+        std::transform(begin, end, std::back_inserter(normalized), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+    }
+
+    if (normalized == "pv") {
+        return DriverType::PV;
+    } else if (normalized == "release") {
+        return DriverType::RELEASE;
+    } else if (normalized == "latest") {
+        return DriverType::LATEST;
+    }
+    return std::nullopt;
+}
+
+std::string getTestsDeviceNameFromEnvironmentOr(const std::string& instead) {
+    return (!NpuTestEnvConfig::getInstance().IE_NPU_TESTS_DEVICE_NAME.empty())
+               ? NpuTestEnvConfig::getInstance().IE_NPU_TESTS_DEVICE_NAME
+               : instead;
+}
+
+std::string getTestsPlatformFromEnvironmentOr(const std::string& instead) {
+    return (!NpuTestEnvConfig::getInstance().IE_NPU_TESTS_PLATFORM.empty())
+               ? NpuTestEnvConfig::getInstance().IE_NPU_TESTS_PLATFORM
+               : instead;
+}
+
+std::string getDeviceNameTestCase(const std::string& str) {
+    ov::DeviceIDParser parser = ov::DeviceIDParser(str);
+    return parser.get_device_name() + parser.get_device_id();
+}
+
+std::string getDeviceName() {
+    return ov::test::utils::getTestsDeviceNameFromEnvironmentOr("NPU.3720");
+}
+
+std::string getDeviceNameID(const std::string& str) {
+    ov::DeviceIDParser parser = ov::DeviceIDParser(str);
+    return parser.get_device_id();
+}
+
+std::string getTestPlatform() {
+    return ov::intel_npu::Platform::standardize(NpuTestEnvConfig::getInstance().IE_NPU_TESTS_PLATFORM);
+}
+
+}  // namespace ov::test::utils
+
+namespace InferRequestParamsAnyMapTestName {
+std::string getTestCaseName(const testing::TestParamInfo<ov::test::behavior::InferRequestParams>& obj) {
+    std::string targetDevice;
+    ov::AnyMap configuration;
+    std::tie(targetDevice, configuration) = obj.param;
+    std::replace(targetDevice.begin(), targetDevice.end(), ':', '.');
+    targetDevice = ov::test::utils::getTestsPlatformFromEnvironmentOr(ov::test::utils::DEVICE_NPU);
+    std::ostringstream result;
+    result << "targetDevice=" << targetDevice << "_";
+    if (!configuration.empty()) {
+        for (auto& configItem : configuration) {
+            result << "configItem=" << configItem.first << "_";
+            configItem.second.print(result);
+            result << "_";
+        }
+    }
+    return result.str();
+}
+}  // namespace InferRequestParamsAnyMapTestName
+
+namespace InferRequestParamsMapTestName {
+
+std::string getTestCaseName(const testing::TestParamInfo<InferRequestParams>& obj) {
+    std::string targetDevice;
+    std::map<std::string, std::string> configuration;
+    std::tie(targetDevice, configuration) = obj.param;
+    std::replace(targetDevice.begin(), targetDevice.end(), ':', '.');
+    targetDevice = ov::test::utils::getTestsPlatformFromEnvironmentOr(ov::test::utils::DEVICE_NPU);
+    std::ostringstream result;
+    result << "targetDevice=" << targetDevice << "_";
+    if (!configuration.empty()) {
+        for (auto& configItem : configuration) {
+            result << "configItem=" << configItem.first << "_" << configItem.second << "_";
+        }
+    }
+    return result.str();
+}
+}  // namespace InferRequestParamsMapTestName

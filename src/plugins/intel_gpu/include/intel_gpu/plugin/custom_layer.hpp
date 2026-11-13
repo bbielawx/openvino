@@ -1,18 +1,16 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 #include <memory>
 #include <string>
-#include <sstream>
 #include <vector>
 #include <map>
 #include "pugixml.hpp"
-#include "intel_gpu/runtime/tensor.hpp"
+#include "intel_gpu/runtime/format.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 using CustomLayerPtr = std::shared_ptr<class CustomLayer>;
 using CustomLayerMap = std::map<std::string, CustomLayerPtr>;
@@ -23,11 +21,12 @@ public:
         CustomLayerMap& customLayers,
         bool can_be_missed = false);
 
-    typedef enum {
+    enum ParamType {
         Input,
         Output,
         Data,
-    } ParamType;
+        Internal,
+    };
     struct KerenlParam {
         KerenlParam() :type(Input), paramIndex(-1), portIndex(-1),
                        format(cldnn::format::any) {}
@@ -35,6 +34,7 @@ public:
         int paramIndex;
         int portIndex;
         std::string blobName;
+        std::string size_expr;
         cldnn::format format;
     };
 
@@ -60,7 +60,7 @@ protected:
     CustomLayer() : m_wgDimInputIdx(0) {}
     explicit CustomLayer(const std::string dirname) : m_configDir(dirname), m_wgDimInputIdx(0) {}
 
-    bool Error() const { return m_ErrorMessage.length() > 0; }
+    bool Error() const { return !m_ErrorMessage.empty(); }
     void LoadSingleLayer(const pugi::xml_node& node);
     void ProcessKernelNode(const pugi::xml_node& node);
     void ProcessBuffersNode(const pugi::xml_node& node);
@@ -82,5 +82,4 @@ protected:
     std::string m_ErrorMessage;
 };
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

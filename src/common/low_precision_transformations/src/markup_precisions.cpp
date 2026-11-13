@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,19 +8,54 @@
 #include <unordered_set>
 #include <set>
 #include <vector>
-
-#include "openvino/opsets/opset1.hpp"
-#include "openvino/opsets/opset2.hpp"
-#include "openvino/opsets/opset4.hpp"
-#include "openvino/opsets/opset5.hpp"
-#include "openvino/opsets/opset6.hpp"
-#include "openvino/opsets/opset12.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
+#include "openvino/opsets/opset2_decl.hpp"
+#include "openvino/opsets/opset3_decl.hpp"
+#include "openvino/opsets/opset4_decl.hpp"
+#include "openvino/opsets/opset5_decl.hpp"
+#include "openvino/opsets/opset6_decl.hpp"
+#include "openvino/opsets/opset7_decl.hpp"
+#include "openvino/opsets/opset8_decl.hpp"
+#include "openvino/opsets/opset12_decl.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "openvino/pass/pattern/op/or.hpp"
 #include "low_precision/network_helper.hpp"
 #include "low_precision/rt_info/precisions_attribute.hpp"
 #include "low_precision/rt_info/precision_preserved_attribute.hpp"
 #include "itt.hpp"
+#include "openvino/op/avg_pool.hpp"
+#include "openvino/op/batch_to_space.hpp"
+#include "openvino/op/broadcast.hpp"
+#include "openvino/op/clamp.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/convolution.hpp"
+#include "openvino/op/depth_to_space.hpp"
+#include "openvino/op/gather.hpp"
+#include "openvino/op/group_conv.hpp"
+#include "openvino/op/gru_sequence.hpp"
+#include "openvino/op/interpolate.hpp"
+#include "openvino/op/lstm_sequence.hpp"
+#include "openvino/op/matmul.hpp"
+#include "openvino/op/max_pool.hpp"
+#include "openvino/op/mvn.hpp"
+#include "openvino/op/normalize_l2.hpp"
+#include "openvino/op/pad.hpp"
+#include "openvino/op/prelu.hpp"
+#include "openvino/op/reduce_max.hpp"
+#include "openvino/op/reduce_mean.hpp"
+#include "openvino/op/reduce_min.hpp"
+#include "openvino/op/reduce_sum.hpp"
+#include "openvino/op/relu.hpp"
+#include "openvino/op/shuffle_channels.hpp"
+#include "openvino/op/slice.hpp"
+#include "openvino/op/space_to_batch.hpp"
+#include "openvino/op/split.hpp"
+#include "openvino/op/squeeze.hpp"
+#include "openvino/op/strided_slice.hpp"
+#include "openvino/op/transpose.hpp"
+#include "openvino/op/unsqueeze.hpp"
+#include "openvino/op/util/multi_subgraph_base.hpp"
+#include "openvino/op/variadic_split.hpp"
 
 using namespace ov;
 
@@ -152,9 +187,12 @@ bool ov::pass::low_precision::MarkupPrecisions::isPrecisionPreserved(const std::
         { name<opset1::Relu>() },
         // TODO: there are conditions
         { name<opset2::BatchToSpace>() },
+        { name<opset1::Broadcast>() },
+        { name<opset3::Broadcast>() },
         { name<opset1::Pad>() },
         { name<ov::opset12::Pad>() },
         { name<opset1::Reshape>() },
+        { name<opset8::Slice>() },
         { name<opset1::Squeeze>() },
         { name<opset2::SpaceToBatch>() },
         { name<opset1::Split>() },
@@ -162,7 +200,10 @@ bool ov::pass::low_precision::MarkupPrecisions::isPrecisionPreserved(const std::
         { name<opset1::ShuffleChannels>() },
         { name<opset1::Transpose>() },
         { name<opset1::Unsqueeze>() },
-        { name<opset1::VariadicSplit>() }
+        { name<opset1::VariadicSplit>() },
+        { name<opset1::Gather>() },
+        { name<opset7::Gather>() },
+        { name<opset8::Gather>() },
     };
 
     const bool precisionPreserved = precisionPreservedOps.find(node->get_type_name()) != precisionPreservedOps.end();
@@ -192,6 +233,8 @@ bool ov::pass::low_precision::MarkupPrecisions::isSupported(const std::shared_pt
         { name<opset1::Add>() },
         { name<opset1::AvgPool>() },
         { name<opset2::BatchToSpace>() },
+        { name<opset1::Broadcast>() },
+        { name<opset3::Broadcast>() },
         { name<opset1::Clamp>() },
         { name<opset1::Concat>() },
         // ?
@@ -219,6 +262,7 @@ bool ov::pass::low_precision::MarkupPrecisions::isSupported(const std::shared_pt
         { name<opset1::Relu>() },
         // TODO: there are conditions
         { name<opset1::Reshape>() },
+        { name<opset8::Slice>() },
         { name<opset2::SpaceToBatch>() },
         { name<opset1::Squeeze>() },
         { name<opset1::ShuffleChannels>() },
@@ -231,6 +275,9 @@ bool ov::pass::low_precision::MarkupPrecisions::isSupported(const std::shared_pt
         { name<opset1::VariadicSplit>() },
         { name<opset5::LSTMSequence>() },
         { name<opset6::GRUSequence>() },
+        { name<opset1::Gather>() },
+        { name<opset7::Gather>() },
+        { name<opset8::Gather>() },
     };
 
     return supportedOps.find(node->get_type_name()) != supportedOps.end();

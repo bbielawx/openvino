@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -38,8 +38,6 @@ TEST(prepare_quantization, program_replace_check_num_of_nodes) {
 
     ASSERT_NE(prog, nullptr);
     ASSERT_TRUE(prog->get_node("quantize").get_dependencies().size() == 5);
-
-    layout_optimizer lo(true);
 
     program_wrapper::apply_opt_pass<prepare_quantization>(*prog);
 

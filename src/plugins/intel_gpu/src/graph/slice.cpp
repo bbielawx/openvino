@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,19 +15,23 @@ SliceKernelRefNeededInputs SliceKernelRefNeededInputs::Create(const slice_node& 
     SliceKernelRefNeededInputs inputs;
 
     const auto& node_inputs = node.get_dependencies();
+    const auto& slice_primitive = *node.get_primitive();
 
     const bool axes_in_runtime =
-        ((node_inputs.size() == InputIndices::kInputsNum) && !node_inputs[InputIndices::kAxes].first->is_constant());
-    const bool start_in_runtime = !node_inputs[InputIndices::kStart].first->is_constant();
-    const bool step_in_runtime = !node_inputs[InputIndices::kStep].first->is_constant();
+        ((node_inputs.size() == InputIndices::kInputsNum) && ((slice_primitive.non_constant_input_mask & slice::SLICE_NON_CONST_INPUT::AXES) != 0));
+    const bool start_in_runtime = (slice_primitive.non_constant_input_mask & slice::SLICE_NON_CONST_INPUT::START) != 0;
+    const bool step_in_runtime = (slice_primitive.non_constant_input_mask & slice::SLICE_NON_CONST_INPUT::STEP) != 0;
 
     inputs.neededIndexes.push_back(InputIndices::kData);
-    if (start_in_runtime)
+    if (start_in_runtime) {
         inputs.neededIndexes.push_back(InputIndices::kStart);
-    if (step_in_runtime)
+    }
+    if (step_in_runtime) {
         inputs.neededIndexes.push_back(InputIndices::kStep);
-    if (axes_in_runtime)
+    }
+    if (axes_in_runtime) {
         inputs.neededIndexes.push_back(InputIndices::kAxes);
+    }
 
     // NOTE: stop is never needed as it is passed implicitely via output shape.
 
@@ -96,20 +100,24 @@ std::string slice_inst::to_string(slice_node const& node) {
 }
 
 void slice_inst::update_shape_info_tensor(const kernel_impl_params& params) {
+    if (!_shape_info_memory) {
+        allocate_shape_info_memory();
+    }
+
     mem_lock<int32_t> lock(_shape_info_memory, _network.get_stream());
-    auto shape_info_ptr = lock.data();
+    auto* shape_info_ptr = lock.data();
     size_t offset = 0;
     const SliceKernelRefNeededInputs inputs = SliceKernelRefNeededInputs::Create(*_node);
 
     for (auto idx : inputs.GetNeededInputIndexes()) {
         GPU_DEBUG_TRACE_DETAIL << id() << " : update shape_info for input[" << idx << "]" << std::endl;
-        const auto& node_in_lay = _node->get_input_layout(idx);
+        const auto& node_in_lay = get_node().get_input_layout(idx);
         const auto& runtime_in_lay = params.input_layouts[idx];
         fill_shape_info_data(runtime_in_lay, node_in_lay, shape_info_ptr, offset);
     }
-    for (size_t i = 0; i < _node->get_output_layouts().size(); i++) {
+    for (size_t i = 0; i < get_node().get_output_layouts().size(); i++) {
         GPU_DEBUG_TRACE_DETAIL << id() << " : update shape_info for output[" << i << "]" << std::endl;
-        const auto& node_out_lay = _node->get_output_layout(i);
+        const auto& node_out_lay = get_node().get_output_layout(i);
         const auto& runtime_out_lay = params.output_layouts[i];
         fill_shape_info_data(runtime_out_lay, node_out_lay, shape_info_ptr, offset);
     }

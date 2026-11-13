@@ -1,32 +1,32 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
-#include <float.h>
-
+#include <cfloat>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
-#include <iostream>
-#include <limits>
-#include <type_traits>
+
+#include "openvino/core/except.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/core/type/float16.hpp"
+#include "utils/plain_tensor.hpp"
 
 #if defined(HAVE_AVX2) || defined(HAVE_AVX512F)
 #    include <immintrin.h>
+
+#    include "common.hpp"
 #endif
 
-#include "openvino/core/type/bfloat16.hpp"
-#include "openvino/core/parallel.hpp"
-#include "common.hpp"
 #include "attn_memcpy.hpp"
+#include "openvino/core/parallel.hpp"
+#include "openvino/core/type/bfloat16.hpp"
 
-namespace ov {
-namespace Extensions {
-namespace Cpu {
-namespace XARCH {
+namespace ov::Extensions::Cpu::XARCH {
 
 using namespace ov;
 
 // float16 <- float
-template<typename TA, typename TB>
+template <typename TA, typename TB>
 void attn_copy(TA* a, TB* b, size_t n) {
     size_t i = 0;
 #if defined(HAVE_AVX512F)
@@ -49,30 +49,34 @@ template <typename T, typename T2>
 void attn_memcpy_kernel(const ov::intel_cpu::PlainTensor& k_input,
                         const ov::intel_cpu::PlainTensor& v_input,
                         const ov::intel_cpu::PlainTensor& past_k_output,
-                        const ov::intel_cpu::PlainTensor& past_v_output) {
-    size_t B = k_input.m_dims[0], H = k_input.m_dims[1], L1 = k_input.m_dims[2], S = k_input.m_dims[3];
-    parallel_for3d(B, H, L1, [&](size_t b, size_t h, size_t m) {
-        attn_copy(past_k_output.ptr<T2>(b, h, m, 0),
-                  k_input.ptr<T>(b, h, m, 0),
-                  S);
-        attn_copy(past_v_output.ptr<T2>(b, h, m, 0),
-                  v_input.ptr<T>(b, h, m, 0),
-                  S);
+                        const ov::intel_cpu::PlainTensor& past_v_output,
+                        const ov::intel_cpu::CpuParallelPtr& cpu_parallel) {
+    // For compatibility, all input_kvs are permuted to BHLS
+    size_t B = k_input.m_dims[0];
+    size_t H = k_input.m_dims[1];
+    size_t L1 = k_input.m_dims[2];
+    size_t S = k_input.m_dims[3];
+    size_t SV = v_input.m_dims[3];
+    cpu_parallel->parallel_for3d(L1, B, H, [&](size_t m, size_t b, size_t h) {
+        attn_copy(past_k_output.ptr<T2>(b, h, m, 0), k_input.ptr<T>(b, h, m, 0), S);
+        attn_copy(past_v_output.ptr<T2>(b, h, m, 0), v_input.ptr<T>(b, h, m, 0), SV);
     });
 }
 
 static void attn_memcpy_kernel(const ov::intel_cpu::PlainTensor& k_input,
                                const ov::intel_cpu::PlainTensor& v_input,
                                const ov::intel_cpu::PlainTensor& past_k_output,
-                               const ov::intel_cpu::PlainTensor& past_v_output) {
-    size_t B = k_input.m_dims[0], H = k_input.m_dims[1], L1 = k_input.m_dims[2], S = k_input.m_dims[3];
-    parallel_for3d(B, H, L1, [&](size_t b, size_t h, size_t m) {
-        std::memcpy(past_k_output.ptr_v(b, h, m, 0),
-                    k_input.ptr_v(b, h, m, 0),
-                    S * k_input.m_element_size);
-        std::memcpy(past_v_output.ptr_v(b, h, m, 0),
-                    v_input.ptr_v(b, h, m, 0),
-                    S * v_input.m_element_size);
+                               const ov::intel_cpu::PlainTensor& past_v_output,
+                               const ov::intel_cpu::CpuParallelPtr& cpu_parallel) {
+    // For compatibility, all input_kvs are permuted to BHLS
+    size_t B = k_input.m_dims[0];
+    size_t H = k_input.m_dims[1];
+    size_t L1 = k_input.m_dims[2];
+    size_t S = k_input.m_dims[3];
+    size_t SV = v_input.m_dims[3];
+    cpu_parallel->parallel_for3d(L1, B, H, [&](size_t m, size_t b, size_t h) {
+        std::memcpy(past_k_output.ptr_v(b, h, m, 0), k_input.ptr_v(b, h, m, 0), S * k_input.m_element_size);
+        std::memcpy(past_v_output.ptr_v(b, h, m, 0), v_input.ptr_v(b, h, m, 0), SV * v_input.m_element_size);
     });
 }
 
@@ -81,20 +85,23 @@ static void paged_attn_memcpy_kernel(const ov::intel_cpu::PlainTensor& k_input,
                                      const ov::intel_cpu::PlainTensor& v_input,
                                      const ov::intel_cpu::PlainTensor& past_k_output,
                                      const ov::intel_cpu::PlainTensor& past_v_output,
-                                     const ov::intel_cpu::PlainTensor& slot_mapping) {
-    size_t B = k_input.m_dims[0], H = k_input.m_dims[1], L1 = k_input.m_dims[2], S = k_input.m_dims[3];
+                                     const ov::intel_cpu::PlainTensor& slot_mapping,
+                                     const ov::intel_cpu::CpuParallelPtr& cpu_parallel) {
+    size_t B = k_input.m_dims[0];
+    size_t H = k_input.m_dims[1];
+    size_t L1 = k_input.m_dims[2];
+    size_t S = k_input.m_dims[3];
+    size_t SV = v_input.m_dims[3];
     size_t block_size = past_k_output.m_dims[2];
-    parallel_for3d(B, L1, H, [&](size_t b, size_t m, size_t h) {
+    cpu_parallel->parallel_for3d(B, L1, H, [&](size_t b, size_t m, size_t h) {
         auto slot = slot_mapping.ptr<int32_t>(b)[m];
-        if (slot < 0) return;
+        if (slot < 0) {
+            return;
+        }
         auto block_number = slot / block_size;
         auto block_offset = slot % block_size;
-        attn_copy(past_k_output.ptr<T2>(block_number, h, block_offset, 0),
-                  k_input.ptr<T>(b, h, m, 0),
-                  S);
-        attn_copy(past_v_output.ptr<T2>(block_number, h, block_offset, 0),
-                  v_input.ptr<T>(b, h, m, 0),
-                  S);
+        attn_copy(past_k_output.ptr<T2>(block_number, h, block_offset, 0), k_input.ptr<T>(b, h, m, 0), S);
+        attn_copy(past_v_output.ptr<T2>(block_number, h, block_offset, 0), v_input.ptr<T>(b, h, m, 0), SV);
     });
 }
 
@@ -102,12 +109,19 @@ static void paged_attn_memcpy_kernel(const ov::intel_cpu::PlainTensor& k_input,
                                      const ov::intel_cpu::PlainTensor& v_input,
                                      const ov::intel_cpu::PlainTensor& past_k_output,
                                      const ov::intel_cpu::PlainTensor& past_v_output,
-                                     const ov::intel_cpu::PlainTensor& slot_mapping) {
-    size_t B = k_input.m_dims[0], H = k_input.m_dims[1], L1 = k_input.m_dims[2], S = k_input.m_dims[3];
+                                     const ov::intel_cpu::PlainTensor& slot_mapping,
+                                     const ov::intel_cpu::CpuParallelPtr& cpu_parallel) {
+    size_t B = k_input.m_dims[0];
+    size_t H = k_input.m_dims[1];
+    size_t L1 = k_input.m_dims[2];
+    size_t S = k_input.m_dims[3];
+    size_t SV = v_input.m_dims[3];
     size_t block_size = past_k_output.m_dims[2];
-    parallel_for3d(B, L1, H, [&](size_t b, size_t m, size_t h) {
+    cpu_parallel->parallel_for3d(B, L1, H, [&](size_t b, size_t m, size_t h) {
         auto slot = slot_mapping.ptr<int32_t>(b)[m];
-        if (slot < 0) return;
+        if (slot < 0) {
+            return;
+        }
         auto block_number = slot / block_size;
         auto block_offset = slot % block_size;
         std::memcpy(past_k_output.ptr_v(block_number, h, block_offset, 0),
@@ -115,22 +129,27 @@ static void paged_attn_memcpy_kernel(const ov::intel_cpu::PlainTensor& k_input,
                     S * k_input.m_element_size);
         std::memcpy(past_v_output.ptr_v(block_number, h, block_offset, 0),
                     v_input.ptr_v(b, h, m, 0),
-                    S * v_input.m_element_size);
+                    SV * v_input.m_element_size);
     });
 }
 
 void attn_memcpy(const ov::intel_cpu::PlainTensor& k_input,
                  const ov::intel_cpu::PlainTensor& v_input,
                  const ov::intel_cpu::PlainTensor& past_k_output,
-                 const ov::intel_cpu::PlainTensor& past_v_output) {
+                 const ov::intel_cpu::PlainTensor& past_v_output,
+                 const ov::intel_cpu::CpuParallelPtr& cpu_parallel) {
     if (past_k_output.get_precision() == k_input.get_precision()) {
-        attn_memcpy_kernel(k_input, v_input, past_k_output, past_v_output);
+        attn_memcpy_kernel(k_input, v_input, past_k_output, past_v_output, cpu_parallel);
     } else if (k_input.get_precision() == ov::element::f32 && past_k_output.get_precision() == ov::element::f16) {
-        attn_memcpy_kernel<float, ov::float16>(k_input, v_input, past_k_output, past_v_output);
+        attn_memcpy_kernel<float, ov::float16>(k_input, v_input, past_k_output, past_v_output, cpu_parallel);
     } else if (k_input.get_precision() == ov::element::f32 && past_k_output.get_precision() == ov::element::bf16) {
-        attn_memcpy_kernel<float, ov::bfloat16>(k_input, v_input, past_k_output, past_v_output);
+        attn_memcpy_kernel<float, ov::bfloat16>(k_input, v_input, past_k_output, past_v_output, cpu_parallel);
     } else {
-        OPENVINO_THROW("unsupport src type: ", k_input.get_precision(), ", dst type: ", past_k_output.get_precision(), " in attn_memcpy");
+        OPENVINO_THROW("unsupport src type: ",
+                       k_input.get_precision(),
+                       ", dst type: ",
+                       past_k_output.get_precision(),
+                       " in attn_memcpy");
     }
 }
 
@@ -138,16 +157,49 @@ void paged_attn_memcpy(const ov::intel_cpu::PlainTensor& k_input,
                        const ov::intel_cpu::PlainTensor& v_input,
                        const ov::intel_cpu::PlainTensor& past_k_output,
                        const ov::intel_cpu::PlainTensor& past_v_output,
-                       const ov::intel_cpu::PlainTensor& slot_mapping) {
+                       const ov::intel_cpu::PlainTensor& slot_mapping,
+                       const ov::intel_cpu::CpuParallelPtr& cpu_parallel) {
     if (past_k_output.get_precision() == k_input.get_precision()) {
-        paged_attn_memcpy_kernel(k_input, v_input, past_k_output, past_v_output, slot_mapping);
+        paged_attn_memcpy_kernel(k_input, v_input, past_k_output, past_v_output, slot_mapping, cpu_parallel);
     } else if (k_input.get_precision() == ov::element::f32 && past_k_output.get_precision() == ov::element::f16) {
-        paged_attn_memcpy_kernel<float, ov::float16>(k_input, v_input, past_k_output, past_v_output, slot_mapping);
+        paged_attn_memcpy_kernel<float, ov::float16>(k_input,
+                                                     v_input,
+                                                     past_k_output,
+                                                     past_v_output,
+                                                     slot_mapping,
+                                                     cpu_parallel);
     } else if (k_input.get_precision() == ov::element::f32 && past_k_output.get_precision() == ov::element::bf16) {
-        paged_attn_memcpy_kernel<float, ov::bfloat16>(k_input, v_input, past_k_output, past_v_output, slot_mapping);
+        paged_attn_memcpy_kernel<float, ov::bfloat16>(k_input,
+                                                      v_input,
+                                                      past_k_output,
+                                                      past_v_output,
+                                                      slot_mapping,
+                                                      cpu_parallel);
     } else {
-        OPENVINO_THROW("unsupport src type: ", k_input.get_precision(), ", dst type: ", past_k_output.get_precision(), " in paged_attn_memcpy");
+        OPENVINO_THROW("unsupport src type: ",
+                       k_input.get_precision(),
+                       ", dst type: ",
+                       past_k_output.get_precision(),
+                       " in paged_attn_memcpy");
     }
+}
+
+void attn_memcpy2d(const ov::intel_cpu::PlainTensor& src,
+                   const ov::intel_cpu::PlainTensor& dst,
+                   size_t L0,
+                   const ov::intel_cpu::CpuParallelPtr& cpu_parallel) {
+    auto L1 = src.m_dims[2];
+    auto S = src.m_dims[3];
+    cpu_parallel->parallel_for2d(src.m_dims[0], src.m_dims[1], [&](size_t b, size_t h) {
+        attn_memcpy2d_kernel(src.ptr_v(b, h),
+                             dst.ptr_v(b, h, L0),
+                             src.get_precision(),
+                             dst.get_precision(),
+                             src.stride(2),
+                             dst.stride(2),
+                             S,
+                             L1);
+    });
 }
 
 void attn_memcpy2d_kernel(void* src,
@@ -159,8 +211,8 @@ void attn_memcpy2d_kernel(void* src,
                           size_t width,
                           size_t height) {
     if (src_type == dst_type) {
-        auto src_u8 = reinterpret_cast<uint8_t*>(src);
-        auto dst_u8 = reinterpret_cast<uint8_t*>(dst);
+        auto* src_u8 = reinterpret_cast<uint8_t*>(src);
+        auto* dst_u8 = reinterpret_cast<uint8_t*>(dst);
 
         for (size_t j = 0; j < height; j++) {
             std::memcpy(dst_u8, src_u8, width * src_type.size());
@@ -168,8 +220,8 @@ void attn_memcpy2d_kernel(void* src,
             src_u8 += src_stride * src_type.size();
         }
     } else if (src_type == ov::element::f32 && dst_type == ov::element::bf16) {
-        auto src_f = reinterpret_cast<float*>(src);
-        auto dst_f = reinterpret_cast<ov::bfloat16*>(dst);
+        auto* src_f = reinterpret_cast<float*>(src);
+        auto* dst_f = reinterpret_cast<ov::bfloat16*>(dst);
 
         for (size_t j = 0; j < height; j++) {
             attn_copy<ov::bfloat16, float>(dst_f, src_f, width);
@@ -177,8 +229,8 @@ void attn_memcpy2d_kernel(void* src,
             src_f += src_stride;
         }
     } else if (src_type == ov::element::f32 && dst_type == ov::element::f16) {
-        auto src_f = reinterpret_cast<float*>(src);
-        auto dst_f = reinterpret_cast<ov::float16*>(dst);
+        auto* src_f = reinterpret_cast<float*>(src);
+        auto* dst_f = reinterpret_cast<ov::float16*>(dst);
 
         for (size_t j = 0; j < height; j++) {
             attn_copy<ov::float16, float>(dst_f, src_f, width);
@@ -190,7 +242,4 @@ void attn_memcpy2d_kernel(void* src,
     }
 }
 
-}  // namespace XARCH
-}  // namespace Cpu
-}  // namespace Extensions
-}  // namespace ov
+}  // namespace ov::Extensions::Cpu::XARCH

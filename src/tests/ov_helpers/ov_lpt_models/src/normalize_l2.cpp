@@ -1,13 +1,14 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "ov_lpt_models/normalize_l2.hpp"
 
 #include <ov_ops/type_relaxed.hpp>
-#include "openvino/opsets/opset1.hpp"
+#include "openvino/opsets/opset1_decl.hpp"
 #include "ov_lpt_models/common/builders.hpp"
 #include "common_test_utils/node_builders/fake_quantize.hpp"
+#include "openvino/op/normalize_l2.hpp"
 
 namespace ov {
 namespace builder {
@@ -93,7 +94,6 @@ std::shared_ptr<ov::Model> NormalizeL2Function::getReference(
     const ov::op::EpsMode& epsMode,
     const std::vector<size_t>& axes,
     const ov::builder::subgraph::DequantizationOperations& dequantizationBefore,
-    const ov::element::Type precisionAfterOperation,
     const ov::builder::subgraph::DequantizationOperations& dequantizationAfter) {
     const auto input = std::make_shared<ov::opset1::Parameter>(inputPrecision, shape);
 

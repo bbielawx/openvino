@@ -1,60 +1,64 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "cpu_shape.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <string>
+#include <vector>
+
+#include "cpu_types.h"
+#include "openvino/core/except.hpp"
+#include "openvino/util/common_util.hpp"
 #include "utils/general_utils.h"
-#include "memory_desc/cpu_memory_desc_utils.h"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
-bool Shape::isCompatible(const VectorDims &vecDims) const {
+bool Shape::isCompatible(const VectorDims& vecDims) const {
     if (getRank() != vecDims.size()) {
         return false;
     }
 
     auto comparator = [](Dim lhs, Dim rhs) {
-        return (lhs == rhs) || (lhs == Shape::UNDEFINED_DIM);
+        return any_of(lhs, rhs, Shape::UNDEFINED_DIM);
     };
 
     if (!std::equal(getDims().begin(), getDims().end(), vecDims.begin(), comparator)) {
         return false;
     }
 
-    if (!std::equal(getMaxDims().begin(), getMaxDims().end(), vecDims.begin(), [](Dim lhs, Dim rhs) { return lhs >= rhs; })) {
+    if (!std::equal(getMaxDims().begin(), getMaxDims().end(), vecDims.begin(), [](Dim lhs, Dim rhs) {
+            return lhs >= rhs;
+        })) {
         return false;
     }
 
-    if (!std::equal(getMinDims().begin(), getMinDims().end(), vecDims.begin(), [](Dim lhs, Dim rhs) { return lhs <= rhs; })) {
-        return false;
-    }
-    return true;
+    return std::equal(getMinDims().begin(), getMinDims().end(), vecDims.begin(), [](Dim lhs, Dim rhs) {
+        return lhs <= rhs;
+    });
 }
 
-std::string Shape::toString() const  {
-    std::stringstream output;
-    output << "{";
-
-    size_t i = 0;
-    do {
+std::string Shape::toString() const {
+    std::vector<std::string> dimStrings;
+    dimStrings.reserve(dims.size());
+    for (size_t i = 0; i < dims.size(); ++i) {
         if (dims[i] == Shape::UNDEFINED_DIM) {
-            output << MemoryDescUtils::dim2str(minDims[i]) << " - " << MemoryDescUtils::dim2str(maxDims[i]);
+            dimStrings.emplace_back(dim2str(minDims[i]) + " - " + dim2str(maxDims[i]));
         } else {
-            output << dims[i];
+            dimStrings.emplace_back(std::to_string(dims[i]));
         }
-    } while (++i < dims.size() && output << ", ");
-
-    output << "}";
-    return output.str();
+    }
+    return "{" + ov::util::join(dimStrings) + "}";
 }
 
 Shape mergeShapes(const Shape& lhs, const Shape& rhs) {
     OPENVINO_ASSERT(lhs.getRank() == rhs.getRank(),
-        "Couldn't merge shapes of different ranks: shape 1:",
-        lhs.toString(),
-        " shape 2: ",
-        rhs.toString());
+                    "Couldn't merge shapes of different ranks: shape 1:",
+                    lhs.toString(),
+                    " shape 2: ",
+                    rhs.toString());
 
     const auto& lhsMinDims = lhs.getMinDims();
     const auto& lhsMaxDims = lhs.getMaxDims();
@@ -67,10 +71,10 @@ Shape mergeShapes(const Shape& lhs, const Shape& rhs) {
     for (size_t i = 0; i < resultMinDims.size(); ++i) {
         resultMinDims[i] = std::max(lhsMinDims[i], rhsMinDims[i]);
         resultMaxDims[i] = std::min(lhsMaxDims[i], rhsMaxDims[i]);
-        OPENVINO_ASSERT(resultMinDims[i] <= resultMaxDims[i], "Couldn't merge shapes as the dims intervals are not overlapping.");
+        OPENVINO_ASSERT(resultMinDims[i] <= resultMaxDims[i],
+                        "Couldn't merge shapes as the dims intervals are not overlapping.");
     }
     return Shape{resultMinDims, resultMaxDims};
 }
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

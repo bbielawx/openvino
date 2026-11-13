@@ -1,16 +1,13 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
-#include "openvino/op/reduce_prod.hpp"
+#include "openvino/op/reduce_logical_and.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -46,12 +43,11 @@ OutputVector translate_all(const NodeContext& context) {
         }
         out_id = 3;
     }
-    // ReduceProd does not support bool input
-    if (input_tensor.get_element_type() == element::boolean) {
-        input_tensor = context.mark_node(std::make_shared<v0::Convert>(input_tensor, element::i32));
+    if (input_tensor.get_element_type() != element::boolean) {
+        input_tensor = context.mark_node(std::make_shared<v0::Convert>(input_tensor, element::boolean));
     }
 
-    const auto all_nonzero = context.mark_node(std::make_shared<v1::ReduceProd>(input_tensor, axes, keep_dims));
+    const auto all_nonzero = context.mark_node(std::make_shared<v1::ReduceLogicalAnd>(input_tensor, axes, keep_dims));
     auto result = context.mark_node(std::make_shared<v0::Convert>(all_nonzero, output_dtype));
     if (!context.input_is_none(out_id)) {
         context.mutate_input(out_id, result);
@@ -59,7 +55,4 @@ OutputVector translate_all(const NodeContext& context) {
     return {result};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -14,14 +14,12 @@
 #include "openvino/frontend/paddle/node_context.hpp"
 #include "openvino/frontend/paddle/visibility.hpp"
 
-namespace ov {
-namespace frontend {
-namespace paddle {
+namespace ov::frontend::paddle {
 
 class OpPlace;
 class TensorPlace;
 
-class PADDLE_API FrontEnd : public ov::frontend::FrontEnd {
+class PADDLE_FRONTEND_API FrontEnd : public ov::frontend::FrontEnd {
 public:
     using Ptr = std::shared_ptr<FrontEnd>;
     FrontEnd();
@@ -99,6 +97,4 @@ protected:
     TranslatorDictionaryType m_op_translators;
 };
 
-}  // namespace paddle
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::paddle

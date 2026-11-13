@@ -1,10 +1,11 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "remove_packing_ops.hpp"
 
 #include "helper_ops/packed_sequence.hpp"
+#include "openvino/core/graph_util.hpp"
 #include "openvino/op/gather.hpp"
 #include "openvino/op/gru_sequence.hpp"
 #include "openvino/op/lstm_sequence.hpp"
@@ -15,12 +16,10 @@
 #include "openvino/op/transpose.hpp"
 #include "openvino/pass/pattern/matcher.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
+#include "transformations/utils/utils.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace pass {
+namespace ov::frontend::pytorch::pass {
 
 using namespace ov::pass;
 using namespace ov::op;
@@ -38,7 +37,7 @@ bool is_rnn(std::shared_ptr<Node> node) {
 MovePackThroughLstm::MovePackThroughLstm() {
     auto pack_op = pattern::wrap_type<PackPadded>();
 
-    ov::matcher_pass_callback callback = [=](pattern::Matcher& m) {
+    ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](pattern::Matcher& m) {
         auto pack = m.get_match_root();
 
         auto targets = pack->output(0).get_target_inputs();
@@ -115,7 +114,7 @@ RemovePackingOps::RemovePackingOps() {
         if (!pack_node)
             return false;
         if (as_type_ptr<v1::Transpose>(pack_node))
-            pack_node = std::dynamic_pointer_cast<PackPadded>(pack_node->input_value(0).get_node_shared_ptr());
+            pack_node = ov::as_type_ptr<PackPadded>(pack_node->input_value(0).get_node_shared_ptr());
         if (!pack_node)
             return false;
 
@@ -131,7 +130,4 @@ RemovePackingOps::RemovePackingOps() {
     this->register_matcher(m, callback);
 };
 
-}  // namespace pass
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::pass

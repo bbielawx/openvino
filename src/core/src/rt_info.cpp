@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -48,14 +48,14 @@ ov::Node::RTMap mergeRuntimeInfo(const std::vector<T>& items, const T& to) {
 
     ov::Node::RTMap merged_attrs;
     for (auto& item : attrs) {
-        auto attr = *item.second.begin();
+        auto& attr = *item.second.begin();
         if (item.second.size() == 1) {
-            merged_attrs[item.first] = attr;
+            merged_attrs[item.first] = std::move(attr);
         } else {
             if (attr.is<ov::RuntimeAttribute>()) {
                 auto merge_attr = attr.as<ov::RuntimeAttribute>().merge(items);
                 if (!merge_attr.empty()) {
-                    merged_attrs[item.first] = merge_attr;
+                    merged_attrs[item.first] = std::move(merge_attr);
                 }
             }
         }
@@ -78,7 +78,7 @@ void assign_runtime_info(const ov::Node::RTMap& from, ov::Node::RTMap& to) {
         to[item.first] = item.second;
     }
     if (!opset.empty()) {
-        to["opset"] = opset;
+        to["opset"] = std::move(opset);
     }
 }
 
@@ -92,7 +92,7 @@ ov::NodeVector list_with_constants(const ov::NodeVector& to) {
             auto source_node = input.get_source_output().get_node_shared_ptr();
             if (ov::op::util::is_constant(source_node) && (0 == source_node->get_rt_info().size())) {
                 if (std::find(ops.begin(), ops.end(), source_node) == ops.end()) {
-                    ops.push_back(source_node);
+                    ops.push_back(std::move(source_node));
                 }
             }
         }
@@ -108,7 +108,7 @@ ov::OutputVector list_with_constants(const ov::OutputVector& to) {
             if (ov::op::util::is_constant(source_node.get_node_shared_ptr()) &&
                 (0 == source_node.get_rt_info().size())) {
                 if (std::find(ops.begin(), ops.end(), source_node) == ops.end()) {
-                    ops.push_back(source_node);
+                    ops.push_back(std::move(source_node));
                 }
             }
         }
@@ -122,7 +122,7 @@ void ov::copy_runtime_info(const std::shared_ptr<ov::Node>& from, const std::sha
 }
 
 void ov::copy_runtime_info(const std::shared_ptr<ov::Node>& from, ov::NodeVector to) {
-    return copy_runtime_info(ov::NodeVector{from}, to);
+    return copy_runtime_info(ov::NodeVector{from}, std::move(to));
 }
 
 void ov::copy_runtime_info(const ov::NodeVector& from, const std::shared_ptr<ov::Node>& to) {

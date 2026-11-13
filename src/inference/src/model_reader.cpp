@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,10 +10,21 @@
 #include "openvino/frontend/manager.hpp"
 #include "openvino/runtime/aligned_buffer.hpp"
 #include "openvino/runtime/shared_buffer.hpp"
+#include "openvino/util/common_util.hpp"
 #include "openvino/util/file_util.hpp"
-#include "transformations/utils/utils.hpp"
+#include "openvino/util/string_view_streambuf.hpp"
 
 namespace {
+// Legacy tensor name format for IR v10 compatibility (uses '.' separator instead of ':')
+// Can be removed when IR v10 support is deprecated
+std::string make_ir_v10_tensor_name(const ov::Output<const ov::Node>& output) {
+    auto name = output.get_node()->get_friendly_name();
+    if (output.get_node()->get_output_size() > 1) {
+        name += "." + std::to_string(output.get_index());
+    }
+    return name;
+}
+
 ov::element::Type to_legacy_type(const ov::element::Type& legacy_type, bool input) {
     if (input) {
         return legacy_type == ov::element::f16 ? ov::element::f32 : legacy_type;
@@ -46,7 +57,7 @@ void update_v10_model(std::shared_ptr<ov::Model>& model, bool frontendMode = fal
             for (const auto& name : inputs[i].get_names()) {
                 OPENVINO_ASSERT(leaf_names.find(name) == leaf_names.end(),
                                 "Model tensor names have collisions.",
-                                " Please use MO to generate new IR version, it should allow to avoid the issue");
+                                " Please use OVC to generate new IR version, it should allow to avoid the issue");
                 leaf_names.emplace(name, inputs[i].get_tensor_ptr());
             }
         }
@@ -62,7 +73,7 @@ void update_v10_model(std::shared_ptr<ov::Model>& model, bool frontendMode = fal
                 auto tensor_it = leaf_names.find(name);
                 OPENVINO_ASSERT(tensor_it == leaf_names.end() || tensor_it->second == outputs[i].get_tensor_ptr(),
                                 "Model tensor names have collisions.",
-                                " Please use MO to generate new IR version, it should allow to avoid the issue");
+                                " Please use OVC to generate new IR version, it should allow to avoid the issue");
                 leaf_names.emplace(name, outputs[i].get_tensor_ptr());
             }
         }
@@ -76,24 +87,20 @@ void update_v10_model(std::shared_ptr<ov::Model>& model, bool frontendMode = fal
         // we need to add operation names as tensor names for inputs and outputs
         {
             for (const auto& result : model->get_results()) {
-                OPENVINO_SUPPRESS_DEPRECATED_START
-                // Note, upon removal of 'create_ie_output_name', just move it to this file as a local function
-                // we still need to add operation names as tensor names for outputs for IR v10
-                auto res_name = ov::op::util::create_ie_output_name(result->input_value(0));
-                OPENVINO_SUPPRESS_DEPRECATED_END
+                auto res_name = make_ir_v10_tensor_name(result->input_value(0));
                 OPENVINO_ASSERT(leaf_names.find(res_name) == leaf_names.end() ||
                                     result->output(0).get_names().find(res_name) != result->output(0).get_names().end(),
                                 "Model operation names have collisions with tensor names.",
-                                " Please use MO to generate new IR version, it should allow to avoid the issue");
+                                " Please use OVC to generate new IR version, it should allow to avoid the issue");
                 leaf_names.emplace(res_name, nullptr);
-                result->output(0).get_tensor().add_names({res_name});
+                result->input(0).get_tensor().add_names({std::move(res_name)});
             }
             for (const auto& param : model->get_parameters()) {
-                auto param_name = param->get_friendly_name();
+                const auto& param_name = param->get_friendly_name();
                 OPENVINO_ASSERT(leaf_names.find(param_name) == leaf_names.end() ||
                                     param->output(0).get_names().find(param_name) != param->output(0).get_names().end(),
                                 "Model operation names have collisions with tensor names.",
-                                " Please use MO to generate new IR version, it should allow to avoid the issue");
+                                " Please use OVC to generate new IR version, it should allow to avoid the issue");
                 leaf_names.emplace(param_name, nullptr);
                 param->output(0).get_tensor().add_names({param_name});
             }
@@ -107,17 +114,10 @@ void update_v10_model(std::shared_ptr<ov::Model>& model, bool frontendMode = fal
 namespace ov {
 namespace util {
 
-std::shared_ptr<ov::Model> read_model(const std::string& modelPath,
-                                      const std::string& binPath,
+std::shared_ptr<ov::Model> read_model(const std::filesystem::path& model_path,
+                                      const std::filesystem::path& bin_path,
                                       const std::vector<ov::Extension::Ptr>& extensions,
                                       bool enable_mmap) {
-    // Fix unicode name
-#if defined(OPENVINO_ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
-    std::wstring model_path = ov::util::string_to_wstring(modelPath.c_str());
-#else
-    std::string model_path = modelPath;
-#endif
-
     // Try to load with FrontEndManager
     ov::frontend::FrontEndManager manager;
     ov::frontend::FrontEnd::Ptr FE;
@@ -125,13 +125,8 @@ std::shared_ptr<ov::Model> read_model(const std::string& modelPath,
 
     ov::AnyVector params{model_path};
 
-    if (!binPath.empty()) {
-#if defined(OPENVINO_ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
-        const std::wstring& weights_path = ov::util::string_to_wstring(binPath.c_str());
-#else
-        const std::string& weights_path = binPath;
-#endif
-        params.emplace_back(weights_path);
+    if (!bin_path.empty()) {
+        params.emplace_back(bin_path);
     }
     params.emplace_back(enable_mmap);
 
@@ -147,16 +142,14 @@ std::shared_ptr<ov::Model> read_model(const std::string& modelPath,
         return model;
     }
 
-    const auto fileExt = modelPath.substr(modelPath.find_last_of(".") + 1);
     std::string FEs;
     for (const auto& fe_name : manager.get_available_front_ends())
         FEs += fe_name + " ";
     OPENVINO_THROW("Unable to read the model: ",
-                   modelPath,
+                   model_path,
                    " Please check that model format: ",
-                   fileExt,
-                   " is supported and the model is correct.",
-                   " Available frontends: ",
+                   model_path.extension(),
+                   " is supported and the model is correct. Available frontends: ",
                    FEs);
 }
 
@@ -164,8 +157,8 @@ std::shared_ptr<ov::Model> read_model(const std::string& model,
                                       const ov::Tensor& weights,
                                       const std::vector<ov::Extension::Ptr>& ov_exts,
                                       bool frontendMode) {
-    std::istringstream modelStringStream(model);
-    std::istream& modelStream = modelStringStream;
+    StringViewStreamBuf mb(std::string_view{model});
+    std::istream modelStream(&mb);
 
     // Try to load with FrontEndManager
     ov::frontend::FrontEndManager manager;
@@ -175,7 +168,7 @@ std::shared_ptr<ov::Model> read_model(const std::string& model,
     ov::AnyVector params{&modelStream};
     if (weights) {
         std::shared_ptr<ov::AlignedBuffer> weights_buffer =
-            std::make_shared<ov::SharedBuffer<ov::Tensor>>(reinterpret_cast<char*>(weights.data()),
+            std::make_shared<ov::SharedBuffer<ov::Tensor>>(reinterpret_cast<char*>(const_cast<void*>(weights.data())),
                                                            weights.get_byte_size(),
                                                            weights);
         params.emplace_back(weights_buffer);
@@ -193,6 +186,34 @@ std::shared_ptr<ov::Model> read_model(const std::string& model,
     }
 
     OPENVINO_THROW("Unable to read the model. Please check if the model format is supported and model is correct.");
+}
+
+std::shared_ptr<ov::Model> read_model(const std::shared_ptr<AlignedBuffer>& model,
+                                      const std::shared_ptr<AlignedBuffer>& weights,
+                                      const std::vector<ov::Extension::Ptr>& ov_exts) {
+    // Try to load with FrontEndManager
+    ov::frontend::FrontEndManager manager;
+    ov::frontend::FrontEnd::Ptr FE;
+    ov::frontend::InputModel::Ptr inputModel;
+
+    ov::AnyVector params{model};
+    if (weights) {
+        params.emplace_back(weights);
+    }
+
+    FE = manager.load_by_model(params);
+    if (FE) {
+        FE->add_extension(ov_exts);
+        inputModel = FE->load(params);
+    }
+    if (inputModel) {
+        auto model = FE->convert(inputModel);
+        update_v10_model(model);
+        return model;
+    }
+
+    OPENVINO_THROW(
+        "[ CORE ] Unable to read the model. Please check if the model format is supported and model is correct.");
 }
 
 }  // namespace util

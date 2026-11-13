@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -29,9 +29,8 @@ struct resample : public primitive_base<resample> {
              const input_info& input,
              tensor output_size,
              uint32_t num_filter,
-             InterpolateOp::InterpolateMode operation_type = InterpolateOp::InterpolateMode::NEAREST,
-             const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}),
+             InterpolateOp::InterpolateMode operation_type = InterpolateOp::InterpolateMode::NEAREST)
+        : primitive_base(id, {input}),
           output_size(output_size),
           num_filter(num_filter),
           sizes({}),
@@ -45,8 +44,9 @@ struct resample : public primitive_base<resample> {
           cube_coeff(0.0f),
           coord_trans_mode(InterpolateOp::CoordinateTransformMode::ASYMMETRIC),
           round_mode(InterpolateOp::NearestMode::FLOOR) {
-        if (scales.size() != axes.size())
+        if (scales.size() != axes.size()) {
             throw std::runtime_error("Resample's scales/axes count does not match");
+        }
         if (operation_type == InterpolateOp::InterpolateMode::LINEAR) {
             coord_trans_mode = InterpolateOp::CoordinateTransformMode::HALF_PIXEL;
         }
@@ -65,10 +65,8 @@ struct resample : public primitive_base<resample> {
              InterpolateOp::InterpolateMode operation_type = InterpolateOp::InterpolateMode::LINEAR,
              InterpolateOp::ShapeCalcMode shape_calc_mode = InterpolateOp::ShapeCalcMode::SIZES,
              InterpolateOp::CoordinateTransformMode ctm = InterpolateOp::CoordinateTransformMode::HALF_PIXEL,
-             InterpolateOp::NearestMode nm = InterpolateOp::NearestMode::ROUND_PREFER_FLOOR,
-             const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}),
-          output_size(tensor()),
+             InterpolateOp::NearestMode nm = InterpolateOp::NearestMode::ROUND_PREFER_FLOOR)
+        : primitive_base(id, {input}),
           num_filter(0),
           sizes(sizes),
           scales(scales),
@@ -81,8 +79,9 @@ struct resample : public primitive_base<resample> {
           cube_coeff(cube_coeff),
           coord_trans_mode(ctm),
           round_mode(nm) {
-        if (scales.size() != axes.size() && shape_calc_mode == InterpolateOp::ShapeCalcMode::SCALES)
+        if (scales.size() != axes.size() && shape_calc_mode == InterpolateOp::ShapeCalcMode::SCALES) {
             throw std::runtime_error("Resample's scales/axes count does not match");
+        }
     }
 
     /// @brief resample with dynamic sizes/scales
@@ -99,10 +98,10 @@ struct resample : public primitive_base<resample> {
              InterpolateOp::ShapeCalcMode shape_calc_mode = InterpolateOp::ShapeCalcMode::SIZES,
              InterpolateOp::CoordinateTransformMode ctm = InterpolateOp::CoordinateTransformMode::HALF_PIXEL,
              InterpolateOp::NearestMode nm = InterpolateOp::NearestMode::ROUND_PREFER_FLOOR,
-             const padding& output_padding = padding())
-        : primitive_base(id, {input, sizes_id, scales_id}, {output_padding}),
-          output_size(tensor()),
+             const int scales_port = 2)
+        : primitive_base(id, {input, sizes_id, scales_id}),
           num_filter(0),
+          scales_port(scales_port),
           sizes({}),
           scales({}),
           axes(axes),
@@ -129,6 +128,8 @@ struct resample : public primitive_base<resample> {
     tensor output_size;
     /// @param num_filter Input filter. Only used by bilinear sample_type.
     uint32_t num_filter = 0;
+    /// @param num_filter Port number of scales.
+    uint32_t scales_port = 2;
     /// @param sizes Describing output shape for spatial axes.
     std::vector<int64_t> sizes;
     /// @param scales Scales of spatial axes, i.e. output_shape / input_shape
@@ -155,6 +156,7 @@ struct resample : public primitive_base<resample> {
     size_t hash() const override {
         size_t seed = primitive::hash();
         seed = hash_combine(seed, num_filter);
+        seed = hash_combine(seed, scales_port);
         seed = hash_range(seed, scales.begin(), scales.end());
         seed = hash_range(seed, axes.begin(), axes.end());
         seed = hash_range(seed, pads_begin.begin(), pads_begin.end());
@@ -169,13 +171,15 @@ struct resample : public primitive_base<resample> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const resample>(rhs);
 
         #define cmp_fields(name) name == rhs_casted.name
         return cmp_fields(num_filter) &&
+               cmp_fields(scales_port) &&
                cmp_fields(sizes) &&
                cmp_fields(scales) &&
                cmp_fields(axes) &&
@@ -194,6 +198,7 @@ struct resample : public primitive_base<resample> {
         primitive_base<resample>::save(ob);
         ob << output_size;
         ob << num_filter;
+        ob << scales_port;
         ob << sizes;
         ob << scales;
         ob << axes;
@@ -211,6 +216,7 @@ struct resample : public primitive_base<resample> {
         primitive_base<resample>::load(ib);
         ib >> output_size;
         ib >> num_filter;
+        ib >> scales_port;
         ib >> sizes;
         ib >> scales;
         ib >> axes;

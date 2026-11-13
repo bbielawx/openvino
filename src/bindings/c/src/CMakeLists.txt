@@ -1,19 +1,57 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
 set(TARGET_NAME openvino_c)
 
-# Suppress warnings due to catch macro with legacy exception types
-ov_disable_deprecated_warnings()
-
 add_definitions(-DIN_OV_COMPONENT)
 
-file(GLOB SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.h ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
-file(GLOB_RECURSE HEADERS ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/*.h)
+set(SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/common.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_auto_property.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_common.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_compiled_model.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_dimension.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_infer_request.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_layout.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_model.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_node.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_partial_shape.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_prepostprocess.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_property.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_rank.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_remote_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_shape.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_tensor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ov_util.cpp
+)
+
+set(HEADERS
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/auto/properties.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/deprecated.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/gpu/gpu_plugin_properties.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/openvino.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_common.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_compiled_model.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_core.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_dimension.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_infer_request.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_layout.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_model.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_node.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_partial_shape.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_prepostprocess.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_property.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_rank.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_remote_context.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_shape.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_tensor.h
+    ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/c/ov_util.h
+)
 
 # create library
-add_library(${TARGET_NAME} ${LEGACY_HEADERS} ${HEADERS} ${SOURCES})
+add_library(${TARGET_NAME} ${HEADERS} ${SOURCES})
 add_library(openvino::runtime::c ALIAS ${TARGET_NAME})
 
 target_link_libraries(${TARGET_NAME} PRIVATE openvino openvino::util)
@@ -50,12 +88,22 @@ export(TARGETS ${TARGET_NAME} NAMESPACE openvino::
 ov_cpack_add_component(${OV_CPACK_COMP_CORE_C} HIDDEN)
 ov_cpack_add_component(${OV_CPACK_COMP_CORE_C_DEV} HIDDEN)
 
+if(BUILD_SHARED_LIBS)
+    set(archive_comp CORE_C_DEV)
+else()
+    set(archive_comp CORE_C)
+endif()
+
 install(TARGETS ${TARGET_NAME} EXPORT OpenVINOTargets
         RUNTIME DESTINATION ${OV_CPACK_RUNTIMEDIR} COMPONENT ${OV_CPACK_COMP_CORE_C} ${OV_CPACK_COMP_CORE_C_EXCLUDE_ALL}
-        ARCHIVE DESTINATION ${OV_CPACK_ARCHIVEDIR} COMPONENT ${OV_CPACK_COMP_CORE_C} ${OV_CPACK_COMP_CORE_C_EXCLUDE_ALL}
+        ARCHIVE DESTINATION ${OV_CPACK_ARCHIVEDIR} COMPONENT ${OV_CPACK_COMP_${archive_comp}} ${OV_CPACK_COMP_${archive_comp}_EXCLUDE_ALL}
         LIBRARY DESTINATION ${OV_CPACK_LIBRARYDIR} COMPONENT ${OV_CPACK_COMP_CORE_C} ${OV_CPACK_COMP_CORE_C_EXCLUDE_ALL}
-        NAMELINK_COMPONENT ${OV_CPACK_COMP_CORE_C_DEV}
+        NAMELINK_COMPONENT ${OV_CPACK_COMP_LINKS} ${OV_CPACK_COMP_LINKS_EXCLUDE_ALL}
         INCLUDES DESTINATION ${OV_CPACK_INCLUDEDIR})
+
+ov_install_pdb(${TARGET_NAME})
+
+ov_build_target_faster(${TARGET_NAME} PCH)
 
 install(DIRECTORY ${OpenVINO_C_API_SOURCE_DIR}/include/openvino/
         DESTINATION ${OV_CPACK_INCLUDEDIR}/openvino

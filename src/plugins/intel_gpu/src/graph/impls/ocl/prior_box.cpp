@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,7 +20,7 @@ struct prior_box_impl : typed_primitive_impl_ocl<prior_box> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::prior_box_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<prior_box_impl>(*this);
+        return make_deep_copy<prior_box_impl, kernel_params_t>(*this);
     }
 
     static kernel_params_t get_kernel_params(const kernel_impl_params& impl_param) {
@@ -65,11 +65,11 @@ struct prior_box_impl : typed_primitive_impl_ocl<prior_box> {
         params.variance = primitive->variance;
         params.reverse_image_width = 1.0f / image_width;
         params.reverse_image_height = 1.0f / image_height;
-        params.width = width;
-        params.height = height;
+        params.width = static_cast<uint32_t>(width);
+        params.height = static_cast<uint32_t>(height);
         if (step == 0) {
-            params.step_x = image_width / width;
-            params.step_y = image_height / height;
+            params.step_x = static_cast<float>(image_width) / static_cast<float>(width);
+            params.step_y = static_cast<float>(image_height) / static_cast<float>(height);
         } else {
             params.step_x = step;
             params.step_y = step;
@@ -89,7 +89,7 @@ struct prior_box_impl : typed_primitive_impl_ocl<prior_box> {
 namespace detail {
 
 attach_prior_box_impl::attach_prior_box_impl() {
-    auto types = {data_types::i32, data_types::i64};
+    auto types = {data_types::i32, data_types::i64, data_types::f32, data_types::f16};
     auto formats = {format::bfyx,
                     format::b_fs_yx_fsv16,
                     format::b_fs_yx_fsv32,

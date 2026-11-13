@@ -1,17 +1,25 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <array>
+#include <cstddef>
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
+
 #include "cpu_memory.h"
 #include "memory_desc/blocked_memory_desc.h"
+#include "memory_desc/cpu_memory_desc.h"
+#include "nodes/kernels/scaled_attn/cache_spec.hpp"
 #include "openvino/runtime/ivariable_state.hpp"
+#include "openvino/runtime/so_ptr.hpp"
 #include "openvino/runtime/tensor.hpp"
 #include "utils/plain_tensor.hpp"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
 class IVariableState : public ov::IVariableState {
 public:
@@ -27,14 +35,14 @@ public:
 
 class VariableStateBase : public IVariableState {
 public:
-    VariableStateBase(const std::string& name, const MemoryDescPtr& external_desc);
+    VariableStateBase(const std::string& name, MemoryDescPtr external_desc);
 
-    //ov::IVariableState
-    void set_state(const ov::SoPtr<ov::ITensor>& state) override final; // NOLINT
+    // ov::IVariableState
+    void set_state(const ov::SoPtr<ov::ITensor>& state) override final;
     ov::SoPtr<ov::ITensor> get_state() const override;
-    void reset() override final; // NOLINT
-    bool is_reset_state() const override final; // NOLINT
-    void commit() override final; // NOLINT
+    void reset() override final;
+    bool is_reset_state() const override final;
+    void commit() override final;
 
 protected:
     virtual MemoryPtr internal_state_mem() const = 0;
@@ -66,7 +74,7 @@ public:
     MemoryDescPtr internal_desc() const override;
 
 private:
-    //ov::intel_cpu::VariableStateBase
+    // ov::intel_cpu::VariableStateBase
     void reset_impl() override;
     void commit_impl() override;
 
@@ -88,22 +96,40 @@ private:
 
     MemoryPtr internal_state_mem() const override;
 
-private:
-    MemoryDescPtr m_internal_desc; //mem desc required by the graph internal tensor
+    MemoryDescPtr m_internal_desc;  // mem desc required by the graph internal tensor
     std::array<MemoryPtr, 2> m_internal_mem{};
     size_t buffer_num = 0;
+};
+
+class VariableStateSingleBuffer : public VariableStateBase {
+public:
+    VariableStateSingleBuffer(const std::string& name, MemoryPtr external_buffer, MemoryDescPtr external_desc);
+
+    MemoryPtr input_mem() override;
+    MemoryPtr output_mem() override;
+    MemoryDescPtr internal_desc() const override;
+
+private:
+    void reset_impl() override;
+    void commit_impl() override;
+
+    MemoryPtr internal_state_mem() const override;
+
+    MemoryPtr m_internal_mem;
+    MemoryDescPtr m_internal_desc;  // mem desc required by the graph internal tensor
 };
 
 class VariableStateKVcache : public VariableStateBase {
 public:
     VariableStateKVcache(const std::string& name,
-                         const MemoryDescPtr& external_desc,
-                         const BlockedMemoryDescPtr& dense_internal_desc);
+                         MemoryDescPtr external_desc,
+                         BlockedMemoryDescPtr dense_internal_desc,
+                         ov::Extensions::Cpu::CacheSpec spec);
 
-    //ov::IVariableState
+    // ov::IVariableState
     ov::SoPtr<ov::ITensor> get_state() const override;
 
-    //ov::intel_cpu::VariableStateBase
+    // ov::intel_cpu::VariableStateBase
     MemoryPtr input_mem() override;
     MemoryPtr output_mem() override;
     MemoryDescPtr internal_desc() const override;
@@ -136,15 +162,18 @@ public:
         m_scale_zp = t;
     }
 
+    const ov::Extensions::Cpu::CacheSpec& get_spec() const {
+        return m_spec;
+    }
+
 private:
-    //ov::intel_cpu::VariableStateBase
+    // ov::intel_cpu::VariableStateBase
     void set_state_impl(const ov::SoPtr<ov::ITensor>& state) override;
     void reset_impl() override;
     void commit_impl() override;
 
-private:
-    MemoryPtr m_internal_mem; // kv cache
-    MemoryPtr m_hidden_state; // beam access table
+    MemoryPtr m_internal_mem;  // kv cache
+    MemoryPtr m_hidden_state;  // beam access table
     size_t m_internal_mem_max_size = 0;
     size_t m_hidden_state_max_size = 0;
 
@@ -153,9 +182,27 @@ private:
 
     // for u8 kv cache: [B, H, L, 2], 0 for scale, 1 for zp
     PlainTensor m_scale_zp;
+    ov::Extensions::Cpu::CacheSpec m_spec;
+};
+
+// KV cache state whose internal buffer is kept in the plain BHLS order (B, H, L, S), float precision only.
+// It is used by the sparse attention node, whose kernels require contiguous rows along L. The base class
+// get_state() / set_state_impl() assume the LBHS order and the beam table, so they are overridden here
+// instead of being generalized: VariableStateKVcache stays untouched.
+// The internal buffer may have a capacity larger than the logical length along L; the capacity is
+// carried by the strides of the internal memory descriptor.
+class VariableStateKVcacheBHLS : public VariableStateKVcache {
+public:
+    using VariableStateKVcache::VariableStateKVcache;
+
+    // ov::IVariableState
+    ov::SoPtr<ov::ITensor> get_state() const override;
+
+private:
+    // ov::intel_cpu::VariableStateBase
+    void set_state_impl(const ov::SoPtr<ov::ITensor>& state) override;
 };
 
 using MemStatePtr = std::shared_ptr<IVariableState>;
 using MemStateCPtr = std::shared_ptr<const IVariableState>;
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

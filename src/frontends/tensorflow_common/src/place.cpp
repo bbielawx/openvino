@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,9 +7,7 @@
 #include "openvino/frontend/exception.hpp"
 #include "openvino/frontend/node_context.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
+namespace ov::frontend::tensorflow {
 bool Place::is_input() const {
     const auto& model_ins = m_input_model.get_inputs();
 
@@ -182,7 +180,19 @@ TensorPlace::TensorPlace(const ov::frontend::InputModel& input_model,
                          const std::vector<std::string>& names)
     : Place(input_model, names),
       m_pshape(pshape),
-      m_type(type) {}
+      m_type(type) {
+    m_operation_name = (names.size() > 0) ? names[0] : m_operation_name;
+}
+
+TensorPlace::TensorPlace(const ov::frontend::InputModel& input_model,
+                         const ov::PartialShape& pshape,
+                         ov::element::Type type,
+                         const std::vector<std::string>& names,
+                         const std::string& operation_name)
+    : Place(input_model, names),
+      m_pshape(pshape),
+      m_type(type),
+      m_operation_name(operation_name) {}
 
 std::vector<ov::frontend::Place::Ptr> TensorPlace::get_consuming_ports() const {
     std::vector<ov::frontend::Place::Ptr> consuming_ports;
@@ -325,6 +335,4 @@ ov::frontend::Place::Ptr OutPortPlace::get_producing_operation() const {
     FRONT_END_THROW("Operation has expired.");
 }
 
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow

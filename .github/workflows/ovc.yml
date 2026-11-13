@@ -1,30 +1,46 @@
 name: OVC
 on:
+  workflow_dispatch:
+    inputs:
+      target-branch:
+        description: 'Target branch for the build; taken from event context by default'
+        type: string
+        required: false
   merge_group:
   push:
     branches:
       - 'master'
       - 'releases/**'
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # github.ref is not unique in post-commit
+  group: ${{ github.event_name == 'push' && github.run_id || github.ref }}-ovc
   cancel-in-progress: true
+
+permissions: read-all
 
 jobs:
   Pylint-UT:
     runs-on: ubuntu-22.04
+    if: ${{ github.repository_owner == 'openvinotoolkit' }}
     steps:
       - name: Clone OpenVINO
-        uses: actions/checkout@v4
+        uses: ababushk/checkout@dd591a6a2ac25618db4eda86e7e0d938f88cf01b # cherry_pick_retries
+        timeout-minutes: 15
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('src/bindings/python/requirements*.txt') }}

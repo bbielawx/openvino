@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -26,9 +26,8 @@ struct mvn : public primitive_base<mvn> {
         const bool normalize_variance,
         const float epsilon,
         const bool eps_inside_sqrt,
-        const std::vector<int64_t>& reduction_axes,
-        const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}),
+        const std::vector<int64_t>& reduction_axes)
+        : primitive_base(id, {input}),
           normalize_variance(normalize_variance),
           epsilon(epsilon),
           eps_inside_sqrt(eps_inside_sqrt),
@@ -53,8 +52,9 @@ struct mvn : public primitive_base<mvn> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const mvn>(rhs);
 
@@ -82,11 +82,7 @@ struct mvn : public primitive_base<mvn> {
 
     bool across_channels() const {
         int64_t channel_axis = 1;
-        if (std::find(reduction_axes.begin(), reduction_axes.end(), channel_axis) != reduction_axes.end()) {
-            return true;
-        } else {
-            return false;
-        }
+        return std::find(reduction_axes.begin(), reduction_axes.end(), channel_axis) != reduction_axes.end();
     }
 
     bool requires_alignment(const ov::PartialShape& shape) const {
@@ -97,8 +93,9 @@ struct mvn : public primitive_base<mvn> {
         // If all axes from 2 to rank-1 is a part of reduction scope,
         // then it's mapped to the old MVN case and don't require alignment
         for (int64_t i = 2; i < rank; i++) {
-            if (std::find_if(axes.begin(), axes.end(), [i, &shape](const int64_t& v){ return v == i || shape[i].get_max_length() == 1; }) == axes.end())
+            if (std::find_if(axes.begin(), axes.end(), [i, &shape](const int64_t& v){ return v == i || shape[i].get_max_length() == 1; }) == axes.end()) {
                 return true;
+            }
         }
 
         return false;

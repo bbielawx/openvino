@@ -1,13 +1,12 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "elementwise_ops.hpp"
 
-namespace ov {
-namespace frontend {
-namespace paddle {
-namespace op {
+#include "op_utils.hpp"
+
+namespace ov::frontend::paddle::op {
 
 //
 NamedOutputs elementwise_add(const NodeContext& node_context) {
@@ -54,6 +53,10 @@ NamedOutputs not_equal(const NodeContext& node_context) {
     return elementwise_ops<default_opset::NotEqual>(node_context);
 }
 
+NamedOutputs less_equal(const NodeContext& node) {
+    return elementwise_ops<default_opset::LessEqual>(node);
+}
+
 NamedOutputs elementwise_floordiv(const NodeContext& node_context) {
     auto x = node_context.get_input("X");
     auto y = node_context.get_input("Y");
@@ -68,6 +71,8 @@ NamedOutputs elementwise_floordiv(const NodeContext& node_context) {
     if (pd_version >= 2005000 || pd_version == 0) {
         python_div = true;
     }
+    x = get_tensor_safe(x);
+    y = get_tensor_safe(y);
     return node_context.default_single_output_mapping(
         {std::make_shared<default_opset::Divide>(x,
                                                  y,
@@ -80,7 +85,4 @@ NamedOutputs elementwise_mod(const NodeContext& node_context) {
     return elementwise_ops<default_opset::FloorMod>(node_context);
 }
 
-}  // namespace op
-}  // namespace paddle
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::paddle::op

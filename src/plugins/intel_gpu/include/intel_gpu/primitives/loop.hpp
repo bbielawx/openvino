@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -146,7 +146,7 @@ struct loop : public primitive_base<loop> {
         /// @param to Input data primitive id of body topology
         backedge_mapping(primitive_id from, primitive_id to)
             : from(from), to(to) {}
-        backedge_mapping() {}
+        backedge_mapping() = default;
         primitive_id from;
         primitive_id to;
 
@@ -183,7 +183,6 @@ struct loop : public primitive_base<loop> {
     ///                               data primitive will be added in the body network.
     /// @param primitive_map Rules to map input of loop or output of body topology to input of the body topology
     /// @param back_edges Output data primitive id.
-    /// @param output_padding     Optional padding for output from primitive.
     loop(const primitive_id& id,
          const std::vector<input_info>& inputs,
          const program::ptr body_program,
@@ -193,11 +192,11 @@ struct loop : public primitive_base<loop> {
          const std::vector<io_primitive_map>& input_primitive_maps,
          const std::vector<io_primitive_map>& output_primitive_maps,
          const std::vector<backedge_mapping>& back_edges,
-         int64_t max_num_iterations = -1,
+         int32_t max_num_iterations = -1,
          const primitive_id& body_current_iteration_id = primitive_id(),
          const primitive_id& body_execution_condition_id = primitive_id(),
          const size_t num_outputs = 1)
-            : primitive_base(id, inputs, {padding()}, {optional_data_type()}, num_outputs),
+            : primitive_base(id, inputs, num_outputs, {optional_data_type()}),
               body_program(std::move(body_program)),
               trip_count_id(trip_count_id),
               first_execution_condition_id(first_execution_condition_id),
@@ -274,17 +273,19 @@ struct loop : public primitive_base<loop> {
     }
 
 protected:
-    std::vector<input_info> get_dependencies() const override {
-        std::vector<input_info> ret;
-        // add external_id in dependencies if not exist
+    std::map<size_t, const input_info*> get_dependencies_map() const override {
+        auto ret = std::map<size_t, const input_info*>{};
+        auto idx = input.size();
+
         for (const auto& mapping : input_primitive_maps) {
-            auto target = std::find_if(input.begin(), input.end(),
-                                    [&](const input_info& info) {
-                                        return info.pid == mapping.external_id.pid;});
-            if (target == input.end()) {
-                ret.push_back(mapping.external_id.pid);
+            auto found = std::any_of(input.begin(), input.end(), [&](const input_info& info) {
+                return info.pid == mapping.external_id.pid;
+            });
+            if (!found) {
+                ret[idx++] = &mapping.external_id;
             }
         }
+
         return ret;
     }
 };

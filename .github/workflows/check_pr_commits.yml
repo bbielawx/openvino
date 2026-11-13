@@ -1,12 +1,16 @@
 name: PR Commits
 on: [pull_request]
 
+permissions: read-all
+
 jobs:
   Checks:
     runs-on: ubuntu-22.04
+    if: ${{ github.repository_owner == 'openvinotoolkit' }}
     steps:
       - name: Clone OpenVINO
-        uses: actions/checkout@v4
+        uses: ababushk/checkout@dd591a6a2ac25618db4eda86e7e0d938f88cf01b # cherry_pick_retries
+        timeout-minutes: 15
 
       - name: Install dependencies
         run: python3 -m pip install -r ./.github/github_org_control/requirements.txt

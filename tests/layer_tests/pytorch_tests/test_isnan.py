@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2023 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
@@ -8,7 +8,7 @@ import torch
 from pytorch_layer_test_class import PytorchLayerTest
 
 
-@pytest.mark.parametrize('input_tensor', (torch.tensor([1, float('nan'), 2])))
+@pytest.mark.parametrize('input_tensor', (np.array([1, float('nan'), 2]),))
 class TestIsNan(PytorchLayerTest):
 
     def _prepare_input(self):
@@ -21,11 +21,10 @@ class TestIsNan(PytorchLayerTest):
             def forward(self, input_tensor):
                 return torch.isnan(input_tensor)
 
-        ref_net = None
-
-        return aten_isnan(), ref_net, "aten::isnan"
+        return aten_isnan(), "aten::isnan"
 
     @pytest.mark.precommit_fx_backend
+    @pytest.mark.precommit_torch_export
     def test_isnan(self, ie_device, precision, ir_version, input_tensor):
         self.input_tensor = input_tensor
         self._test(*self.create_model(), ie_device, precision, ir_version)

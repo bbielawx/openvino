@@ -1,36 +1,40 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "register.hpp"
 #include "eltwise_inst.h"
-#include "implementation_map.hpp"
-
-#include "intel_gpu/runtime/error_handler.hpp"
-
+#include "impls/cpu/cpu_impl_helpers.hpp"
+#include "registry/implementation_map.hpp"
+#include "openvino/core/constant_fold_utils.hpp"
 #include "openvino/op/add.hpp"
-#include "openvino/op/multiply.hpp"
-#include "openvino/op/maximum.hpp"
-#include "openvino/op/minimum.hpp"
-#include "openvino/op/subtract.hpp"
+#include "openvino/op/bitwise_and.hpp"
+#include "openvino/op/bitwise_left_shift.hpp"
+#include "openvino/op/bitwise_or.hpp"
+#include "openvino/op/bitwise_right_shift.hpp"
+#include "openvino/op/bitwise_xor.hpp"
 #include "openvino/op/divide.hpp"
-#include "openvino/op/squared_difference.hpp"
 #include "openvino/op/equal.hpp"
-#include "openvino/op/not_equal.hpp"
-#include "openvino/op/less.hpp"
-#include "openvino/op/less_eq.hpp"
+#include "openvino/op/floor_mod.hpp"
 #include "openvino/op/greater.hpp"
 #include "openvino/op/greater_eq.hpp"
-#include "openvino/op/logical_and.hpp"
-#include "openvino/op/logical_or.hpp"
-#include "openvino/op/logical_xor.hpp"
-#include "openvino/op/xor.hpp"
-#include "openvino/op/power.hpp"
-#include "openvino/op/floor_mod.hpp"
-#include "openvino/op/mod.hpp"
 #include "openvino/op/is_finite.hpp"
 #include "openvino/op/is_inf.hpp"
 #include "openvino/op/is_nan.hpp"
+#include "openvino/op/less.hpp"
+#include "openvino/op/less_eq.hpp"
+#include "openvino/op/logical_and.hpp"
+#include "openvino/op/logical_or.hpp"
+#include "openvino/op/logical_xor.hpp"
+#include "openvino/op/maximum.hpp"
+#include "openvino/op/minimum.hpp"
+#include "openvino/op/mod.hpp"
+#include "openvino/op/multiply.hpp"
+#include "openvino/op/not_equal.hpp"
+#include "openvino/op/power.hpp"
+#include "openvino/op/squared_difference.hpp"
+#include "openvino/op/subtract.hpp"
+#include "openvino/op/xor.hpp"
+#include "register.hpp"
 
 namespace cldnn {
 namespace cpu {
@@ -47,7 +51,7 @@ struct eltwise_impl : public typed_primitive_impl<eltwise> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::cpu::eltwise_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<eltwise_impl>(*this);
+        return std::make_unique<eltwise_impl>(*this);
     }
 
     eltwise_impl() : parent("eltwise_cpu_impl") {}
@@ -79,15 +83,13 @@ struct eltwise_impl : public typed_primitive_impl<eltwise> {
         OV_ITT_SCOPED_TASK(ov::intel_gpu::itt::domains::intel_gpu_plugin, "eltwise::execute_impl");
         auto& stream = instance.get_network().get_stream();
 
-        const bool pass_through_events = (stream.get_queue_type() == QueueTypes::out_of_order) && instance.get_node().is_in_shape_of_subgraph();
+        const bool pass_through_events = (stream.get_queue_type() == QueueTypes::out_of_order) && instance.all_dependencies_cpu_impl();
 
         if (!pass_through_events) {
-            for (auto e : events) {
-                e->wait();
-            }
+            stream.wait_for_events(events);
         }
 
-        auto params = instance.get_impl_params();
+        const auto* params = instance.get_impl_params();
 
         ov::TensorVector input_host_tensors;
         ov::TensorVector output_host_tensors;
@@ -168,48 +170,63 @@ struct eltwise_impl : public typed_primitive_impl<eltwise> {
             case eltwise_mode::is_nan:
                 op = std::make_shared<ov::op::v10::IsNaN>();
                 break;
+            case eltwise_mode::right_shift:
+                op = std::make_shared<ov::op::v15::BitwiseRightShift>();
+                break;
+            case eltwise_mode::left_shift:
+                op = std::make_shared<ov::op::v15::BitwiseLeftShift>();
+                break;
+            case eltwise_mode::bitwise_and:
+                op = std::make_shared<ov::op::v13::BitwiseAnd>();
+                break;
+            case eltwise_mode::bitwise_or:
+                op = std::make_shared<ov::op::v13::BitwiseOr>();
+                break;
+            case eltwise_mode::bitwise_xor:
+                op = std::make_shared<ov::op::v13::BitwiseXor>();
+                break;
             default:
                 OPENVINO_THROW("[GPU] Couldn't create eltwise operation: unsupported eltwise operation (", static_cast<size_t>(mode), ")");
             }
         }
 
         std::vector<memory::ptr> input_mem_ptrs;
-        for (size_t i = 0; i < instance.dependencies().size(); i++)
+        for (size_t i = 0; i < instance.dependencies().size(); i++) {
             input_mem_ptrs.push_back(instance.dep_memory_ptr(i));
+        }
 
         auto output_mem_ptr = instance.output_memory_ptr();
 
         cldnn::mem_lock<uint8_t, mem_lock_type::write> output_lock(output_mem_ptr, stream);
 
-        for (size_t i = 0; i < input_mem_ptrs.size(); i++)
+        for (size_t i = 0; i < input_mem_ptrs.size(); i++) {
             input_host_tensors.push_back(make_tensor(params->input_layouts[i], input_mem_ptrs[i]->lock(stream, mem_lock_type::read)));
+        }
 
         output_host_tensors.push_back(make_tensor(params->output_layouts[0], output_lock.data()));
 
-        OPENVINO_ASSERT(op->evaluate(output_host_tensors, input_host_tensors),
+        OPENVINO_ASSERT(ov::util::evaluate_node_with_unsupported_precision(op.get(), output_host_tensors, input_host_tensors) ||
+                        op->evaluate(output_host_tensors, input_host_tensors),
                         "[GPU] Couldn't execute eltwise primitive with id ", instance.id());
 
-        for (size_t i = 0; i < input_mem_ptrs.size(); i++)
+        for (size_t i = 0; i < input_mem_ptrs.size(); i++) {
             input_mem_ptrs[i]->unlock(stream);
-
-        if (pass_through_events) {
-            if (events.size() > 1) {
-                return stream.group_events(events);
-            } else if (events.size() == 1) {
-                return events[0];
-            }
         }
 
-        return stream.create_user_event(true);
+        if (pass_through_events) {
+            return stream.group_events(events);
+        }
+
+        return make_output_event(stream, instance.is_output());
     }
 
     void init_kernels(const kernels_cache& , const kernel_impl_params&) override {}
 
-    void update_dispatch_data(const kernel_impl_params& impl_param) override {}
+    void update(primitive_inst& inst, const kernel_impl_params& impl_param) override {}
 
 public:
     static std::unique_ptr<primitive_impl> create(const eltwise_node& arg, const kernel_impl_params& impl_param) {
-        return make_unique<eltwise_impl>();
+        return std::make_unique<eltwise_impl>();
     }
 };
 
@@ -228,6 +245,7 @@ attach_eltwise_impl::attach_eltwise_impl() {
     auto types = {
         data_types::f32,
         data_types::f16,
+        data_types::bf16,
         data_types::i32,
         data_types::i64,
         data_types::i8,

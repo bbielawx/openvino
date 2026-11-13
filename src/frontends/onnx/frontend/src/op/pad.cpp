@@ -1,14 +1,19 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/pad.hpp"
+#include "openvino/op/pad.hpp"
+
+#include <vector>
 
 #include "core/null_node.hpp"
+#include "core/operator_set.hpp"
 #include "exceptions.hpp"
+#include "openvino/core/validation_util.hpp"
 #include "openvino/op/constant.hpp"
-#include "openvino/op/pad.hpp"
+#include "openvino/op/scatter_elements_update.hpp"
 #include "openvino/op/util/op_types.hpp"
+#include "utils/common.hpp"
 #include "utils/convpool.hpp"
 #include "utils/reshape.hpp"
 #include "utils/split.hpp"
@@ -32,11 +37,8 @@ ov::op::PadMode get_pad_mode(std::string mode) {
 }  // namespace
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx {
+namespace opset_1 {
 ov::OutputVector pad(const ov::frontend::onnx::Node& node) {
     auto data = node.get_ov_inputs().at(0);
 
@@ -60,17 +62,19 @@ ov::OutputVector pad(const ov::frontend::onnx::Node& node) {
         pad_mode)};
 }
 
-}  // namespace set_1
-namespace set_11 {
+ONNX_OP("Pad", OPSET_RANGE(1, 10), ai_onnx::opset_1::pad);
+}  // namespace opset_1
+namespace opset_11 {
 ov::OutputVector pad(const ov::frontend::onnx::Node& node) {
     const auto inputs = node.get_ov_inputs();
+    CHECK_VALID_NODE(node, inputs.size() >= 2, "Pad expects at least 2 inputs (data, pads). Got: ", inputs.size());
     const auto& data = inputs[0];
     const auto& pads = inputs[1];
     ov::Output<ov::Node> values;
     ov::Output<ov::Node> padding_begin;
     ov::Output<ov::Node> padding_end;
 
-    if (inputs.size() == 3 && !ov::op::util::is_null(inputs[2])) {
+    if (common::is_input_valid(node, 2)) {
         values = reshape::interpret_as_scalar(inputs[2]);
     } else {
         values = v0::Constant::create(data.get_element_type(), ov::Shape{}, {0});
@@ -80,7 +84,7 @@ ov::OutputVector pad(const ov::frontend::onnx::Node& node) {
         std::vector<std::int64_t> pads_vector =
             ov::as_type_ptr<v0::Constant>(pads.get_node_shared_ptr())->get_vector<std::int64_t>();
 
-        std::size_t const half_size = pads_vector.size() / 2;
+        const std::size_t half_size = pads_vector.size() / 2;
         std::vector<std::int64_t> padding_begin_values(pads_vector.begin(), pads_vector.begin() + half_size);
         std::vector<std::int64_t> padding_end_values(pads_vector.begin() + half_size, pads_vector.end());
 
@@ -93,14 +97,32 @@ ov::OutputVector pad(const ov::frontend::onnx::Node& node) {
         padding_end = padding.at(1);
     }
 
+    if (common::is_input_valid(node, 3)) {
+        const auto data_rank = data.get_partial_shape().rank();
+        CHECK_VALID_NODE(node, data_rank.is_static(), "Data rank must be static to validate Pad axes.");
+        const int64_t rank_length = data_rank.get_length();
+        auto zeroes = v0::Constant::create(ov::element::i64,
+                                           ov::Shape{static_cast<size_t>(rank_length)},
+                                           std::vector<int64_t>(rank_length, 0));
+
+        const auto axes = inputs[3];
+        // Axes may be a runtime input per spec (opset 18+); only constant values can be range-checked here.
+        if (const auto axes_const = ov::as_type_ptr<v0::Constant>(axes.get_node_shared_ptr())) {
+            ov::util::validate_axes(axes_const->cast_vector<int64_t>(), data_rank, *axes_const);
+        }
+
+        auto scatter_axis = v0::Constant::create(ov::element::i64, ov::Shape{}, {0});
+
+        padding_begin = std::make_shared<v12::ScatterElementsUpdate>(zeroes, axes, padding_begin, scatter_axis);
+        padding_end = std::make_shared<v12::ScatterElementsUpdate>(zeroes, axes, padding_end, scatter_axis);
+    }
+
     const std::string mode = node.get_attribute_value<std::string>("mode", "constant");
     ov::op::PadMode pad_mode = get_pad_mode(mode);
 
     return {std::make_shared<v12::Pad>(data, padding_begin, padding_end, values, pad_mode)};
 }
 
-}  // namespace set_11
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("Pad", OPSET_SINCE(11), ai_onnx::opset_11::pad);
+}  // namespace opset_11
+}  // namespace ov::frontend::onnx::ai_onnx

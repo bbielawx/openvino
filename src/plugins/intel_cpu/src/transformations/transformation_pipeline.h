@@ -1,65 +1,50 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "openvino/core/model.hpp"
-#include "utils/debug_capabilities.h"
-#include "low_precision/low_precision.hpp"
-#include "config.h"
-#include "transformations/convert_precision.hpp"
-
-#include "itt.h"
-
 #include <memory>
+#include <utility>
 #include <vector>
 
-namespace ov {
-namespace intel_cpu {
+#include "config.h"
+#include "openvino/core/model.hpp"
+#include "openvino/core/node.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "transformations/convert_precision.hpp"
+
+namespace ov::intel_cpu {
 
 class Transformations {
 public:
-    Transformations(const std::shared_ptr<ov::Model>& initialModel,
-                    const bool                        enableLpt,
-                    const ov::element::Type           inferencePrecision,
-                    const Config::SnippetsMode&       snippetsMode,
-                    const Config&                     config)
-        : model(initialModel),
-          enableLpt(enableLpt),
-          inferencePrecision(inferencePrecision),
-          snippetsMode(snippetsMode),
-          config(config) {
-            CPU_DEBUG_CAPS_MAYBE_UNUSED(this->config);
-          }
+    Transformations(std::shared_ptr<ov::Model> initialModel, const Config& config)
+        : model(std::move(initialModel)),
+          config(config) {}
 
     void UpToLpt();
     void CpuSpecificOpSet();
     void PostLpt();
-    void Snippets(void);
-    void SetSubStreamNum(int);
+    void Snippets();
 
 private:
     std::shared_ptr<ov::Model> model;
-    const bool    enableLpt;
-    const ov::element::Type inferencePrecision;
-    const Config::SnippetsMode snippetsMode;
     const Config& config;
-    int subStreamNum = -1;
 
     void PreLpt(const std::vector<ov::element::Type>& defaultPrecisions);
 
     void Lpt(const std::vector<ov::element::Type>& defaultPrecisions);
+    void runLptPasses(const std::vector<ov::element::Type>& defaultPrecisions);
 
-    void MainSnippets(void);
+    void MainSnippets();
 
-    void PostSnippets(void);
+    void PostSnippets();
 
-    bool is_decompression_multiply(const std::shared_ptr<const ov::Node>& node) const;
+    static bool is_decompression_multiply(const std::shared_ptr<const ov::Node>& node);
 
     static bool fuse_type_to_convert(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
     static bool fuse_type_to_fq(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
+    static bool fuse_type_to_pa(const std::shared_ptr<ov::Node>& node, const precisions_map& precisions);
 };
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

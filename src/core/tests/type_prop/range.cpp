@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -508,7 +508,7 @@ TEST(type_prop, range_v4_invalid_inputs_elem_type) {
     // invalid element type for step scalar
     try {
         auto start = make_shared<ov::op::v0::Parameter>(element::i32, Shape{});
-        auto stop = make_shared<ov::op::v0::Parameter>(element::undefined, Shape{});
+        auto stop = make_shared<ov::op::v0::Parameter>(element::dynamic, Shape{});
         auto step = make_shared<ov::op::v0::Parameter>(element::boolean, Shape{});
         auto range = make_shared<op::v4::Range>(start, stop, step, element::i32);
         FAIL() << "Exception expected";
@@ -618,7 +618,7 @@ TEST(type_prop, range_v4_invalid_inputs_plus_inf) {
         auto range = make_shared<op::v4::Range>(start, stop, step, element::f32);
         FAIL() << "+Infinity step not detected";
     } catch (const NodeValidationFailure& error) {
-        EXPECT_HAS_SUBSTRING(error.what(), "'step' cannot be nan or infinite.");
+        EXPECT_HAS_SUBSTRING(error.what(), "'step' cannot be zero, nan, or infinite.");
     } catch (const ov::Exception& error) {
         EXPECT_HAS_SUBSTRING(error.what(), "Check 'std::numeric_limits<OUT_T>::max() >= c");
     } catch (...) {
@@ -675,7 +675,7 @@ TEST(type_prop, range_v4_invalid_inputs_minus_inf) {
         auto range = make_shared<op::v4::Range>(start, stop, step, element::f32);
         FAIL() << "-Infinity step not detected";
     } catch (const NodeValidationFailure& error) {
-        EXPECT_HAS_SUBSTRING(error.what(), "'step' cannot be nan or infinite.");
+        EXPECT_HAS_SUBSTRING(error.what(), "'step' cannot be zero, nan, or infinite.");
     } catch (const ov::Exception& error) {
         EXPECT_HAS_SUBSTRING(
             error.what(),
@@ -728,11 +728,41 @@ TEST(type_prop, range_v4_invalid_inputs_nan) {
         auto range = make_shared<op::v4::Range>(start, stop, step, element::f32);
         FAIL() << "NaN step not detected";
     } catch (const NodeValidationFailure& error) {
-        EXPECT_HAS_SUBSTRING(error.what(), "'step' cannot be nan or infinite.");
+        EXPECT_HAS_SUBSTRING(error.what(), "'step' cannot be zero, nan, or infinite.");
     } catch (const ov::Exception& error) {
         EXPECT_HAS_SUBSTRING(
             error.what(),
             "Check '!std::numeric_limits<IN_T>::is_signed || std::numeric_limits<OUT_T>::lowest() <= c");
+    } catch (...) {
+        FAIL() << "Test failed for unexpected reason";
+    }
+}
+
+TEST(type_prop, range_v4_some_const_zero_step_fails) {
+    auto start = make_shared<ov::op::v0::Constant>(element::i32, Shape{}, std::vector<int32_t>{3});
+    auto stop = make_shared<ov::op::v0::Parameter>(element::i32, Shape{});
+    auto step = make_shared<ov::op::v0::Constant>(element::i32, Shape{}, std::vector<int32_t>{0});
+
+    try {
+        auto range = make_shared<op::v4::Range>(start, stop, step, element::i32);
+        FAIL() << "Zero step not detected";
+    } catch (const NodeValidationFailure& error) {
+        EXPECT_HAS_SUBSTRING(error.what(), "'step' cannot be zero");
+    } catch (...) {
+        FAIL() << "Test failed for unexpected reason";
+    }
+}
+
+TEST(type_prop, range_v4_all_const_zero_step_fails) {
+    auto start = make_shared<ov::op::v0::Constant>(element::i32, Shape{}, std::vector<int32_t>{3});
+    auto stop = make_shared<ov::op::v0::Constant>(element::i32, Shape{}, std::vector<int32_t>{5});
+    auto step = make_shared<ov::op::v0::Constant>(element::i32, Shape{}, std::vector<int32_t>{0});
+
+    try {
+        auto range = make_shared<op::v4::Range>(start, stop, step, element::i32);
+        FAIL() << "Zero step not detected";
+    } catch (const NodeValidationFailure& error) {
+        EXPECT_HAS_SUBSTRING(error.what(), "'step' cannot be zero");
     } catch (...) {
         FAIL() << "Test failed for unexpected reason";
     }
@@ -895,3 +925,21 @@ INSTANTIATE_TEST_SUITE_P(type_prop,
                                            RangeParams{-1, 1, 0.25, PartialShape{8}},
                                            RangeParams{-1, 0.875, 0.25, PartialShape{8}}),
                          PrintToDummyParamName());
+
+TEST(type_prop, range_symbol_start_0_stop_A_step_1) {
+    auto stop_symbol = std::make_shared<ov::Symbol>();
+    auto source_shape = PartialShape::dynamic(1);
+    source_shape[0].set_symbol(stop_symbol);
+    auto symbol_source =
+        make_shared<ov::op::v0::ShapeOf>(make_shared<ov::op::v0::Parameter>(element::i64, source_shape));
+
+    auto start = make_shared<ov::op::v0::Constant>(element::i64, Shape{}, 0);
+    auto stop = make_shared<ov::op::v8::Gather>(symbol_source,
+                                                make_shared<ov::op::v0::Constant>(element::i64, Shape{}, 0),
+                                                make_shared<ov::op::v0::Constant>(element::i64, Shape{}, 0));
+    auto step = make_shared<ov::op::v0::Constant>(element::i64, Shape{}, 1);
+
+    auto range = make_shared<op::v0::Range>(start, stop, step);
+
+    ASSERT_TRUE(ov::symbol::are_equal(range->get_output_partial_shape(0)[0].get_symbol(), stop_symbol));
+}

@@ -1,5 +1,3 @@
-.. {#openvino_docs_OV_UG_Layout_Overview}
-
 Layout API Overview
 ===================
 
@@ -21,7 +19,11 @@ Below is a list of cases where input/output layout is important:
   * Applying the :doc:`preprocessing <../optimize-preprocessing>` steps, such as subtracting means, dividing by scales, resizing an image, and converting ``RGB`` <-> ``BGR``.
   * Setting/getting a batch for a model.
 
-* Doing the same operations as used during the model conversion phase. For more information, refer to the :doc:`Model Optimizer Embedding Preprocessing Computation <../../../../documentation/legacy-features/transition-legacy-conversion-api/legacy-conversion-api/[legacy]-embedding-preprocessing-computation>` guide.
+* Doing the same operations as used during the model conversion phase. For more information, refer to the:
+
+  * :doc:`Convert to OpenVINO <../../../model-preparation/convert-model-to-ir>`
+  * `OpenVINO Model Conversion Tutorial <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/convert-to-openvino>`__
+
 * Improving the readability of a model input and output.
 
 Syntax of Layout
@@ -38,14 +40,14 @@ The easiest way is to fully specify each dimension with one alphabet letter.
     .. tab-item:: Python
         :sync: py
 
-        .. doxygensnippet:: docs/snippets/ov_layout.py
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.py
            :language: python
            :fragment: ov:layout:simple
 
     .. tab-item:: C++
         :sync: cpp
 
-        .. doxygensnippet:: docs/snippets/ov_layout.cpp
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.cpp
             :language: cpp
             :fragment: ov:layout:simple
 
@@ -63,14 +65,14 @@ The advanced syntax allows assigning a word to a dimension. To do this, wrap a l
     .. tab-item:: Python
         :sync: py
 
-        .. doxygensnippet:: docs/snippets/ov_layout.py
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.py
            :language: python
            :fragment: ov:layout:complex
 
     .. tab-item:: C++
         :sync: cpp
 
-        .. doxygensnippet:: docs/snippets/ov_layout.cpp
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.cpp
             :language: cpp
             :fragment: ov:layout:complex
 
@@ -86,14 +88,14 @@ If a certain dimension is not important, its name can be set to ``?``.
     .. tab-item:: Python
         :sync: py
 
-        .. doxygensnippet:: docs/snippets/ov_layout.py
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.py
            :language: python
            :fragment: ov:layout:partially_defined
 
     .. tab-item:: C++
         :sync: cpp
 
-        .. doxygensnippet:: docs/snippets/ov_layout.cpp
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.cpp
             :language: cpp
             :fragment: ov:layout:partially_defined
 
@@ -109,14 +111,14 @@ If several dimensions are not important, an ellipsis ``...`` can be used to spec
     .. tab-item:: Python
         :sync: py
 
-        .. doxygensnippet:: docs/snippets/ov_layout.py
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.py
            :language: python
            :fragment: ov:layout:dynamic
 
     .. tab-item:: C++
         :sync: cpp
 
-        .. doxygensnippet:: docs/snippets/ov_layout.cpp
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.cpp
             :language: cpp
             :fragment: ov:layout:dynamic
 
@@ -140,14 +142,14 @@ These names are used in :doc:`PreProcessing API <../optimize-preprocessing>`. Th
     .. tab-item:: Python
         :sync: py
 
-        .. doxygensnippet:: docs/snippets/ov_layout.py
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.py
            :language: python
            :fragment: ov:layout:predefined
 
     .. tab-item:: C++
         :sync: cpp
 
-        .. doxygensnippet:: docs/snippets/ov_layout.cpp
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.cpp
             :language: cpp
             :fragment: ov:layout:predefined
 
@@ -168,14 +170,14 @@ A layout can be converted to a string in the advanced syntax format. It can be u
     .. tab-item:: Python
         :sync: py
 
-        .. doxygensnippet:: docs/snippets/ov_layout.py
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.py
            :language: python
            :fragment: ov:layout:dump
 
     .. tab-item:: C++
         :sync: cpp
 
-        .. doxygensnippet:: docs/snippets/ov_layout.cpp
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.cpp
             :language: cpp
             :fragment: ov:layout:dump
 
@@ -191,14 +193,14 @@ OpenVINO provides helpers which provide a simple interface to get layout from Mo
     .. tab-item:: Python
         :sync: py
 
-        .. doxygensnippet:: docs/snippets/ov_layout.py
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.py
            :language: python
            :fragment: ov:layout:get_from_model
 
     .. tab-item:: C++
         :sync: cpp
 
-        .. doxygensnippet:: docs/snippets/ov_layout.cpp
+        .. doxygensnippet:: docs/articles_en/assets/snippets/ov_layout.cpp
             :language: cpp
             :fragment: ov:layout:get_from_model
 

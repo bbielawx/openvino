@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -32,9 +32,8 @@ struct gather_nd : public primitive_base<gather_nd> {
               const uint8_t input_rank,
               const uint8_t indices_rank,
               const uint8_t batch_dims = 0,
-              const bool batch_merged_output = true,
-              const padding& output_padding = padding())
-        : primitive_base(id, {data, indices}, {output_padding}),
+              const bool batch_merged_output = true)
+        : primitive_base(id, {data, indices}),
                          input_rank(input_rank),
                          indices_rank(indices_rank),
                          batch_dims(batch_dims),
@@ -61,8 +60,9 @@ struct gather_nd : public primitive_base<gather_nd> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const gather_nd>(rhs);
 

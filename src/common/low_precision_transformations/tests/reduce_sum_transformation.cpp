@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,6 +20,7 @@
 #include "ov_lpt_models/reduce.hpp"
 #include "ov_lpt_models/common/dequantization_operations.hpp"
 #include "ov_lpt_models/common/constant.hpp"
+#include "openvino/op/reduce_sum.hpp"
 
 namespace {
 using namespace testing;
@@ -336,4 +337,91 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::ValuesIn(reduceSumTransformationTestValues)),
     ReduceSumTransformation::getTestCaseName);
 } // namespace testValues2
+
+namespace testValues3 {
+    const std::vector<ov::PartialShape> inputShapes = {
+        {4, 3, 16, 16}
+    };
+
+    const std::vector<ReduceTransformationTestValues> reduceSumTransformationTestValues = {
+        {
+            LayerTransformation::createParamsU8I8(),
+            {0},
+            true,
+            {
+                ov::element::u8,
+                {
+                    {ov::element::f32},
+                    {{40.f, 80.f, 120.f}, ov::element::f32, {1, 3, 1, 1}, false, 1ul, ov::element::u8, true},
+                    {{0.1f, 1.f, 10.f}, ov::element::f32, {1, 3, 1, 1}}
+                }
+            },
+            {
+                ov::element::u8,
+                {},
+                ov::element::f32,
+                {
+                    {},
+                    {{160.f, 320.f, 480.f}, ov::element::f32, {1, 3, 1, 1}},
+                    {{0.1f, 1.f, 10.f}, ov::element::f32, {1, 3, 1, 1}}
+                }
+            }
+        },
+        {
+            LayerTransformation::createParamsU8I8(),
+            {0},
+            true,
+            {
+                ov::element::i8,
+                {
+                    {ov::element::f32},
+                    {{40.f, 80.f, 120.f}, ov::element::f32, {1, 3, 1, 1}, false, 1ul, ov::element::i8, true},
+                    {{0.1f, 1.f, 10.f}, ov::element::f32, {1, 3, 1, 1}}
+                }
+            },
+            {
+                ov::element::i8,
+                {},
+                ov::element::f32,
+                {
+                    {},
+                    {{160.f, 320.f, 480.f}, ov::element::f32, {1, 3, 1, 1}},
+                    {{0.1f, 1.f, 10.f}, ov::element::f32, {1, 3, 1, 1}}
+                }
+            }
+        },
+        {
+            LayerTransformation::createParamsU8I8(),
+            {0},
+            true,
+            {
+                ov::element::i8,
+                {
+                    {ov::element::f16},
+                    {{40.f}, ov::element::f16, {}, false, {}, ov::element::f16, true},
+                    {{0.1f}, ov::element::f16, {}}
+                }
+            },
+            {
+                ov::element::i8,
+                {},
+                ov::element::f16,
+                {
+                    {},
+                    {{160.f}, ov::element::f16, {}},
+                    {{0.1f}, ov::element::f16, {}}
+                }
+            }
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(
+        smoke_LPT,
+        ReduceSumTransformation,
+        ::testing::Combine(
+            ::testing::ValuesIn(inputShapes),
+            ::testing::ValuesIn(reduceSumTransformationTestValues)),
+        ReduceSumTransformation::getTestCaseName);
+} // namespace testValues3
+
 } // namespace

@@ -13,12 +13,16 @@ on:
         required: false
         default: null
 
+permissions: read-all
+
 jobs:
   Debian_Packages:
     name: Debian Packages
     runs-on: ${{ inputs.runner }}
     container:
       image: ${{ inputs.image }}
+      volumes:
+        - ${{ github.workspace }}:${{ github.workspace }} # Needed as ${{ github.workspace }} is not working correctly when using Docker
     defaults:
       run:
         shell: bash
@@ -30,15 +34,22 @@ jobs:
         if: runner.os == 'Linux'
         run: echo 'Acquire::Retries "10";' > /etc/apt/apt.conf.d/80-retries
 
+      - name: Switch Ubuntu APT sources to Azure mirrors
+        if: runner.os == 'Linux'
+        run: |
+          # compatible with both Ubuntu 22.04 and 24.04; sources.list is read by apt on both versions
+          . /etc/os-release
+          cat >> /etc/apt/sources.list << EOF
+          deb http://azure.archive.ubuntu.com/ubuntu $VERSION_CODENAME main restricted universe multiverse
+          deb http://azure.archive.ubuntu.com/ubuntu ${VERSION_CODENAME}-updates main restricted universe multiverse
+          deb http://azure.archive.ubuntu.com/ubuntu ${VERSION_CODENAME}-security main restricted universe multiverse
+          EOF
+
       - name: Download OpenVINO debian packages
-        uses: actions/download-artifact@v4
+        uses: akashchi/download-artifact@d59a9c15fec3fdb7c9adf09464124d00f9c11415 # main
         with:
           name: openvino_debian_packages
           path: ${{ env.DEBIAN_PACKAGES_DIR }}
-
-      # Needed as ${{ github.workspace }} is not working correctly when using Docker
-      - name: Setup Variables
-        run: echo "DEBIAN_PACKAGES_DIR=$GITHUB_WORKSPACE/packages" >> "$GITHUB_ENV"
 
       - name: Install debian packages & check conflicts
         run: |
@@ -46,10 +57,16 @@ jobs:
 
           if [[ "${{ runner.arch }}" == "X64" ]]; then
             # Install debian packages from previous release
-            apt-get install --no-install-recommends -y gnupg wget ca-certificates
+            apt-get install --no-install-recommends -y gnupg wget ca-certificates lsb-release
             wget https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
-            apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
-            echo "deb https://apt.repos.intel.com/openvino/2023 ubuntu20 main" | tee /etc/apt/sources.list.d/intel-openvino-2023.list
+            gpg --output /etc/apt/trusted.gpg.d/intel.gpg --dearmor GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+
+            # Yields only the number, e.g., "20"
+            ubuntu_version=$(lsb_release -r -s)
+            ubuntu_version=${ubuntu_version%.*}
+
+            echo "deb https://apt.repos.intel.com/openvino/2024 ubuntu$ubuntu_version main" | tee /etc/apt/sources.list.d/intel-openvino-2024.list
+
             apt-get update -y
             apt-get install -y openvino
           fi

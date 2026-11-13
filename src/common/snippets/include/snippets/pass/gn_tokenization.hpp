@@ -1,15 +1,12 @@
-// Copyright (C) 2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "openvino/pass/pattern/matcher.hpp"
-#include "snippets/pass/tokenization.hpp"
+#include "openvino/pass/matcher_pass.hpp"
 
-namespace ov {
-namespace snippets {
-namespace pass {
+namespace ov::snippets::pass {
 
 /**
  * @interface TokenizeGNSnippets
@@ -18,10 +15,8 @@ namespace pass {
  */
 class TokenizeGNSnippets : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("TokenizeGNSnippets", "0");
+    OPENVINO_MATCHER_PASS_RTTI("snippets::pass::TokenizeGNSnippets");
     TokenizeGNSnippets();
 };
 
-}  // namespace pass
-}  // namespace snippets
-}  // namespace ov
+}  // namespace ov::snippets::pass

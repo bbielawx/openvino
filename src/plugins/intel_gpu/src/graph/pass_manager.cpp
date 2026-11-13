@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -50,7 +50,7 @@ void pass_manager::run(program& p, base_pass& pass) {
     using ms = std::chrono::duration<double, std::ratio<1, 1000>>;
     using Time = std::chrono::high_resolution_clock;
 
-    GPU_DEBUG_LOG << "Run pass " << pass.get_name() << std::endl;
+    GPU_DEBUG_LOG << "Run pass " << pass.get_name() << " (program_id=" << p.get_id() << ")" << std::endl;
     GPU_DEBUG_DEFINE_MEM_LOGGER(pass.get_name());
     auto start = Time::now();
     pass.run(p);
@@ -70,8 +70,9 @@ void pass_manager::run(program& p, base_pass& pass) {
     }
 
     std::string dump_file_name;
-    if (pass_count < 10)
+    if (pass_count < 10) {
         dump_file_name += "0";
+    }
     dump_file_name += std::to_string(pass_count) + "_" + pass.get_name();
     p.dump_program(dump_file_name.c_str(), true);
     pass_count++;

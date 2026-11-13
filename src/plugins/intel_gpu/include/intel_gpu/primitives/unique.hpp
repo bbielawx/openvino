@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,6 +12,8 @@ namespace cldnn {
 
 struct unique_count : primitive_base<unique_count> {
     CLDNN_DECLARE_PRIMITIVE(unique_count)
+
+    unique_count() : primitive_base("", {}) {}
 
     /// @brief Constructs unique_count primitive.
     /// @param id This primitive id.
@@ -45,6 +47,8 @@ struct unique_count : primitive_base<unique_count> {
 struct unique_gather : primitive_base<unique_gather> {
     CLDNN_DECLARE_PRIMITIVE(unique_gather)
 
+    unique_gather() : primitive_base("", {}) {}
+
     /// @brief Constructs unique_gather primitive.
     /// @param id This primitive id.
     /// @param inputs Input primitives ids.
@@ -59,7 +63,7 @@ struct unique_gather : primitive_base<unique_gather> {
                   data_types elem_type,
                   data_types index_type,
                   data_types count_type)
-        : primitive_base(id, inputs, decltype(output_paddings)(4), {elem_type, index_type, index_type, count_type}, 4),
+        : primitive_base(id, inputs, 4, {elem_type, index_type, index_type, count_type}),
           flattened(flattened),
           axis(axis),
           sorted(sorted) {}

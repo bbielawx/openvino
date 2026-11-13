@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,8 +6,7 @@
 
 #include "openvino/pass/graph_rewrite.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 /// Merges Gather into KVCache op
 ///     ┌─────────────────────┐                                               ┌─────────────────────┐
@@ -36,11 +35,22 @@ namespace intel_gpu {
 ///              ┌────┴──────┐                                                                   ┌────┴──────┴───┐
 ///              │   Gemm    │                                                                   | IndirectGemm  |
 ///              └───────────┘                                                                   └───────────────┘
-class IndirectKVCache : public ov::pass::MatcherPass {
+class IndirectKVCache : public ov::pass::GraphRewrite {
 public:
-    OPENVINO_RTTI("IndirectKVCache", "0");
+    OPENVINO_GRAPH_REWRITE_RTTI("IndirectKVCache");
     IndirectKVCache();
 };
 
-}   // namespace intel_gpu
-}   // namespace ov
+class IndirectGemmOpt : public ov::pass::MatcherPass {
+public:
+    OPENVINO_MATCHER_PASS_RTTI("IndirectGemmOpt");
+    IndirectGemmOpt();
+};
+
+class IndirectSDPAOpt : public ov::pass::MatcherPass {
+public:
+    OPENVINO_MATCHER_PASS_RTTI("IndirectSDPAOpt");
+    IndirectSDPAOpt();
+};
+
+}   // namespace ov::intel_gpu

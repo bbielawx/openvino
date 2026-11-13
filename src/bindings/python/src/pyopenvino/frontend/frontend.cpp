@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,19 +12,14 @@
 #include "openvino/frontend/exception.hpp"
 #include "openvino/frontend/extension/telemetry.hpp"
 #include "openvino/frontend/manager.hpp"
+#include "openvino/runtime/shared_buffer.hpp"
+#include "openvino/util/file_util.hpp"
 #include "pyopenvino/graph/model.hpp"
 #include "pyopenvino/utils/utils.hpp"
 
 namespace py = pybind11;
 
 using namespace ov::frontend;
-
-class MemoryBuffer : public std::streambuf {
-public:
-    MemoryBuffer(char* data, std::size_t size) {
-        setg(data, data, data + size);
-    }
-};
 
 void regclass_frontend_FrontEnd(py::module m) {
     py::class_<FrontEnd, std::shared_ptr<FrontEnd>> fem(m, "FrontEnd", py::dynamic_attr(), py::module_local());
@@ -40,14 +35,12 @@ void regclass_frontend_FrontEnd(py::module m) {
         [](FrontEnd& self, const py::object& py_obj, const bool enable_mmap = true) {
             if (py::isinstance(py_obj, py::module_::import("pathlib").attr("Path")) ||
                 py::isinstance<py::str>(py_obj) || py::isinstance<py::bytes>(py_obj)) {
-                // check if model path is either a string/pathlib.Path/bytes
-                std::string model_path = Common::utils::convert_path_to_string(py_obj);
-                return self.load(model_path, enable_mmap);
+                return self.load({Common::utils::to_fs_path(py_obj), enable_mmap});
             } else if (py::isinstance(py_obj, pybind11::module::import("io").attr("BytesIO"))) {
                 // support of BytesIO
                 py::buffer_info info = py::buffer(py_obj.attr("getbuffer")()).request();
-                MemoryBuffer mb(reinterpret_cast<char*>(info.ptr), info.size);
-                std::istream _istream(&mb);
+                ov::SharedStreamBuffer mb{info.ptr, static_cast<size_t>(info.size)};
+                std::istream _istream{&mb};
                 return self.load(&_istream, enable_mmap);
             } else {
                 // Extended for one argument only for this time
@@ -70,6 +63,10 @@ void regclass_frontend_FrontEnd(py::module m) {
     fem.def(
         "supported",
         [](FrontEnd& self, const py::object& model) {
+            if (py::isinstance(model, py::module_::import("pathlib").attr("Path")) || py::isinstance<py::str>(model) ||
+                py::isinstance<py::bytes>(model)) {
+                return self.supported({Common::utils::to_fs_path(model)});
+            }
             return self.supported({Common::utils::py_object_to_any(model)});
         },
         py::arg("model"),
@@ -91,19 +88,22 @@ void regclass_frontend_FrontEnd(py::module m) {
                 :param model: Input model.
                 :type model: openvino.frontend.InputModel
                 :return: Fully converted OpenVINO Model.
-                :rtype: openvino.runtime.Model
+                :rtype: openvino.Model
              )");
 
-    fem.def("convert",
-            static_cast<void (FrontEnd::*)(const std::shared_ptr<ov::Model>&) const>(&FrontEnd::convert),
-            py::arg("model"),
-            R"(
+    fem.def(
+        "convert",
+        [](FrontEnd& self, const py::object& ie_api_model) {
+            return self.convert(Common::utils::convert_to_model(ie_api_model));
+        },
+        py::arg("model"),
+        R"(
                 Completely convert the remaining, not converted part of a function.
 
                 :param model: Partially converted OpenVINO model.
                 :type model: openvino.frontend.Model
                 :return: Fully converted OpenVINO Model.
-                :rtype: openvino.runtime.Model
+                :rtype: openvino.Model
              )");
 
     fem.def("convert_partially",
@@ -117,7 +117,7 @@ void regclass_frontend_FrontEnd(py::module m) {
                 :param model : Input model.
                 :type model: openvino.frontend.InputModel
                 :return: Partially converted OpenVINO Model.
-                :rtype: openvino.runtime.Model
+                :rtype: openvino.Model
              )");
 
     fem.def("decode",
@@ -131,17 +131,20 @@ void regclass_frontend_FrontEnd(py::module m) {
                 :param model : Input model.
                 :type model: openvino.frontend.InputModel
                 :return: OpenVINO Model after decoding.
-                :rtype: openvino.runtime.Model
+                :rtype: openvino.Model
              )");
 
-    fem.def("normalize",
-            &FrontEnd::normalize,
-            py::arg("model"),
-            R"(
+    fem.def(
+        "normalize",
+        [](FrontEnd& self, const py::object& ie_api_model) {
+            self.normalize(Common::utils::convert_to_model(ie_api_model));
+        },
+        py::arg("model"),
+        R"(
                 Runs normalization passes on function that was loaded with partial conversion.
 
                 :param model : Partially converted OpenVINO model.
-                :type model: openvino.runtime.Model
+                :type model: openvino.Model
              )");
 
     fem.def("get_name",
@@ -157,7 +160,7 @@ void regclass_frontend_FrontEnd(py::module m) {
     fem.def("add_extension",
             static_cast<void (FrontEnd::*)(const std::shared_ptr<ov::Extension>& extension)>(&FrontEnd::add_extension),
             R"(
-                Add extension defined by an object inheriting from Extension 
+                Add extension defined by an object inheriting from Extension
                 used in order to extend capabilities of Frontend.
 
                 :param extension: Provided extension object.
@@ -168,20 +171,20 @@ void regclass_frontend_FrontEnd(py::module m) {
             static_cast<void (FrontEnd::*)(const std::vector<std::shared_ptr<ov::Extension>>& extension)>(
                 &FrontEnd::add_extension),
             R"(
-                Add extensions defined by objects inheriting from Extension 
+                Add extensions defined by objects inheriting from Extension
                 used in order to extend capabilities of Frontend.
 
                 :param extension: Provided extension objects.
-                :type extension: List[Extension]
+                :type extension: list[Extension]
             )");
 
     fem.def(
         "add_extension",
         [](FrontEnd& self, const py::object& extension_path) {
-            return self.add_extension(Common::utils::convert_path_to_string(extension_path));
+            return self.add_extension(Common::utils::to_fs_path(extension_path));
         },
         R"(
-                Add extension defined in external library indicated by a extension_path 
+                Add extension defined in external library indicated by a extension_path
                 used in order to extend capabilities of Frontend.
 
                 :param extension_path: A path to extension.

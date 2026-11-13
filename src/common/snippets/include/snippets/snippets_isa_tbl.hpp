@@ -1,22 +1,24 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
 #ifndef OV_OP
-#warning "OV_OP not defined"
-#define OV_OP(x, y)
+#    warning "OV_OP not defined"
+#    define OV_OP(x, y)
 #endif
 
 // SnippetS dialect
 OV_OP(Load, ov::snippets::op)
-OV_OP(LoadReshape, ov::snippets::op)
+OV_OP(LoadReorder, ov::snippets::op)
 OV_OP(LoopBegin, ov::snippets::op)
 OV_OP(LoopEnd, ov::snippets::op)
 OV_OP(Brgemm, ov::snippets::op)
 OV_OP(BroadcastLoad, ov::snippets::op)
 OV_OP(Reshape, ov::snippets::op)
+OV_OP(Reorder, ov::snippets::op)
+OV_OP(Result, ov::snippets::op)
 
 OV_OP(Store, ov::snippets::op)
 

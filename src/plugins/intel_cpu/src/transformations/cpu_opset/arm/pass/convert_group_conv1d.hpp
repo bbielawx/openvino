@@ -1,19 +1,20 @@
-// Copyright (C) 2020-2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
 
-#include "openvino/pass/graph_rewrite.hpp"
+#include "openvino/core/rtti.hpp"
+#include "openvino/pass/matcher_pass.hpp"
 
 /*
  * Description:
  *     ConvertConv1DBase detects 1D Convolution / GroupConvolution and replaces
  *     it with the sequence Unsqueeze - 2D Convolution / GroupConvolution - Squeeze.
- *     Unsqueeze adds the additional dimension to Convolution inputs and Squeeze 
+ *     Unsqueeze adds the additional dimension to Convolution inputs and Squeeze
  *     removes the additional dimension from the Convolution output.
  *
  * Before:
- * 
+ *
  * +--------------+    +---------------+
  * | Input tensor |    | Kernel tensor |
  * +-----------+--+    +-+-------------+
@@ -25,9 +26,9 @@
  *           +------v------+
  *           |   Result    |
  *           +-------------+
- * 
+ *
  * After:
- * 
+ *
  * +--------------+    +--------------+ +---------------+   +--------------+
  * | Input tensor |    | Constant (1) | | Kernel tensor |   | Constant (1) |
  * +-----------+--+    +-+------------+ +-----------+---+   +-+------------+
@@ -47,28 +48,26 @@
  *                                                       +------v------+
  *                                                       |    Result   |
  *                                                       +-------------+
- * 
+ *
  */
 
-namespace ov {
-namespace intel_cpu {
-class ConvertConv1DBase: public ov::pass::MatcherPass {
+namespace ov::intel_cpu {
+class ConvertConv1DBase : public ov::pass::MatcherPass {
 protected:
-    OPENVINO_RTTI("ConvertConv1DBase", "0");
+    OPENVINO_MATCHER_PASS_RTTI("ConvertConv1DBase");
     template <class Conv>
     ov::matcher_pass_callback convert_conv1d_to_conv2d();
 };
 
-class ConvertConv1D: public ConvertConv1DBase {
+class ConvertConv1D : public ConvertConv1DBase {
 public:
-    OPENVINO_RTTI("ConvertConv1D", "0");
+    OPENVINO_RTTI("ConvertConv1D", "0", ConvertConv1DBase);
     ConvertConv1D();
 };
 
-class ConvertGroupConv1D: public ConvertConv1DBase {
+class ConvertGroupConv1D : public ConvertConv1DBase {
 public:
-    OPENVINO_RTTI("ConvertGroupConv1D", "0");
+    OPENVINO_RTTI("ConvertGroupConv1D", "0", ConvertConv1DBase);
     ConvertGroupConv1D();
 };
-}  // namespace intel_cpu
-}  // namespace ov
+}  // namespace ov::intel_cpu

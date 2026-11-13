@@ -1,30 +1,28 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <filesystem>
+
 #include "openvino/frontend/extension/telemetry.hpp"
 #include "openvino/frontend/paddle/frontend.hpp"
 
-namespace ov {
-namespace frontend {
-namespace paddle {
+namespace ov::frontend::paddle {
 
 class OpPlace;
 class TensorPlace;
 
 class InputModel : public ov::frontend::InputModel {
 public:
-    explicit InputModel(const std::string& path, const std::shared_ptr<TelemetryExtension>& telemetry = {});
-#if defined(OPENVINO_ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
-    explicit InputModel(const std::wstring& path, const std::shared_ptr<TelemetryExtension>& telemetry = {});
-#endif
+    explicit InputModel(const std::filesystem::path& path, const std::shared_ptr<TelemetryExtension>& telemetry = {});
     explicit InputModel(const std::vector<std::istream*>& streams,
                         const std::shared_ptr<TelemetryExtension>& telemetry = {});
     std::vector<Place::Ptr> get_inputs() const override;
     std::vector<Place::Ptr> get_outputs() const override;
     Place::Ptr get_place_by_tensor_name(const std::string& tensorName) const override;
+    Place::Ptr get_place_by_input_index(size_t input_idx) const override;
     void override_all_outputs(const std::vector<Place::Ptr>& outputs) override;
     void override_all_inputs(const std::vector<Place::Ptr>& inputs) override;
     void extract_subgraph(const std::vector<Place::Ptr>& inputs, const std::vector<Place::Ptr>& outputs) override;
@@ -45,6 +43,4 @@ private:
     std::map<std::string, Output<Node>> get_tensor_values() const;
 };
 
-}  // namespace paddle
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::paddle

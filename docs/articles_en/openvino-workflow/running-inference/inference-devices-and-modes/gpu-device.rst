@@ -1,5 +1,3 @@
-.. {#openvino_docs_OV_UG_supported_plugins_GPU}
-
 GPU Device
 ==========
 
@@ -21,21 +19,23 @@ For an in-depth description of the GPU plugin, see:
 
 - `GPU plugin developer documentation <https://github.com/openvinotoolkit/openvino/blob/master/src/plugins/intel_gpu/README.md>`__
 - `OpenVINO Runtime GPU plugin source files <https://github.com/openvinotoolkit/openvino/tree/master/src/plugins/intel_gpu/>`__
-- `Accelerate Deep Learning Inference with Intel® Processor Graphics <https://software.intel.com/en-us/articles/accelerating-deep-learning-inference-with-intel-processor-graphics>`__
+- `GPU plugin Level Zero support (experimental) <https://github.com/openvinotoolkit/openvino/blob/master/src/plugins/intel_gpu/docs/gpu_plugin_with_level_zero.md>`__
+- `Start AI Development with Intel <https://www.intel.com/content/www/us/en/developer/topic-technology/artificial-intelligence/overview.html>`__
 
-The GPU plugin is a part of the Intel® Distribution of OpenVINO™ toolkit. For more information on how to configure a system to use it, see the :doc:`GPU configuration <../../../get-started/configurations/configurations-intel-gpu>`.
+The GPU plugin is a part of the Intel® Distribution of OpenVINO™ toolkit. For more information on how to configure a system to use it, see the :doc:`GPU configuration <../../../get-started/install-openvino/configurations/configurations-intel-gpu>`.
 
 Device Naming Convention
 #######################################
 
-* Devices are enumerated as ``GPU.X``, where ``X={0, 1, 2,...}`` (only Intel® GPU devices are considered).
-* If the system has an integrated GPU, its ``id`` is always 0 (``GPU.0``).
-* The order of other GPUs is not predefined and depends on the GPU driver.
+* Devices are enumerated as ``GPU.X``, where ``X={0, 1, 2,...}`` (both Intel® and non-Intel GPUs are considered).
+* The order of GPUs is predefined: integrated Intel® GPUs first, followed by discrete Intel® GPUs, and then non-Intel® GPUs. The order of non-Intel® GPUs is not guaranteed.
+* A physical GPU exposed through multiple OpenCL® runtime platforms may appear as more than one device entry. When the same GPU is exposed by both the Intel® and another OpenCL® platform, the Intel®-platform entry is enumerated first. The order of non-Intel® OpenCL® platforms is not guaranteed.
+* If the system has an integrated Intel® GPU, its ``id`` is always 0 (``GPU.0``).
+* If the system does not have an integrated Intel® GPU, devices are enumerated, starting from 0.
 * The ``GPU`` is an alias for ``GPU.0``.
-* If the system does not have an integrated GPU, devices are enumerated, starting from 0.
 * For GPUs with multi-tile architecture (multiple sub-devices in OpenCL terms), a specific tile may be addressed as ``GPU.X.Y``, where ``X,Y={0, 1, 2,...}``, ``X`` - id of the GPU device, ``Y`` - id of the tile within device ``X``
 
-For demonstration purposes, see the :doc:`Hello Query Device C++ Sample <../../../learn-openvino/openvino-samples/hello-query-device>` that can print out the list of available devices with associated indices. Below is an example output (truncated to the device names only):
+For demonstration purposes, see the :doc:`Hello Query Device C++ Sample <../../../get-started/learn-openvino/openvino-samples/hello-query-device>` that can print out the list of available devices with associated indices. Below is an example output (truncated to the device names only):
 
 .. code-block:: sh
 
@@ -59,14 +59,14 @@ Then, the device name can be passed to the ``ov::Core::compile_model()`` method,
          .. tab-item:: Python
             :sync: py
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.py
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.py
                :language: Python
                :fragment: compile_model_default_gpu
 
          .. tab-item:: C++
             :sync: cpp
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.cpp
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.cpp
                :language: cpp
                :fragment: compile_model_default_gpu
 
@@ -77,14 +77,14 @@ Then, the device name can be passed to the ``ov::Core::compile_model()`` method,
          .. tab-item:: Python
             :sync: py
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.py
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.py
                :language: Python
                :fragment: compile_model_gpu_with_id
 
          .. tab-item:: C++
             :sync: cpp
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.cpp
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.cpp
                :language: cpp
                :fragment: compile_model_gpu_with_id
 
@@ -95,14 +95,14 @@ Then, the device name can be passed to the ``ov::Core::compile_model()`` method,
          .. tab-item:: Python
             :sync: py
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.py
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.py
                :language: Python
                :fragment: compile_model_gpu_with_id_and_tile
 
          .. tab-item:: C++
             :sync: cpp
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.cpp
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.cpp
                :language: cpp
                :fragment: compile_model_gpu_with_id_and_tile
 
@@ -126,14 +126,14 @@ Selected precision of each primitive depends on the operation precision in IR, q
 The ``u1``/``u8``/``i8`` data types are used for quantized operations only, which means that they are not selected automatically for non-quantized operations.
 For more details on how to get a quantized model, refer to the :doc:`Model Optimization guide <../../model-optimization>`.
 
-Floating-point precision of a GPU primitive is selected based on operation precision in the OpenVINO IR, except for the :doc:`<compressed f16 OpenVINO IR form <../../../documentation/legacy-features/transition-legacy-conversion-api/legacy-conversion-api/[legacy]-compressing-model-to-fp16>`, which is executed in the ``f16`` precision.
+Floating-point precision of a GPU primitive is selected based on operation precision in the OpenVINO IR, except for the :doc:`<compressed f16 OpenVINO IR form <../../../openvino-workflow/model-preparation/conversion-parameters>`, which is executed in the ``f16`` precision.
 
 .. note::
 
    The newer generation Intel Iris Xe and Xe MAX GPUs provide accelerated performance for i8/u8 models. Hardware acceleration for ``i8``/``u8`` precision may be unavailable on older generation platforms. In such cases, a model is executed in the floating-point precision taken from IR.
    Hardware support of ``u8``/``i8`` acceleration can be queried via the ``ov::device::capabilities`` property.
 
-:doc:`Hello Query Device C++ Sample <../../../learn-openvino/openvino-samples/hello-query-device>` can be used to print out the supported data types for all detected devices.
+:doc:`Hello Query Device C++ Sample <../../../get-started/learn-openvino/openvino-samples/hello-query-device>` can be used to print out the supported data types for all detected devices.
 
 
 Supported Features
@@ -141,30 +141,30 @@ Supported Features
 
 The GPU plugin supports the following features:
 
-Multi-device Execution
+Automatic Device Selection
 +++++++++++++++++++++++++++++++++++++++
 
 If a system has multiple GPUs (for example, an integrated and a discrete Intel GPU), then any supported model can be executed on all GPUs simultaneously.
-It is done by specifying ``MULTI:GPU.1,GPU.0`` as a target device.
+It is done by specifying ``AUTO:GPU.1,GPU.0`` as a target device, and adding the ``CUMULATIVE_THROUGHPUT`` parameter.
 
 .. tab-set::
 
    .. tab-item:: Python
       :sync: py
 
-      .. doxygensnippet:: docs/snippets/gpu/compile_model.py
+      .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.py
          :language: Python
-         :fragment: compile_model_multi
+         :fragment: compile_model_auto
 
    .. tab-item:: C++
       :sync: cpp
 
-      .. doxygensnippet:: docs/snippets/gpu/compile_model.cpp
+      .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.cpp
          :language: cpp
-         :fragment: compile_model_multi
+         :fragment: compile_model_auto
 
 
-For more details, see the :doc:`Multi-device execution <multi-device>`.
+For more details, see the :doc:`Automatic Device Selection <auto-device-selection>`.
 
 Automatic Batching
 +++++++++++++++++++++++++++++++++++++++
@@ -183,14 +183,14 @@ Alternatively, it can be enabled explicitly via the device notion, for example `
          .. tab-item:: Python
             :sync: py
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.py
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.py
                :language: Python
                :fragment: compile_model_batch_plugin
 
          .. tab-item:: C++
             :sync: cpp
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.cpp
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.cpp
                :language: cpp
                :fragment: compile_model_batch_plugin
 
@@ -201,14 +201,14 @@ Alternatively, it can be enabled explicitly via the device notion, for example `
          .. tab-item:: Python
             :sync: py
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.py
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.py
                :language: Python
                :fragment: compile_model_auto_batch
 
          .. tab-item:: C++
             :sync: cpp
 
-            .. doxygensnippet:: docs/snippets/gpu/compile_model.cpp
+            .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/compile_model_gpu.cpp
                :language: cpp
                :fragment: compile_model_auto_batch
 
@@ -246,7 +246,7 @@ Dynamic Shapes
    - Dynamic rank is not supported.
 
 The general description of what dynamic shapes are and how they are used can be found in
-:doc:`dynamic shapes guide <../dynamic-shapes>`.
+:doc:`dynamic shapes guide <../model-input-output/dynamic-shapes>`.
 To support dynamic shape execution, the following basic infrastructures are implemented:
 
 - Runtime shape inference: infers output shapes of each primitive for a new input shape at runtime.
@@ -275,14 +275,14 @@ The code snippet below demonstrates examples of a bounded dynamic batch:
    .. tab-item:: Python
       :sync: py
 
-      .. doxygensnippet:: docs/snippets/gpu/dynamic_batch.py
+      .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/dynamic_batch.py
          :language: Python
          :fragment: dynamic_batch
 
    .. tab-item:: C++
       :sync: cpp
 
-      .. doxygensnippet:: docs/snippets/gpu/dynamic_batch.cpp
+      .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/dynamic_batch.cpp
          :language: cpp
          :fragment: dynamic_batch
 
@@ -351,14 +351,14 @@ The GPU plugin has the following additional preprocessing options:
    .. tab-item:: Python
       :sync: py
 
-      .. doxygensnippet:: docs/snippets/gpu/preprocessing_nv12_two_planes.py
+      .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/preprocessing_nv12_two_planes.py
          :language: Python
          :fragment: init_preproc
 
    .. tab-item:: C++
       :sync: cpp
 
-      .. doxygensnippet:: docs/snippets/gpu/preprocessing_nv12_two_planes.cpp
+      .. doxygensnippet:: docs/articles_en/assets/snippets/gpu/preprocessing_nv12_two_planes.cpp
          :language: cpp
          :fragment: init_preproc
 
@@ -399,44 +399,80 @@ Supported Properties
 
 The plugin supports the properties listed below.
 
+- For more details on the properties, see the `Device Properties <https://docs.openvino.ai/2026/api/c_cpp_api/group__ov__runtime__cpp__prop__api.html>`__.
+- For more details on usage of the properties, see the :doc:`Query Device Properties - Configuration <query-device-properties>`.
+- To check the exact list of available properties on target device, you can run :doc:`Hello Query Device C++ Sample <../../../get-started/learn-openvino/openvino-samples/hello-query-device>`.
+
 Read-write properties
 +++++++++++++++++++++++++++++++++++++++
 
 All parameters must be set before calling ``ov::Core::compile_model()`` in order to take effect or passed as additional argument to ``ov::Core::compile_model()``.
 
 - ``ov::cache_dir``
-- ``ov::enable_profiling``
-- ``ov::hint::model_priority``
-- ``ov::hint::performance_mode``
-- ``ov::hint::execution_mode``
-- ``ov::hint::num_requests``
-- ``ov::hint::inference_precision``
-- ``ov::num_streams``
+- ``ov::cache_encryption_callbacks``
+- ``ov::cache_mode``
 - ``ov::compilation_num_threads``
 - ``ov::device::id``
+- ``ov::enable_profiling``
+- ``ov::num_streams``
+- ``ov::weights_path``
+- ``ov::hint::activations_scale_factor``
+- ``ov::hint::dynamic_quantization_group_size``
+- ``ov::hint::enable_cpu_pinning``
+- ``ov::hint::enable_cpu_reservation``
+- ``ov::hint::execution_mode``
+- ``ov::hint::inference_precision``
+- ``ov::hint::kv_cache_precision``
+- ``ov::hint::model``
+- ``ov::hint::model_priority``
+- ``ov::hint::num_requests``
+- ``ov::hint::performance_mode``
+- ``ov::intel_gpu::disable_winograd_convolution``
+- ``ov::intel_gpu::enable_loop_unrolling``
+- ``ov::intel_gpu::offload_ratio``
+- ``ov::intel_gpu::hint::enable_sdpa_optimization``
 - ``ov::intel_gpu::hint::host_task_priority``
 - ``ov::intel_gpu::hint::queue_priority``
 - ``ov::intel_gpu::hint::queue_throttle``
-- ``ov::intel_gpu::enable_loop_unrolling``
-- ``ov::intel_gpu::disable_winograd_convolution``
+
+Setting ``ov::intel_gpu::offload_ratio`` above zero automatically enables weightless
+caching and selects ``ov::CacheMode::OPTIMIZE_SIZE``. Explicitly disabling weightless
+caching or selecting ``ov::CacheMode::OPTIMIZE_SPEED`` is not supported with offloading,
+including when importing a compiled model or loading it from cache.
+MoE offloading requires a valid weights file and the corresponding constant offsets.
+
 
 Read-only Properties
 +++++++++++++++++++++++++++++++++++++++
 
-- ``ov::supported_properties``
 - ``ov::available_devices``
+- ``ov::max_batch_size``
+- ``ov::optimal_batch_size``
 - ``ov::range_for_async_infer_requests``
 - ``ov::range_for_streams``
-- ``ov::optimal_batch_size``
-- ``ov::max_batch_size``
-- ``ov::device::full_name``
-- ``ov::device::type``
-- ``ov::device::gops``
+- ``ov::supported_properties``
+- ``ov::device::architecture``
 - ``ov::device::capabilities``
+- ``ov::device::full_name``
+- ``ov::device::gops``
+- ``ov::device::luid``
+- ``ov::device::type``
+- ``ov::device::uuid``
 - ``ov::intel_gpu::device_total_mem_size``
-- ``ov::intel_gpu::uarch_version``
+- ``ov::intel_gpu::device_max_alloc_mem_size``
 - ``ov::intel_gpu::execution_units_count``
 - ``ov::intel_gpu::memory_statistics``
+- ``ov::intel_gpu::uarch_version``
+
+.. note::
+
+   ``ov::intel_gpu::device_total_mem_size`` and ``ov::intel_gpu::device_max_alloc_mem_size``
+   (``GPU_DEVICE_TOTAL_MEM_SIZE`` and ``GPU_DEVICE_MAX_ALLOC_MEM_SIZE``) report the
+   device's total and maximum single-allocation memory limits. For guidance on
+   avoiding and troubleshooting out-of-memory and allocation errors on GPU,
+   including iGPU-specific platform considerations, see
+   :doc:`Managing iGPU Memory Allocation for OpenVINO Inference <../optimize-inference/managing-igpu-memory-usage>`.
+
 
 Limitations
 #######################################
@@ -476,6 +512,7 @@ Since OpenVINO relies on the OpenCL kernels for the GPU implementation, many gen
 Additional Resources
 #######################################
 
+* `Working with GPUs in OpenVINO™ Notebook <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/gpu-device/>`__
 * :doc:`Inference Devices and Modes <../inference-devices-and-modes>`.
 * :doc:`Optimization guide <../optimize-inference>`.
 * `GPU plugin developer documentation <https://github.com/openvinotoolkit/openvino/blob/master/src/plugins/intel_gpu/README.md>`__

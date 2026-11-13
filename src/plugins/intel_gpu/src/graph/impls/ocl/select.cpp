@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,12 +20,12 @@ struct select_impl : typed_primitive_impl_ocl<select> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::select_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<select_impl>(*this);
+        return make_deep_copy<select_impl, kernel_params_t>(*this);
     }
 
     void load(BinaryInputBuffer& ib) override {
         parent::load(ib);
-        if (is_dynamic()) {
+        if (is_dynamic() && !_kernel_data.kernelName.empty()) {
             auto& kernel_selector = kernel_selector_t::Instance();
             auto kernel_impl = kernel_selector.GetImplementation(_kernel_data.kernelName);
             kernel_impl->GetUpdateDispatchDataFunc(_kernel_data);
@@ -46,12 +46,19 @@ struct select_impl : typed_primitive_impl_ocl<select> {
     static kernel_impl_params static_canonicalize_shapes(const kernel_impl_params& impl_params) {
         auto updated_impl_params = canonicalize_fused_shapes(impl_params);
 
+        auto& output_layout = updated_impl_params.output_layouts[0];
+        auto out_pshape = output_layout.get_partial_shape();
+        size_t target_rank = std::max<size_t>(4, out_pshape.size());
+
         for (auto& input_layout : updated_impl_params.input_layouts) {
-            input_layout.set_partial_shape(extend_shape_to_rank_from_begin(input_layout.get_partial_shape()));
+            auto input_pshape = input_layout.get_partial_shape();
+            input_pshape = extend_shape_to_rank_from_begin(input_pshape, target_rank);
+            input_layout.set_partial_shape(input_pshape);
+            input_layout.format = format::adjust_to_rank(input_layout.format, input_pshape.size());
         }
 
-        auto& output_layout = updated_impl_params.output_layouts[0];
-        output_layout.set_partial_shape(extend_shape_to_rank_from_begin(output_layout.get_partial_shape()));
+        output_layout.set_partial_shape(extend_shape_to_rank_from_begin(out_pshape, target_rank));
+        output_layout.format = format::adjust_to_rank(output_layout.format, target_rank);
 
         return updated_impl_params;
     }
@@ -61,8 +68,13 @@ struct select_impl : typed_primitive_impl_ocl<select> {
     }
 
     void update_dispatch_data(const kernel_impl_params& impl_param) override {
-        auto kernel_params = get_kernel_params(impl_param, true);
-        (_kernel_data.update_dispatch_data_func)(kernel_params, _kernel_data);
+        // If model loaded from cache, params are not initialized, so we create a new object and reuse it in the future
+        if (_kernel_data.params == nullptr) {
+            _kernel_data.params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true));
+        }
+
+        update_shapes(*_kernel_data.params, impl_param);
+        (_kernel_data.update_dispatch_data_func)(*_kernel_data.params, _kernel_data);
     }
 };
 
@@ -72,6 +84,8 @@ attach_select_impl::attach_select_impl() {
     auto types = {
         data_types::f32,
         data_types::f16,
+        data_types::bf16,
+        data_types::i32,
         data_types::i8,
         data_types::u8
     };
@@ -80,6 +94,7 @@ attach_select_impl::attach_select_impl() {
         format::bfyx,
         format::byxf,
         format::yxfb,
+        format::bfzyx,
     };
 
     implementation_map<select>::add(impl_types::ocl,
@@ -89,7 +104,9 @@ attach_select_impl::attach_select_impl() {
                                     static_formats);
 
     auto dyn_formats = {
-        format::bfyx
+        format::bfyx,
+        format::byxf,
+        format::bfzyx,
     };
 
     implementation_map<select>::add(impl_types::ocl,

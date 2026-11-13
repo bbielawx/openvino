@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,7 +15,7 @@ GPU_DEFINE_PRIMITIVE_TYPE_ID(shape_of)
 namespace {
 data_types get_output_data_type(const kernel_impl_params& impl_param) {
     if (impl_param.has_fused_primitives()) {
-        return impl_param.get_fused_output_layout().data_type;
+        return impl_param.get_output_element_type();
     }
 
     const auto prim = impl_param.typed_desc<shape_of>();
@@ -50,8 +50,9 @@ std::string shape_of_inst::to_string(shape_of_node const& node) {
     std::stringstream primitive_description;
 
     json_composite shape_of_info;
-    if (desc->output_data_types[0].has_value())
+    if (desc->output_data_types[0].has_value()) {
         shape_of_info.add("out dt: ", dt_to_str(*desc->output_data_types[0]));
+    }
     node_info->add("shape_of info", shape_of_info);
     node_info->dump(primitive_description);
 

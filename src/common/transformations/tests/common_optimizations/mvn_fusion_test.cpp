@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,7 +11,17 @@
 
 #include "common_test_utils/ov_test_utils.hpp"
 #include "openvino/core/model.hpp"
-#include "openvino/opsets/opset6.hpp"
+#include "openvino/op/add.hpp"
+#include "openvino/op/convert.hpp"
+#include "openvino/op/divide.hpp"
+#include "openvino/op/multiply.hpp"
+#include "openvino/op/mvn.hpp"
+#include "openvino/op/power.hpp"
+#include "openvino/op/reduce_mean.hpp"
+#include "openvino/op/sqrt.hpp"
+#include "openvino/op/squared_difference.hpp"
+#include "openvino/op/subtract.hpp"
+#include "openvino/opsets/opset6_decl.hpp"
 #include "openvino/pass/manager.hpp"
 #include "transformations/init_node_info.hpp"
 #include "transformations/utils/utils.hpp"
@@ -40,7 +50,7 @@ TEST_F(TransformationTestsF, MVNFusionTestOutside) {
         auto power_div = std::make_shared<opset6::Power>(add_eps, const_neg_1);
         auto div = std::make_shared<opset6::Multiply>(sub1, power_div);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -50,7 +60,7 @@ TEST_F(TransformationTestsF, MVNFusionTestOutside) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::OUTSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -72,7 +82,7 @@ TEST_F(TransformationTestsF, MVNFusionTestReuseSub) {
         auto power_div = std::make_shared<opset6::Power>(add_eps, const_neg_1);
         auto div = std::make_shared<opset6::Multiply>(sub1, power_div);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -82,7 +92,7 @@ TEST_F(TransformationTestsF, MVNFusionTestReuseSub) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::OUTSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -105,7 +115,7 @@ TEST_F(TransformationTestsF, MVNFusionTestWithConvert) {
         auto power_div = std::make_shared<opset6::Power>(add_eps, const_neg_1);
         auto div = std::make_shared<opset6::Multiply>(sub1, power_div);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -115,7 +125,7 @@ TEST_F(TransformationTestsF, MVNFusionTestWithConvert) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::OUTSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -136,7 +146,7 @@ TEST_F(TransformationTestsF, MVNFusionTestSqrt) {
         auto power_div = std::make_shared<opset6::Power>(add_eps, const_neg_1);
         auto div = std::make_shared<opset6::Multiply>(sub1, power_div);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -146,7 +156,7 @@ TEST_F(TransformationTestsF, MVNFusionTestSqrt) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::OUTSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -166,7 +176,7 @@ TEST_F(TransformationTestsF, MVNFusionTestAltDiv) {
         auto add_eps = std::make_shared<opset6::Add>(power_sqrt, eps);
         auto div = std::make_shared<opset6::Divide>(sub1, add_eps);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -176,7 +186,36 @@ TEST_F(TransformationTestsF, MVNFusionTestAltDiv) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::OUTSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
+    }
+}
+
+TEST_F(TransformationTestsF, MVNFusionTestSelfMultiply) {
+    {
+        auto input = std::make_shared<opset6::Parameter>(element::f32, Shape{1, 16, 409600, 1});
+        auto mean1_axes = opset6::Constant::create(element::i32, Shape{1}, {2});
+        auto mean1 = std::make_shared<opset6::ReduceMean>(input, mean1_axes, true);
+        auto sub1 = std::make_shared<opset6::Subtract>(input, mean1);
+        auto self_multiply = std::make_shared<opset6::Multiply>(sub1, sub1);
+        auto mean3_axes = opset6::Constant::create(element::i32, Shape{1}, {2});
+        auto mean3 = std::make_shared<opset6::ReduceMean>(self_multiply, mean3_axes, true);
+        auto const_0_5 = opset6::Constant::create(element::f32, Shape{}, {0.5});
+        auto power_sqrt = std::make_shared<opset6::Power>(mean3, const_0_5);
+        auto eps = opset6::Constant::create(element::f32, Shape{}, {1e-9});
+        auto add_eps = std::make_shared<opset6::Add>(power_sqrt, eps);
+        auto div = std::make_shared<opset6::Divide>(sub1, add_eps);
+
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
+
+        manager.register_pass<ov::pass::MVNFusion>();
+    }
+
+    {
+        auto input = std::make_shared<opset6::Parameter>(element::f32, Shape{1, 16, 409600, 1});
+        auto axes = opset6::Constant::create(element::i32, Shape{1}, {2});
+        auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::OUTSIDE_SQRT);
+
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -201,7 +240,7 @@ TEST_F(TransformationTestsF, MVNFusionTestInsideSqrt) {
         auto power_div = std::make_shared<opset6::Power>(power_sqrt, const_neg_1);
         auto div = std::make_shared<opset6::Multiply>(sub1, power_div);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -211,7 +250,7 @@ TEST_F(TransformationTestsF, MVNFusionTestInsideSqrt) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::INSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -233,7 +272,7 @@ TEST_F(TransformationTestsF, MVNFusionTestReuseSubInsideSqrt) {
         auto power_div = std::make_shared<opset6::Power>(power_sqrt, const_neg_1);
         auto div = std::make_shared<opset6::Multiply>(sub1, power_div);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -243,7 +282,7 @@ TEST_F(TransformationTestsF, MVNFusionTestReuseSubInsideSqrt) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::INSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -266,7 +305,7 @@ TEST_F(TransformationTestsF, MVNFusionTestWithConvertInsideSqrt) {
         auto power_div = std::make_shared<opset6::Power>(power_sqrt, const_neg_1);
         auto div = std::make_shared<opset6::Multiply>(sub1, power_div);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -276,7 +315,7 @@ TEST_F(TransformationTestsF, MVNFusionTestWithConvertInsideSqrt) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::INSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -297,7 +336,7 @@ TEST_F(TransformationTestsF, MVNFusionTestSqrtInsideSqrt) {
         auto power_div = std::make_shared<opset6::Power>(power_sqrt, const_neg_1);
         auto div = std::make_shared<opset6::Multiply>(sub1, power_div);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -307,7 +346,7 @@ TEST_F(TransformationTestsF, MVNFusionTestSqrtInsideSqrt) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::INSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -327,7 +366,7 @@ TEST_F(TransformationTestsF, MVNFusionTestAltDivInsideSqrt) {
         auto power_sqrt = std::make_shared<opset6::Power>(add_eps, const_0_5);
         auto div = std::make_shared<opset6::Divide>(sub1, power_sqrt);
 
-        model = std::make_shared<ov::Model>(NodeVector{div}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{div}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -337,7 +376,7 @@ TEST_F(TransformationTestsF, MVNFusionTestAltDivInsideSqrt) {
         auto axes = opset6::Constant::create(element::i32, Shape{3}, {1, 2, 3});
         auto mvn = std::make_shared<opset6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::INSIDE_SQRT);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{mvn}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }
 
@@ -361,7 +400,7 @@ TEST_F(TransformationTestsF, MVNFusionTestWithParametersInside) {
         auto sub = std::make_shared<opset6::Subtract>(beta, mul2);
         auto add = std::make_shared<opset6::Add>(mul1, sub);
 
-        model = std::make_shared<ov::Model>(NodeVector{add}, ParameterVector{input});
+        model = std::make_shared<ov::Model>(OutputVector{add}, ParameterVector{input});
 
         manager.register_pass<ov::pass::MVNFusion>();
     }
@@ -375,6 +414,117 @@ TEST_F(TransformationTestsF, MVNFusionTestWithParametersInside) {
         auto beta = opset6::Constant::create(element::f32, Shape{}, {-1});
         auto add = std::make_shared<opset6::Add>(mul_gamma, beta);
 
-        model_ref = std::make_shared<ov::Model>(NodeVector{add}, ParameterVector{input});
+        model_ref = std::make_shared<ov::Model>(OutputVector{add}, ParameterVector{input});
+    }
+}
+
+// Cohere-style MVN: rsqrt decomposition with inside-sqrt eps
+// Graph: Multiply(Subtract(x, ReduceMean(x)), Divide(1, Sqrt(Add(ReduceMean(Power(sub, 2)), eps))))
+TEST_F(TransformationTestsF, MVNFusionTestRsqrtInsideSqrt) {
+    comparator.enable(FunctionsComparator::CmpValues::ATTRIBUTES);
+    comparator.enable(FunctionsComparator::CmpValues::CONST_VALUES);
+
+    {
+        auto input = std::make_shared<ov::op::v0::Parameter>(element::f32, Shape{1, 3, 224});
+        auto mean1_axes = ov::op::v0::Constant::create(element::i32, Shape{1}, {2});
+        auto mean1 = std::make_shared<ov::op::v1::ReduceMean>(input, mean1_axes, true);
+        auto sub1 = std::make_shared<ov::op::v1::Subtract>(input, mean1);
+        auto const_2 = ov::op::v0::Constant::create(element::f32, Shape{}, {2});
+        auto power_sqr = std::make_shared<ov::op::v1::Power>(sub1, const_2);
+        auto mean3_axes = ov::op::v0::Constant::create(element::i32, Shape{1}, {2});
+        auto mean3 = std::make_shared<ov::op::v1::ReduceMean>(power_sqr, mean3_axes, true);
+        auto eps = ov::op::v0::Constant::create(element::f32, Shape{}, {1e-9});
+        auto add_eps = std::make_shared<ov::op::v1::Add>(mean3, eps);
+        auto sqrt_node = std::make_shared<ov::op::v0::Sqrt>(add_eps);
+        auto const_1 = ov::op::v0::Constant::create(element::f32, Shape{}, {1.0});
+        auto rsqrt = std::make_shared<ov::op::v1::Divide>(const_1, sqrt_node);
+        auto result = std::make_shared<ov::op::v1::Multiply>(sub1, rsqrt);
+
+        model = std::make_shared<ov::Model>(OutputVector{result}, ParameterVector{input});
+
+        manager.register_pass<ov::pass::MVNFusion>();
+    }
+
+    {
+        auto input = std::make_shared<ov::op::v0::Parameter>(element::f32, Shape{1, 3, 224});
+        auto axes = ov::op::v0::Constant::create(element::i32, Shape{1}, {2});
+        auto mvn = std::make_shared<ov::op::v6::MVN>(input, axes, true, 1e-9f, op::MVNEpsMode::INSIDE_SQRT);
+
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
+    }
+}
+
+// Cohere-style MVN with f16 compressed constants: all constants (const_2, const_1, eps) wrapped in Convert
+TEST_F(TransformationTestsF, MVNFusionTestRsqrtWithConvertedConstants) {
+    comparator.enable(FunctionsComparator::CmpValues::ATTRIBUTES);
+    comparator.enable(FunctionsComparator::CmpValues::CONST_VALUES);
+
+    {
+        auto input = std::make_shared<ov::op::v0::Parameter>(element::f32, Shape{1, 3, 224});
+        auto mean1_axes = ov::op::v0::Constant::create(element::i32, Shape{1}, {2});
+        auto mean1 = std::make_shared<ov::op::v1::ReduceMean>(input, mean1_axes, true);
+        auto sub1 = std::make_shared<ov::op::v1::Subtract>(input, mean1);
+        auto const_2_f16 = ov::op::v0::Constant::create(element::f16, Shape{}, {2});
+        auto const_2_convert = std::make_shared<ov::op::v0::Convert>(const_2_f16, element::f32);
+        auto power_sqr = std::make_shared<ov::op::v1::Power>(sub1, const_2_convert);
+        auto mean3_axes = ov::op::v0::Constant::create(element::i32, Shape{1}, {2});
+        auto mean3 = std::make_shared<ov::op::v1::ReduceMean>(power_sqr, mean3_axes, true);
+        auto eps_f16 = ov::op::v0::Constant::create(element::f16, Shape{}, {9.765625e-04f});
+        auto eps_convert = std::make_shared<ov::op::v0::Convert>(eps_f16, element::f32);
+        auto add_eps = std::make_shared<ov::op::v1::Add>(mean3, eps_convert);
+        auto sqrt_node = std::make_shared<ov::op::v0::Sqrt>(add_eps);
+        auto const_1_f16 = ov::op::v0::Constant::create(element::f16, Shape{}, {1.0});
+        auto const_1_convert = std::make_shared<ov::op::v0::Convert>(const_1_f16, element::f32);
+        auto rsqrt = std::make_shared<ov::op::v1::Divide>(const_1_convert, sqrt_node);
+        auto result = std::make_shared<ov::op::v1::Multiply>(sub1, rsqrt);
+
+        model = std::make_shared<ov::Model>(OutputVector{result}, ParameterVector{input});
+
+        manager.register_pass<ov::pass::MVNFusion>();
+    }
+
+    {
+        auto input = std::make_shared<ov::op::v0::Parameter>(element::f32, Shape{1, 3, 224});
+        auto axes = ov::op::v0::Constant::create(element::i32, Shape{1}, {2});
+        auto mvn = std::make_shared<ov::op::v6::MVN>(input, axes, true, 9.765625e-04f, op::MVNEpsMode::INSIDE_SQRT);
+
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
+    }
+}
+
+TEST_F(TransformationTestsF, MVNFusionTestRsqrtWithNarrowedEpsilon) {
+    comparator.enable(FunctionsComparator::CmpValues::ATTRIBUTES);
+    comparator.enable(FunctionsComparator::CmpValues::CONST_VALUES);
+
+    {
+        auto input = std::make_shared<ov::op::v0::Parameter>(element::f16, Shape{1, 3, 224});
+        auto mean1_axes = ov::op::v0::Constant::create(element::i32, Shape{1}, {2});
+        auto mean1 = std::make_shared<ov::op::v1::ReduceMean>(input, mean1_axes, true);
+        auto sub1 = std::make_shared<ov::op::v1::Subtract>(input, mean1);
+        auto const_2 = ov::op::v0::Constant::create(element::f16, Shape{}, {2});
+        auto power_sqr = std::make_shared<ov::op::v1::Power>(sub1, const_2);
+        auto mean3_axes = ov::op::v0::Constant::create(element::i32, Shape{1}, {2});
+        auto mean3 = std::make_shared<ov::op::v1::ReduceMean>(power_sqr, mean3_axes, true);
+        auto eps_f32 = ov::op::v0::Constant::create(element::f32, Shape{}, {1.0004f});
+        auto eps_convert = std::make_shared<ov::op::v0::Convert>(eps_f32, element::f16);
+        auto add_eps = std::make_shared<ov::op::v1::Add>(mean3, eps_convert);
+        auto sqrt_node = std::make_shared<ov::op::v0::Sqrt>(add_eps);
+        auto const_1 = ov::op::v0::Constant::create(element::f16, Shape{}, {1});
+        auto rsqrt = std::make_shared<ov::op::v1::Divide>(const_1, sqrt_node);
+        auto result = std::make_shared<ov::op::v1::Multiply>(sub1, rsqrt);
+
+        model = std::make_shared<ov::Model>(OutputVector{result}, ParameterVector{input});
+
+        manager.register_pass<ov::pass::MVNFusion>();
+    }
+
+    {
+        auto input = std::make_shared<ov::op::v0::Parameter>(element::f16, Shape{1, 3, 224});
+        auto axes = ov::op::v0::Constant::create(element::i32, Shape{1}, {2});
+        // Use a difference greater than the attribute comparator's 1e-4 tolerance to detect the wrong value.
+        // The f32 epsilon value 1.0004f is rounded to 1.0f by the conversion to f16.
+        auto mvn = std::make_shared<ov::op::v6::MVN>(input, axes, true, 1.0f, op::MVNEpsMode::INSIDE_SQRT);
+
+        model_ref = std::make_shared<ov::Model>(OutputVector{mvn}, ParameterVector{input});
     }
 }

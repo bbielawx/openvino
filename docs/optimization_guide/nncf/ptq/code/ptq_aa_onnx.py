@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 #! [dataset]
@@ -9,7 +9,7 @@ calibration_loader = torch.utils.data.DataLoader(...)
 
 def transform_fn(data_item):
     images, _ = data_item
-    return {input_name: images.numpy()} # input_name should be taken from the model, 
+    return {input_name: images.numpy()} # input_name should be taken from the model,
                                         # e.g. model.graph.input[0].name
 
 calibration_dataset = nncf.Dataset(calibration_loader, transform_fn)
@@ -63,8 +63,11 @@ quantized_model = nncf.quantize_with_accuracy_control(
 #! [inference]
 import openvino as ov
 
-# convert ONNX model to OpenVINO model
-ov_quantized_model = ov.convert_model(quantized_model)
+# use a temporary file to convert ONNX model to OpenVINO model
+quantized_model_path = "quantized_model.onnx"
+onnx.save(quantized_model, quantized_model_path)
+
+ov_quantized_model = ov.convert_model(quantized_model_path)
 
 # compile the model to transform quantized operations to int8
 model_int8 = ov.compile_model(ov_quantized_model)

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,7 +20,7 @@ struct shuffle_channels_impl : typed_primitive_impl_ocl<shuffle_channels> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::shuffle_channels_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<shuffle_channels_impl>(*this);
+        return make_deep_copy<shuffle_channels_impl, kernel_params_t>(*this);
     }
 
     static kernel_params_t get_kernel_params(const kernel_impl_params& impl_param) {
@@ -30,8 +30,9 @@ struct shuffle_channels_impl : typed_primitive_impl_ocl<shuffle_channels> {
         const int32_t number_of_dims = 4;
         int32_t axis = primitive->axis;
 
-        if (axis < 0)
+        if (axis < 0) {
             axis += number_of_dims;
+        }
 
         params.group = primitive->group;
         params.axis = axis;

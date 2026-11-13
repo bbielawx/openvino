@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,35 +6,33 @@
 
 #include <algorithm>
 #include <numeric>
+#include <stack>
 
 #include "bound_evaluate.hpp"
 #include "compare.hpp"
 #include "openvino/core/constant_fold_utils.hpp"
 #include "openvino/core/dimension.hpp"
 #include "openvino/op/concat.hpp"
+#include "openvino/op/convert.hpp"
 #include "openvino/op/gather.hpp"
 #include "openvino/op/negative.hpp"
-#include "openvino/op/ops.hpp"
+#include "openvino/op/util/framework_node.hpp"
+#include "openvino/op/util/op_types.hpp"
+#include "openvino/op/util/shape_of_base.hpp"
 #include "openvino/pass/constant_folding.hpp"
 #include "openvino/util/common_util.hpp"
 #include "sequence_generator.hpp"
+#include "utils.hpp"
 
 namespace {
-const auto normalize_axis_to = [](const int64_t& tensor_rank) {
-    return [&tensor_rank](int64_t& axis) {
-        if (axis < 0) {
-            axis += tensor_rank;
-        }
-    };
-};
 
-std::string normalize_axis_error_msg(const int64_t& axis, const int64_t& lower, const int64_t& upper) {
-    return std::string(" Parameter axis ")
+std::string normalize_axis_error_msg(const int64_t axis, const int64_t rank) {
+    return std::string("Axis ")
         .append(std::to_string(axis))
         .append(" out of the tensor rank range [")
-        .append(std::to_string(lower))
+        .append(std::to_string(rank == 0 ? -1 : -rank))
         .append(", ")
-        .append(std::to_string(upper))
+        .append(std::to_string(rank == 0 ? 0 : rank - 1))
         .append("].");
 }
 
@@ -46,11 +44,10 @@ ov::OutputVector get_inputs_from_map(const std::shared_ptr<ov::Node>& node,
     inputs.reserve(num_inputs);
 
     for (size_t i = 0; i < num_inputs; i++) {
-        auto input = node->input_value(i);
-        if (node_map.count(input) > 0) {
+        if (auto input = node->input_value(i); node_map.count(input) > 0) {
             inputs.push_back(node_map.at(input));
         } else {
-            inputs.push_back(input);
+            inputs.push_back(std::move(input));
         }
     }
 
@@ -59,7 +56,7 @@ ov::OutputVector get_inputs_from_map(const std::shared_ptr<ov::Node>& node,
 
 }  // namespace
 
-int64_t ov::util::normalize(const int64_t& value, const int64_t& max) {
+int64_t ov::util::normalize(const int64_t value, const int64_t max) {
     return (value < 0) ? value + max : value;
 };
 
@@ -110,14 +107,13 @@ std::shared_ptr<ov::op::v0::Constant> ov::util::constantfold_subgraph(const ov::
         }
 
         auto original_node = node;
-        const auto inputs = get_inputs_from_map(node, node_map);
 
         if (ov::util::node_requires_precision_conversion(node.get())) {
-            node = ov::util::convert_to_supported_precision(node.get(), inputs);
+            node = ov::util::convert_to_supported_precision(node.get(), get_inputs_from_map(node, node_map));
         }
 
-        OutputVector outputs(node->get_output_size());
-        if (node->constant_fold(outputs, inputs)) {
+        if (OutputVector outputs(node->get_output_size());
+            node->constant_fold(outputs, get_inputs_from_map(node, node_map))) {
             stack.pop();
             for (size_t i = 0; i < outputs.size(); i++) {
                 node_map[original_node->output(i)] = outputs[i].get_node_shared_ptr();
@@ -130,9 +126,9 @@ std::shared_ptr<ov::op::v0::Constant> ov::util::constantfold_subgraph(const ov::
                     stack.push(input.get_node_shared_ptr());
                 }
             }
-            // if none of the inputs was pushed to stack, it means the node that was not constantfolded
-            // is processed the second time. If that case - the node is not constfoldable.
-            // A good example would be a node that all of its inputs are constants and yet it cannot be constantfolded
+            // if none of the inputs was pushed to stack, it means the node that was not constant folded
+            // is processed the second time. If that case - the node is not constant foldable.
+            // A good example would be a node that all of its inputs are constants and yet it cannot be constant folded
             // for some reason (like lack of evaluate, it's a op::util::FrameworkNode, etc.).
             if (stack_size_before == stack.size()) {
                 return nullptr;
@@ -157,13 +153,20 @@ namespace util {
 using ov::op::v0::Constant;
 
 std::shared_ptr<Constant> get_constant_from_source(const ov::Output<ov::Node>& source) {
-    if (const auto& c = ov::as_type_ptr<Constant>(source.get_node_shared_ptr())) {
+    if (!source.get_node()) {
+        return {};
+    } else if (const auto& c = ov::as_type_ptr<Constant>(source.get_node_shared_ptr())) {
         return c;
     } else if (has_and_set_equal_bounds(source)) {
         return std::make_shared<Constant>(source.get_tensor().get_upper_value());
     } else {
         return {};
     }
+}
+
+bool is_empty_constant_tensor(const Output<Node>& source) {
+    const auto constant = ov::as_type_ptr<Constant>(source.get_node_shared_ptr());
+    return constant != nullptr && ov::shape_size(constant->get_shape()) == 0;
 }
 
 template <class T>
@@ -287,7 +290,7 @@ bool evaluate_as_partial_shape(const ov::Output<ov::Node>& output, ov::PartialSh
         const TensorSymbol& symbols = output.get_tensor().get_value_symbol();
         OPENVINO_ASSERT(symbols.empty() || lower_bound.size() == symbols.size());
 
-        std::vector<Dimension> resulting_pshape(lower_bound.size());
+        pshape.resize(lower_bound.size());
         for (size_t i = 0; i < lower_bound.size(); ++i) {
             auto low = lower_bound[i], up = upper_bound[i];
             OPENVINO_ASSERT(low >= 0 && up >= 0, "Value for partial shape evaluation can't be lower than zero.");
@@ -297,11 +300,10 @@ bool evaluate_as_partial_shape(const ov::Output<ov::Node>& output, ov::PartialSh
                 if (low == std::numeric_limits<std::int32_t>::max())
                     low = std::numeric_limits<std::int64_t>::max();
             }
-            resulting_pshape[i] = {low, up};
+            pshape[i] = {low, up};
             if (!symbols.empty())
-                resulting_pshape[i].set_symbol(symbols[i]);
+                pshape[i].set_symbol(symbols[i]);
         }
-        pshape = ov::PartialShape(resulting_pshape);
         shape_defined = true;
     }
     return shape_defined;
@@ -325,68 +327,55 @@ bool has_no_symbols(const ov::TensorSymbol& symbols) {
     return std::all_of(symbols.cbegin(), symbols.cend(), cmp::Equal<std::shared_ptr<ov::Symbol>>(nullptr));
 }
 
-std::vector<size_t> normalize_axes(const std::string& node_description,
-                                   const std::vector<int64_t>& axes,
-                                   const Rank& tensor_rank) {
-    std::vector<size_t> new_axes;
-    new_axes.reserve(axes.size());
+bool is_axis_valid(int64_t axis, int64_t rank) {
+    return (axis == 0) || (axis == -1) || (-rank <= axis && axis < rank);
+}
+
+void validate_axis(const int64_t axis, const Rank& rank, const Node& node) {
+    const auto r = rank.get_length();
+    NODE_VALIDATION_CHECK(&node, is_axis_valid(axis, r), normalize_axis_error_msg(axis, r));
+}
+
+size_t normalize_axis(const int64_t axis, const int64_t rank) {
+    return rank > 0 ? static_cast<size_t>(normalize(axis, rank)) : 0U;
+}
+
+size_t try_normalize_axis(const int64_t axis, const Rank& rank) {
+    const auto r = rank.get_length();
+    OPENVINO_ASSERT(is_axis_valid(axis, r), normalize_axis_error_msg(axis, r));
+    return normalize_axis(axis, r);
+}
+
+size_t try_normalize_axis(const int64_t axis, const Rank& rank, const Node& node) {
+    validate_axis(axis, rank, node);
+    return normalize_axis(axis, rank.get_length());
+}
+
+void validate_axes(const std::vector<int64_t>& axes, const Rank& rank, const Node& node) {
     for (const auto& axis : axes) {
-        new_axes.push_back(ov::util::normalize_axis(node_description, axis, tensor_rank));
+        validate_axis(axis, rank, node);
     }
-    return new_axes;
 }
 
-void normalize_axes(const ov::Node* node, const int64_t& tensor_rank, std::vector<int64_t>& axes) {
-    const auto axis_checker = cmp::Between<int64_t, cmp::BOTH>(-tensor_rank, tensor_rank ? (tensor_rank - 1) : 0);
-    const auto invalid_axis = std::find_if_not(axes.cbegin(), axes.cend(), axis_checker);
-    NODE_VALIDATION_CHECK(node,
-                          invalid_axis == axes.cend(),
-                          normalize_axis_error_msg(*invalid_axis, axis_checker.lower(), axis_checker.upper()));
-    std::for_each(axes.begin(), axes.end(), normalize_axis_to(tensor_rank));
-}
-
-int64_t normalize_axis(const ov::Node* node, std::int64_t axis, const Rank& tensor_rank) {
-    return ov::util::normalize_axis(node->description(), axis, tensor_rank);
-}
-
-int64_t normalize_axis(const std::string& node_description, std::int64_t axis, const Rank& tensor_rank) {
-    if (axis < 0) {
-        // Handling negative axis requires static tensor rank
-        OPENVINO_ASSERT(tensor_rank.is_static(),
-                        node_description,
-                        " Rank must be static in order to normalize negative axis=",
-                        axis);
+void normalize_axes(std::vector<int64_t>& axes, const int64_t rank) {
+    for (auto&& axis : axes) {
+        axis = rank > 0 ? normalize(axis, rank) : 0;
     }
-    if (tensor_rank.is_dynamic()) {
-        return axis;
-    }
-
-    const auto tensor_rank_value = tensor_rank.get_length();
-    return normalize_axis(node_description,
-                          axis,
-                          tensor_rank_value,
-                          -tensor_rank_value,
-                          tensor_rank_value ? (tensor_rank_value - 1) : 0);
 }
 
-int64_t normalize_axis(const ov::Node* node,
-                       std::int64_t axis,
-                       std::uint64_t tensor_rank,
-                       std::int64_t axis_range_min,
-                       std::int64_t axis_range_max) {
-    return normalize_axis(node->description(), axis, tensor_rank, axis_range_min, axis_range_max);
+void try_normalize_axes(std::vector<int64_t>& axes, const Rank& rank, const Node& node) {
+    validate_axes(axes, rank, node);
+    normalize_axes(axes, rank.get_length());
 }
 
-int64_t normalize_axis(const std::string& node_description,
-                       std::int64_t axis,
-                       std::uint64_t tensor_rank,
-                       std::int64_t axis_range_min,
-                       std::int64_t axis_range_max) {
-    // Accepted range of value for axis is [axis_range_min, axis_range_max].
-    OPENVINO_ASSERT((axis_range_min <= axis) && (axis <= axis_range_max),
-                    node_description,
-                    normalize_axis_error_msg(axis, axis_range_min, axis_range_max));
-    return normalize(axis, tensor_rank);
+AxisVector try_get_normalized_axis_vector(const Tensor& tensor, const Rank& rank, const Node& node) {
+    auto axes_values = ov::get_tensor_data_as<int64_t>(tensor);
+    try_normalize_axes(axes_values, rank, node);
+    return {axes_values.begin(), axes_values.end()};
+}
+
+AxisSet try_get_normalized_axis_set(const Tensor& tensor, const Rank& rank, const Node& node) {
+    return {try_get_normalized_axis_vector(tensor, rank, node)};
 }
 }  // namespace util
 }  // namespace ov

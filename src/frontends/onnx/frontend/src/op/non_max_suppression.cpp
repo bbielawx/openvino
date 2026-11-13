@@ -1,22 +1,18 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "openvino/op/non_max_suppression.hpp"
 
 #include "core/null_node.hpp"
+#include "core/operator_set.hpp"
 #include "exceptions.hpp"
 #include "openvino/op/constant.hpp"
 #include "utils/reshape.hpp"
-
 using namespace ov::op;
 using ov::Shape;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 ov::OutputVector non_max_suppression(const ov::frontend::onnx::Node& node) {
     using ov::op::util::is_null;
     // TODO: this op will not be tested until at least
@@ -65,8 +61,5 @@ ov::OutputVector non_max_suppression(const ov::frontend::onnx::Node& node) {
                                                     false)};
 }
 
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("NonMaxSuppression", OPSET_SINCE(1), ai_onnx::opset_1::non_max_suppression);
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

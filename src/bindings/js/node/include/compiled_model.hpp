@@ -1,5 +1,6 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
+//
 
 #pragma once
 
@@ -32,6 +33,9 @@ public:
     /** @brief Sets a _compiled_model property of a CompiledModelWrap object. Used e.g. when creating CompiledModelWrap
      * object on node-addon side. */
     void set_compiled_model(const ov::CompiledModel& compiled_model);
+
+    /** @brief Gets a _compiled_model property of a CompiledModelWrap object.  */
+    ov::CompiledModel& get_compiled_model();
 
     /** @return A Javascript InferRequest */
     Napi::Value create_infer_request(const Napi::CallbackInfo& info);
@@ -71,11 +75,27 @@ public:
     /** @brief Exports the compiled model to bytes/output stream. */
     Napi::Value export_model(const Napi::CallbackInfo& info);
 
+    /**
+     * @brief Sets properties for current compiled model.
+     * @param info Contains information about the environment and passed arguments,
+     * this method accepts only one argument of type object.
+     * @return Napi::Undefined
+     */
+    Napi::Value set_property(const Napi::CallbackInfo& info);
+
+    /**
+     * @brief Gets property for current compiled model.
+     * @param info Contains information about the environment and passed arguments,
+     * this method accepts only one argument of type string.
+     * @return A Napi::Value
+     */
+    Napi::Value get_property(const Napi::CallbackInfo& info);
+
 private:
     /** @brief Gets node of a compiled model specified in CallbackInfo. */
     Napi::Value get_node(const Napi::CallbackInfo& info,
                          const ov::Output<const ov::Node>& (ov::CompiledModel::*func)() const,
-                         const ov::Output<const ov::Node>& (ov::CompiledModel::*func_tname)(const std::string&)const,
+                         const ov::Output<const ov::Node>& (ov::CompiledModel::*func_tname)(const std::string&) const,
                          const ov::Output<const ov::Node>& (ov::CompiledModel::*func_idx)(size_t) const);
 
     ov::CompiledModel _compiled_model;

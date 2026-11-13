@@ -1,40 +1,42 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "nodes/executors/eltwise_config.hpp"
 #ifdef CPU_DEBUG_CAPS
-#pragma once
+#    pragma once
 
-#include <ostream>
-#include "executor_config.hpp"
+#    include <ostream>
 
-namespace ov {
-namespace intel_cpu {
+#    include "executor_config.hpp"
+
+namespace ov::intel_cpu {
 
 namespace executor {
-template<typename Attrs> struct Config;
+template <typename Attrs>
+struct Config;
 }
 
 struct FCAttrs;
+struct ConvAttrs;
 
-std::ostream & operator<<(std::ostream & os, const FCAttrs& attrs);
-std::ostream & operator<<(std::ostream & os, const PostOps& postOps);
+std::ostream& operator<<(std::ostream& os, const FCAttrs& attrs);
+std::ostream& operator<<(std::ostream& os, const ConvAttrs& attrs);
+std::ostream& operator<<(std::ostream& os, const EltwiseAttrs& attrs);
 
-template<typename Attrs>
-std::ostream & operator<<(std::ostream & os, const executor::Config<Attrs>& config) {
+template <typename Attrs>
+std::ostream& operator<<(std::ostream& os, const executor::Config<Attrs>& config) {
     for (const auto& desc : config.descs) {
         const auto id = desc.first;
         const auto descPtr = desc.second;
         os << "[" << id << "]" << *descPtr << ";";
     }
 
-    os << config.postOps;
     os << config.attrs;
 
     return os;
 }
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu
 
-#endif // CPU_DEBUG_CAPS
+#endif  // CPU_DEBUG_CAPS

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -28,6 +28,8 @@
 #include "ov_lpt_models/concat.hpp"
 #include "ov_lpt_models/common/builders.hpp"
 #include "ov_lpt_models/common/fake_quantize_on_data.hpp"
+#include "openvino/op/avg_pool.hpp"
+#include "openvino/op/concat.hpp"
 
 using namespace testing;
 using namespace ov;
@@ -64,7 +66,6 @@ public:
     ov::builder::subgraph::FakeQuantizeOnDataWithConstant fakeQuantize2;
     ov::builder::subgraph::DequantizationOperations::Convert convert2;
     ov::builder::subgraph::DequantizationOperations dequantization2;
-    ov::element::Type precisionAfterOperation;
     ov::builder::subgraph::DequantizationOperations dequantizationAfter;
 };
 
@@ -150,7 +151,6 @@ public:
             testValues.actual.dequantization2,
             true,
             {},
-            ov::element::undefined,
             {},
             testValues.axis,
             testValues.addNotPrecisionPreservedOperation);
@@ -222,7 +222,6 @@ public:
                 ov::IntervalsAlignmentAttribute(ov::IntervalsAlignmentSharedValue::Interval{-1.28f, 2.55f}, 256ul),
                 ov::QuantizationAlignmentAttribute(false)
             },
-            testValues.result.precisionAfterOperation,
             testValues.result.dequantizationAfter,
             testValues.axis,
             testValues.addNotPrecisionPreservedOperation);
@@ -293,7 +292,6 @@ const std::vector<ConcatWithNotQuantizedParentTransformationTestValues> testValu
             { 256ul, {}, {0.f}, {2.55f}, {0.f}, {2.55f} },
             {},
             {},
-            ov::element::f32,
             {},
         }
     }

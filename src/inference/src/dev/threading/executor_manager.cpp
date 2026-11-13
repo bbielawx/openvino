@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,7 +7,7 @@
 #include "openvino/core/parallel.hpp"
 #include "openvino/runtime/properties.hpp"
 #include "openvino/runtime/threading/cpu_streams_executor.hpp"
-#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO
+#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO || OV_THREAD == OV_THREAD_TBB_ADAPTIVE
 #    if (TBB_INTERFACE_VERSION < 12000)
 #        include <tbb/task_scheduler_init.h>
 #    else
@@ -34,8 +34,7 @@ public:
     void clear(const std::string& id = {}) override;
     void set_property(const ov::AnyMap& properties) override;
     ov::Any get_property(const std::string& name) const override;
-    void execute_task_by_streams_executor(ov::threading::IStreamsExecutor::Config::PreferredCoreType core_type,
-                                          ov::threading::Task task) override;
+    void execute_task_by_streams_executor(ov::hint::SchedulingCoreType core_type, ov::threading::Task task) override;
 
 private:
     void reset_tbb();
@@ -48,7 +47,7 @@ private:
     bool tbbTerminateFlag = false;
     mutable std::mutex global_mutex;
     bool tbbThreadsCreated = false;
-#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO
+#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO || OV_THREAD == OV_THREAD_TBB_ADAPTIVE
 #    if (TBB_INTERFACE_VERSION < 12000)
     std::shared_ptr<tbb::task_scheduler_init> tbbTaskScheduler = nullptr;
 #    else
@@ -68,7 +67,7 @@ void ExecutorManagerImpl::set_property(const ov::AnyMap& properties) {
     for (const auto& it : properties) {
         if (it.first == ov::force_tbb_terminate.name()) {
             tbbTerminateFlag = it.second.as<bool>();
-#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO
+#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO || OV_THREAD == OV_THREAD_TBB_ADAPTIVE
             if (tbbTerminateFlag) {
                 if (!tbbTaskScheduler) {
 #    if (TBB_INTERFACE_VERSION < 12000)
@@ -98,7 +97,7 @@ ov::Any ExecutorManagerImpl::get_property(const std::string& name) const {
 void ExecutorManagerImpl::reset_tbb() {
     std::lock_guard<std::mutex> guard(global_mutex);
     if (tbbTerminateFlag) {
-#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO
+#if OV_THREAD == OV_THREAD_TBB || OV_THREAD == OV_THREAD_TBB_AUTO || OV_THREAD == OV_THREAD_TBB_ADAPTIVE
         if (tbbTaskScheduler && tbbThreadsCreated) {
 #    if (TBB_INTERFACE_VERSION < 12000)
             tbbTaskScheduler->terminate();
@@ -171,19 +170,9 @@ void ExecutorManagerImpl::clear(const std::string& id) {
     }
 }
 
-void ExecutorManagerImpl::execute_task_by_streams_executor(
-    ov::threading::IStreamsExecutor::Config::PreferredCoreType core_type,
-    ov::threading::Task task) {
-    ov::threading::IStreamsExecutor::Config streamsConfig("StreamsExecutor",
-                                                          1,
-                                                          1,
-                                                          ov::threading::IStreamsExecutor::ThreadBindingType::NONE,
-                                                          1,
-                                                          0,
-                                                          0,
-                                                          core_type,
-                                                          {},
-                                                          false);
+void ExecutorManagerImpl::execute_task_by_streams_executor(ov::hint::SchedulingCoreType core_type,
+                                                           ov::threading::Task task) {
+    ov::threading::IStreamsExecutor::Config streamsConfig("StreamsExecutor", 1, 1, core_type, false, true);
     if (!streamsConfig.get_streams_info_table().empty()) {
         auto taskExecutor = std::make_shared<ov::threading::CPUStreamsExecutor>(streamsConfig);
         std::vector<Task> tasks{std::move(task)};

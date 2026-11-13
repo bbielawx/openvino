@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include <random>
@@ -16,13 +16,9 @@
 #include "openvino/op/shape_of.hpp"
 #include "openvino/op/sqrt.hpp"
 #include "pt_framework_node.hpp"
-#include "transformations/rt_info/disable_fp16_compression.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -81,8 +77,7 @@ OutputVector translate_rand(const NodeContext& context) {
         dtype_id = 2;
     }
     if (!context.input_is_none(dtype_id)) {
-        if (std::dynamic_pointer_cast<v0::Constant>(
-                context.get_input_from_visible_context(dtype_id).get_node_shared_ptr())) {
+        if (ov::as_type_ptr<v0::Constant>(context.get_input_from_visible_context(dtype_id).get_node_shared_ptr())) {
             dtype = convert_dtype(context.const_input<int64_t>(dtype_id));
             low = context.mark_node(std::make_shared<v0::Convert>(low, dtype));
             high = context.mark_node(std::make_shared<v0::Convert>(high, dtype));
@@ -121,7 +116,7 @@ OutputVector translate_rand_like(const NodeContext& context) {
     bool dtype_applied = true;
     Output<Node> convert_like_out;
     if (!context.input_is_none(1)) {
-        if (std::dynamic_pointer_cast<v0::Constant>(context.get_input_from_visible_context(1).get_node_shared_ptr())) {
+        if (ov::as_type_ptr<v0::Constant>(context.get_input_from_visible_context(1).get_node_shared_ptr())) {
             dtype = convert_dtype(context.const_input<int64_t>(1));
             low = context.mark_node(std::make_shared<v0::Convert>(low, dtype));
             high = context.mark_node(std::make_shared<v0::Convert>(high, dtype));
@@ -177,8 +172,7 @@ OutputVector translate_randn(const NodeContext& context) {
     bool dtype_applied = true;
     Output<Node> convert_like_out;
     if (!context.input_is_none(dtype_id)) {
-        if (std::dynamic_pointer_cast<v0::Constant>(
-                context.get_input_from_visible_context(dtype_id).get_node_shared_ptr())) {
+        if (ov::as_type_ptr<v0::Constant>(context.get_input_from_visible_context(dtype_id).get_node_shared_ptr())) {
             dtype = convert_dtype(context.const_input<int64_t>(dtype_id));
         } else if (const auto& fw_node =
                        cast_fw_node(context.get_input(static_cast<int>(dtype_id)).get_node_shared_ptr(),
@@ -219,7 +213,7 @@ OutputVector translate_randn_like(const NodeContext& context) {
     bool dtype_applied = true;
     Output<Node> convert_like_out;
     if (!context.input_is_none(1)) {
-        if (std::dynamic_pointer_cast<v0::Constant>(context.get_input_from_visible_context(1).get_node_shared_ptr())) {
+        if (ov::as_type_ptr<v0::Constant>(context.get_input_from_visible_context(1).get_node_shared_ptr())) {
             dtype = convert_dtype(context.const_input<int64_t>(1));
         } else if (const auto& fw_node =
                        cast_fw_node(context.get_input(static_cast<int>(1)).get_node_shared_ptr(), "prim::dtype")) {
@@ -250,7 +244,7 @@ OutputVector translate_randint(const NodeContext& context) {
     bool dtype_applied = true;
     Output<Node> convert_like_out;
     if (!context.input_is_none(3)) {
-        if (std::dynamic_pointer_cast<v0::Constant>(context.get_input_from_visible_context(3).get_node_shared_ptr())) {
+        if (ov::as_type_ptr<v0::Constant>(context.get_input_from_visible_context(3).get_node_shared_ptr())) {
             dtype = convert_dtype(context.const_input<int64_t>(3));
         } else if (const auto& fw_node =
                        cast_fw_node(context.get_input(static_cast<int>(3)).get_node_shared_ptr(), "prim::dtype")) {
@@ -288,16 +282,24 @@ OutputVector translate_normal(const NodeContext& context) {
     auto mean = context.get_input(0);
     auto std = context.get_input(1);
     auto dtype = element::f32;
-    if (context.get_input_size() == 3 || context.get_input_size() == 4) {
+    if (context.get_op_type().find("aten.normal.float_float") == 0) {
+        if (context.has_attribute("dtype")) {
+            dtype = context.get_attribute<element::Type>("dtype");
+        }
+        return make_random_normal(context, context.get_input(2), dtype, std, mean);
+    }
+    if (context.get_input_size() >= 2 && context.get_input_size() <= 4) {
         // aten::normal.Tensor_float(Tensor mean, float std=1., *, Generator? generator=None) -> Tensor
         // aten::normal.Tensor_Tensor(Tensor mean, Tensor std, *, Generator? generator=None) -> Tensor
+        // aten::normal.float_Tensor(float mean, Tensor std, *, Generator? generator=None) -> Tensor
         // aten::normal.Tensor_float_out(Tensor mean, float std=1., *, Generator? generator=None, Tensor(a!) out) ->
         // Tensor(a!)
-        // aten::normal.Tensor_float_out(Tensor mean, float std=1., *, Generator? generator=None, Tensor(a!)
+        // aten::normal.float_Tensor_out(float mean, Tensor std, *, Generator? generator=None, Tensor(a!)
         // out) -> Tensor(a!)
         // aten::normal.Tensor_Tensor_out(Tensor mean, Tensor std, *, Generator? generator=None,
         // Tensor(a!) out) -> Tensor(a!)
-        auto sizes = context.mark_node(std::make_shared<v3::ShapeOf>(mean, element::i32));
+        const auto tensor = is_python_scalar_input(context, 0) ? std : mean;
+        auto sizes = context.mark_node(std::make_shared<v3::ShapeOf>(tensor, element::i32));
         auto res = make_random_normal(context, sizes, dtype, std, mean);
         if (!context.input_is_none(3)) {
             // out
@@ -325,8 +327,7 @@ OutputVector translate_normal(const NodeContext& context) {
         Output<Node> convert_like_out;
         bool dtype_applied = true;
         if (!context.input_is_none(4)) {
-            if (std::dynamic_pointer_cast<v0::Constant>(
-                    context.get_input_from_visible_context(3).get_node_shared_ptr())) {
+            if (ov::as_type_ptr<v0::Constant>(context.get_input_from_visible_context(3).get_node_shared_ptr())) {
                 dtype = convert_dtype(context.const_input<int64_t>(4));
             } else if (const auto& fw_node = cast_fw_node(context.get_input(3).get_node_shared_ptr(), "prim::dtype")) {
                 convert_like_out = fw_node->input_value(0);
@@ -347,7 +348,4 @@ OutputVector translate_normal(const NodeContext& context) {
     }
 }
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -19,7 +19,7 @@ struct depth_to_space_impl : typed_primitive_impl_ocl<depth_to_space> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::depth_to_space_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<depth_to_space_impl>(*this);
+        return make_deep_copy<depth_to_space_impl, kernel_params_t>(*this);
     }
 
     static kernel_params_t get_kernel_params(const kernel_impl_params& impl_param) {
@@ -27,8 +27,13 @@ struct depth_to_space_impl : typed_primitive_impl_ocl<depth_to_space> {
         auto params = get_default_params<kernel_selector::depth_to_space_params>(impl_param);
 
         params.block_size = primitive->block_size;
-        params.mode = primitive->mode == depth_to_space_mode::blocks_first ? kernel_selector::depth_to_space_mode::BLOCKS_FIRST
-                                                                           : kernel_selector::depth_to_space_mode::DEPTH_FIRST;
+        params.mode = primitive->mode == depth_to_space_mode::blocks_first  ? kernel_selector::depth_to_space_mode::BLOCKS_FIRST
+                      : primitive->mode == depth_to_space_mode::depth_first ? kernel_selector::depth_to_space_mode::DEPTH_FIRST
+                                                                            : kernel_selector::depth_to_space_mode::GROUPED_DEPTH_FIRST;
+        params.factor_t = primitive->factor_t;
+        params.factor_s = primitive->factor_s;
+        params.output_channels = primitive->output_channels;
+        params.crop_begin_t = primitive->crop_begin_t;
         return params;
     }
 };

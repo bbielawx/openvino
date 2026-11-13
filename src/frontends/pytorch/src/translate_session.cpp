@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,22 +7,87 @@
 #include "helper_ops/gather_assign.hpp"
 #include "helper_ops/slice_assign.hpp"
 #include "input_model.hpp"
+#include "openvino/core/validation_util.hpp"
+#include "openvino/op/concat.hpp"
 #include "openvino/op/gather.hpp"
+#include "openvino/op/range.hpp"
+#include "openvino/op/reshape.hpp"
+#include "openvino/op/scatter_elements_update.hpp"
+#include "openvino/op/shape_of.hpp"
 #include "openvino/op/slice.hpp"
-#include "openvino/util/common_util.hpp"
+#include "openvino/op/split.hpp"
+#include "openvino/op/squeeze.hpp"
+#include "openvino/op/transpose.hpp"
+#include "openvino/op/unsqueeze.hpp"
+#include "openvino/op/variadic_split.hpp"
 #include "openvino/util/log.hpp"
 #include "place.hpp"
 #include "pt_framework_node.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
+namespace ov::frontend::pytorch {
 
 using namespace ov::op;
 
+namespace {
+// Alias views and their base values belong to the graph where they were converted.
+class AliasScope {
+public:
+    explicit AliasScope(TranslateSession& session) : m_session(session) {
+        m_aliases.swap(m_session.m_may_be_alias);
+        m_tuple_element_aliases.swap(m_session.m_tuple_element_aliases);
+    }
+
+    ~AliasScope() {
+        m_aliases.swap(m_session.m_may_be_alias);
+        m_tuple_element_aliases.swap(m_session.m_tuple_element_aliases);
+    }
+
+private:
+    TranslateSession& m_session;
+    decltype(TranslateSession::m_may_be_alias) m_aliases;
+    // Tensor ids are local to a graph, so tuple element aliases are scoped like other aliases.
+    decltype(TranslateSession::m_tuple_element_aliases) m_tuple_element_aliases;
+};
+
+// Helper to extract complex part element type from raw type
+element::Type get_complex_part_type(const Any& raw_type) {
+    element::Type complex_part_type = element::dynamic;
+    if (raw_type.is<type::Complex>()) {
+        const auto& complex_type = raw_type.as<type::Complex>();
+        if (complex_type.element_type.is<element::Type>()) {
+            complex_part_type = complex_type.element_type.as<element::Type>();
+        }
+    } else if (raw_type.is<type::Tensor>()) {
+        const auto& tensor_type = raw_type.as<type::Tensor>();
+        if (tensor_type.element_type.is<type::Complex>()) {
+            const auto& complex_type = tensor_type.element_type.as<type::Complex>();
+            if (complex_type.element_type.is<element::Type>()) {
+                complex_part_type = complex_type.element_type.as<element::Type>();
+            }
+        }
+    }
+    return complex_part_type;
+}
+
+// Helper to create parameter and register it in tensor_map, wrapping in ComplexTypeMark if needed
+void register_parameter_in_tensor_map(const std::shared_ptr<v0::Parameter>& parameter,
+                                      size_t input_id,
+                                      const Any& type_any,
+                                      const Any& raw_type,
+                                      const std::shared_ptr<std::unordered_map<size_t, Output<Node>>>& tensor_map) {
+    if (type_any.is<type::Complex>()) {
+        auto complex_part_type = get_complex_part_type(raw_type);
+        auto complex_mark = std::make_shared<ComplexTypeMark>(parameter->output(0), complex_part_type);
+        (*tensor_map)[input_id] = complex_mark;
+    } else {
+        (*tensor_map)[input_id] = parameter;
+    }
+}
+}  // namespace
+
 TranslateSession::TranslateSession(const ov::frontend::InputModel::Ptr& input_model,
-                                   const std::map<std::string, CreatorFunction>& translator_map,
+                                   const std::unordered_map<std::string, CreatorFunction>& translator_map,
                                    const std::shared_ptr<TelemetryExtension>& telemetry)
     : m_input_model(input_model),
       m_translator_map(translator_map),
@@ -51,8 +116,12 @@ std::shared_ptr<ov::Model> TranslateSession::translate_graph(const ov::frontend:
     FRONT_END_GENERAL_CHECK(pytorch_model != nullptr, "Invalid input model");
     auto model = convert_pytorch_model(pytorch_model->m_model_decoder, {}, pytorch_model);
     // First delete tensor indexes from outputs then resolve input names, otherwise Parameter->Result will fail
+    std::set<Output<Node>> named_outputs;
     for (auto& result : model->get_results()) {
         auto tensor_desc = result->input_value(0);
+        if (!named_outputs.insert(tensor_desc).second) {
+            continue;
+        }
         auto names = tensor_desc.get_names();
         if (!names.empty()) {
             auto tensor_idx = decode_tensor_name(tensor_desc);
@@ -68,6 +137,14 @@ std::shared_ptr<ov::Model> TranslateSession::translate_graph(const ov::frontend:
             param->output(0).set_names({param->get_friendly_name()});
         }
     }
+
+    // process model rt_info
+    auto rt_info = pytorch_model->get_decoder()->get_rt_info();
+    for (const auto& item : rt_info) {
+        model->set_rt_info(item.second, item.first);
+    }
+    model->set_rt_info(ov::Any(pytorch_model->decoder_type_name()), "decoder_type_name");
+
     return model;
 }
 
@@ -75,6 +152,10 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
     std::shared_ptr<TorchDecoder> pytorch_model,
     const TensorMap& external_tensor_map,
     const std::shared_ptr<pytorch::InputModel>& input_model) {
+    AliasScope alias_scope(*this);
+    // The decoder type is a property of the decoder class, so read it once per graph rather
+    // than per node; every access crosses into Python.
+    m_is_fx = pytorch_model->decoder_type_name() == "fx";
     std::shared_ptr<Model> resulting_model;  // define here to make a conversion in a nested scope
     {
         auto parameters = std::make_shared<ParameterVector>();
@@ -82,9 +163,10 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
         auto mutated_tensors = std::make_shared<std::set<size_t>>();
         std::vector<size_t> inserted_params;
 
-        if (input_model) {
+        if (input_model && input_model->m_requested_places.size() == 0) {
             // When we have input model we should use its inputs order to create Parameters
             // We use m_inputs instead of get_inputs() because latter doesn't have "self" input
+            // If there are fake places we don't need to use model inputs in that case
             for (auto& input_p : input_model->m_inputs) {
                 auto pytorch_place = std::dynamic_pointer_cast<pytorch::Place>(input_p);
                 FRONT_END_GENERAL_CHECK(pytorch_place, "Only place produced by PyTorch Frontend is supported.");
@@ -92,15 +174,11 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
                 element::Type type = pytorch_place->get_element_type();
                 PartialShape pshape = pytorch_place->get_partial_shape();
                 auto parameter = std::make_shared<v0::Parameter>(type, pshape);
-                if (pytorch_place->get_names().size() > 0)
-                    parameter->set_friendly_name(pytorch_place->get_names().at(0));
+                if (!pytorch_place->get_names().empty())
+                    parameter->set_friendly_name(pytorch_place->get_names().front());
                 encode_tensor_name(parameter->output(0), tensor_id);
-                parameters->push_back(parameter);
+                parameters->emplace_back(parameter);
                 (*tensor_map)[tensor_id] = parameter;
-            }
-            // Add all tensors that were frozen
-            for (auto& desc : input_model->m_descriptors) {
-                (*tensor_map)[desc.first] = desc.second.m_value;
             }
         } else {
             // Go over all pytorch_model inputs and register them in the tensor map:
@@ -108,7 +186,8 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
             for (size_t i = 0; i < inputs.size(); ++i) {
                 element::Type type = element::dynamic;
                 PartialShape pshape = pytorch_model->get_input_shape(i);
-                auto type_any = simplified_type_interpret(pytorch_model->get_input_type(i));
+                auto raw_type = pytorch_model->get_input_type(i);
+                auto type_any = simplified_type_interpret(raw_type);
                 // TODO: Use special API to set custom type specification
                 if (type_any.is<element::Type>()) {
                     type = type_any.as<element::Type>();
@@ -116,8 +195,15 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
                 auto parameter = std::make_shared<v0::Parameter>(type, pshape);
                 parameter->set_friendly_name(pytorch_model->get_input_signature_name(i));
                 encode_tensor_name(parameter->output(0), inputs.at(i), {pytorch_model->get_input_debug_name(i)});
-                parameters->push_back(parameter);
-                (*tensor_map)[inputs.at(i)] = parameter;
+                parameters->emplace_back(parameter);
+
+                register_parameter_in_tensor_map(parameter, inputs.at(i), type_any, raw_type, tensor_map);
+            }
+        }
+        if (input_model) {
+            // Add all tensors that were frozen
+            for (auto& desc : input_model->m_descriptors) {
+                (*tensor_map)[desc.first] = desc.second.m_value;
             }
         }
 
@@ -129,30 +215,43 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
             auto raw_inputs = node->inputs();
             for (size_t i = 0; i < raw_inputs.size(); ++i) {
                 auto input = raw_inputs.at(i);
+                // If inputs are inlined (possible only for fx decoder) we shouldn't add a Parameter for it
+                if (input == 0 && node->is_input_inlined(i)) {
+                    continue;
+                }
                 if (tensor_map->find(input) == tensor_map->end()) {
                     // Input refers value in the outer scope, need to create a new Parameter in the current scope
                     // Linkage to external scope will be performed on the level of the parent operation (if or loop)
                     // TODO: Eliminate duplication with the main code for Parameters creation
                     PartialShape ps = node->get_input_shape(i);
-                    auto type = simplified_type_interpret(node->get_input_type(i));
+                    auto raw_type = node->get_input_type(i);
+                    auto type = simplified_type_interpret(raw_type);
                     auto dtype = element::dynamic;
                     if (type.is<element::Type>()) {
                         dtype = type.as<element::Type>();
                     }
                     auto parameter = std::make_shared<v0::Parameter>(dtype, ps);
-                    (*tensor_map)[input] = parameter;
                     // set name of parameter to the index of node in the model
                     encode_tensor_name(parameter->output(0), input);
                     parameters->push_back(parameter);
                     inserted_params.push_back(input);
+
+                    register_parameter_in_tensor_map(parameter, input, type, raw_type, tensor_map);
                 }
             }
             auto context = NodeContext(node, external_tensor_map, tensor_map, parameters, mutated_tensors, this);
             // Add op type in the statistics
             m_op_statistics[context.get_op_type()]++;
             auto converted_outputs = convert_node(context);
+            const bool has_out = m_is_fx && context.has_attribute("out");
+            if (has_out) {
+                FRONT_END_OP_CONVERSION_CHECK(converted_outputs.size() == 1, "Expected a single out tensor.");
+                const auto out = context.get_input("out");
+                converted_outputs[0] = ComplexTypeMark::convert_like(context, converted_outputs[0], out);
+                context.mutate_input("out", converted_outputs[0]);
+            }
 
-            const auto& fw_outputs = node->outputs();
+            const auto fw_outputs = context.outputs();
             // Ops with subgraphs or with mutated inputs may have more outputs after conversion compared to pytorch ones
             FRONT_END_OP_CONVERSION_CHECK(fw_outputs.size() <= converted_outputs.size(),
                                           "Number of ",
@@ -163,39 +262,155 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
                                           converted_outputs.size(),
                                           " respectively.");
 
+            const auto get_sequence_elements = [&](size_t id) {
+                std::set<size_t> visited;
+                for (auto alias = m_may_be_alias.find(id);
+                     alias != m_may_be_alias.end() && visited.insert(alias->first).second;
+                     alias = m_may_be_alias.find(alias->second.base_id)) {
+                    const auto& info = alias->second;
+                    if (!info.element_ids.empty()) {
+                        return info.element_ids;
+                    }
+                    if (!info.same_tensor &&
+                        (info.output != info.base_value || info.decoder->get_schema().find('!') == std::string::npos)) {
+                        break;
+                    }
+                }
+                return std::vector<size_t>{};
+            };
+            std::map<size_t, size_t> sequence_aliases;
+            const auto input_sequences =
+                raw_inputs.empty() ? TorchDecoder::InputSequences{} : node->get_input_sequences();
+            for (const auto& sequence_input : input_sequences) {
+                const auto i = sequence_input.first;
+                const auto& elements = sequence_input.second;
+                FRONT_END_OP_CONVERSION_CHECK(i < raw_inputs.size(), "Sequence input index is out of range.");
+                if (elements.empty()) {
+                    continue;
+                }
+                const auto alias = m_may_be_alias.find(raw_inputs[i]);
+                const auto element_ids = get_sequence_elements(raw_inputs[i]);
+                FRONT_END_OP_CONVERSION_CHECK(element_ids.empty() || element_ids.size() == elements.size(),
+                                              "Sequence extraction must preserve the number of elements.");
+                OutputVector values;
+                for (size_t j = 0; j < elements.size(); ++j) {
+                    const auto output_index = elements[j];
+                    FRONT_END_OP_CONVERSION_CHECK(output_index < fw_outputs.size(),
+                                                  "Sequence element output index is out of range.");
+                    const auto base_id = element_ids.empty() ? raw_inputs[i] : element_ids[j];
+                    FRONT_END_OP_CONVERSION_CHECK(sequence_aliases.emplace(output_index, base_id).second,
+                                                  "A sequence extraction output must identify exactly one element.");
+                    values.push_back(converted_outputs.at(output_index));
+                }
+                if (!ov::is_type<SequenceMark>(tensor_map->at(raw_inputs[i]).get_node_shared_ptr())) {
+                    const auto sequence = make_list_construct(values);
+                    encode_tensor_name(sequence, raw_inputs[i]);
+                    (*tensor_map)[raw_inputs[i]] = sequence;
+                    for (auto current = alias; current != m_may_be_alias.end();
+                         current = m_may_be_alias.find(current->second.base_id)) {
+                        auto& info = current->second;
+                        if (ov::is_type<SequenceMark>(info.base_value.get_node())) {
+                            break;
+                        }
+                        const bool same_value = info.output == info.base_value;
+                        info.output = sequence;
+                        if (!same_value) {
+                            break;
+                        }
+                        info.base_value = sequence;
+                        (*tensor_map)[info.base_id] = sequence;
+                    }
+                }
+            }
+
+            const bool has_inputs = !raw_inputs.empty();
+            const size_t first_input_id = has_out ? node->get_named_input("out") : (has_inputs ? raw_inputs.at(0) : 0);
+            const auto& op_type = context.get_op_type();
+            const bool constructs_sequence = op_type == "prim::TupleConstruct" || op_type == "prim::ListConstruct";
+            std::vector<size_t> unpacked_ids;
+            const auto elements = get_sequence_elements(first_input_id);
+            if (!elements.empty()) {
+                if (op_type == "prim::TupleUnpack" || op_type == "prim::ListUnpack") {
+                    unpacked_ids = elements;
+                } else if (op_type == "aten::__getitem__") {
+                    if (const auto index_node = ov::util::get_constant_from_source(context.get_input(1))) {
+                        auto index = index_node->cast_vector<int64_t>().at(0);
+                        if (index < 0) {
+                            index += static_cast<int64_t>(elements.size());
+                        }
+                        if (index >= 0 && static_cast<size_t>(index) < elements.size()) {
+                            unpacked_ids = {elements[index]};
+                        }
+                    }
+                }
+            }
             for (size_t i = 0; i < fw_outputs.size(); ++i) {
-                size_t fw_tensor_id = node->output(i);
-                if (node->inputs().size() > 0 && node->may_produce_alias(0, i)) {
+                size_t fw_tensor_id = fw_outputs.at(i);
+                const auto extracted = sequence_aliases.find(i);
+                const bool sequence_element = extracted != sequence_aliases.end();
+                const auto in_tensor_id =
+                    sequence_element ? extracted->second : (unpacked_ids.empty() ? first_input_id : unpacked_ids.at(i));
+                if (has_out || sequence_element ||
+                    (has_inputs && (constructs_sequence || node->may_produce_alias(0, i)))) {
+                    auto alias_iter = m_may_be_alias.find(fw_tensor_id);
                     // TODO: do we need to check other inputs, not only 0?
-                    auto in_tensor_id = node->inputs().at(0);
-                    if (m_may_be_alias.count(fw_tensor_id)) {
-                        size_t recorded_in_tensor_id;
-                        std::shared_ptr<TorchDecoder> recorded_node;
-                        std::tie(recorded_in_tensor_id, recorded_node, std::ignore) = m_may_be_alias.at(fw_tensor_id);
-                        FRONT_END_GENERAL_CHECK(recorded_in_tensor_id == in_tensor_id,
+                    if (alias_iter != m_may_be_alias.end()) {
+                        const auto& recorded = alias_iter->second;
+                        FRONT_END_GENERAL_CHECK(recorded.base_id == in_tensor_id,
                                                 "Operation ",
                                                 context.get_op_type(),
                                                 " creates alias to tensor which was already created before by ",
-                                                recorded_node->get_op_type(),
+                                                recorded.decoder->get_op_type(),
                                                 ", but from different tensor: ",
                                                 in_tensor_id,
                                                 " vs ",
-                                                recorded_in_tensor_id);
+                                                recorded.base_id);
                     }
-                    m_may_be_alias[fw_tensor_id] = {node->inputs().at(0), node, converted_outputs[i]};
-                    OPENVINO_DEBUG << "Registered alias: " << fw_tensor_id << " of tensor: " << node->inputs().at(0)
-                                   << " of operation: " << context.get_op_type();
+                    m_may_be_alias[fw_tensor_id] = {
+                        in_tensor_id,
+                        node,
+                        converted_outputs[i],
+                        tensor_map->at(in_tensor_id),
+                        constructs_sequence ? raw_inputs : std::vector<size_t>{},
+                        !unpacked_ids.empty() ||
+                            (sequence_element && !ov::is_type<SequenceMark>(tensor_map->at(in_tensor_id).get_node()))};
+                    OPENVINO_DEBUG("Registered alias: ",
+                                   fw_tensor_id,
+                                   " of tensor: ",
+                                   in_tensor_id,
+                                   " of operation: ",
+                                   context.get_op_type());
                 }
                 FRONT_END_GENERAL_CHECK(tensor_map->find(fw_tensor_id) == tensor_map->end(),
                                         "Duplicated producer for PT value with unique ID: ",
                                         fw_tensor_id);
-                auto out_type = context.get_output_type(i);
+
+#ifdef ENABLE_OPENVINO_DEBUG
+                const auto out_type = simplified_type_interpret(context.get_output_type(i));
                 if (out_type.is<element::Type>()) {
                     if (!converted_outputs[i].get_element_type().compatible(out_type.as<element::Type>())) {
-                        OPENVINO_DEBUG << "[WARNING] Produced output type for operation " << context.get_op_type()
-                                       << " for tensor id: " << fw_tensor_id << " is incompatible: produced "
-                                       << converted_outputs[i].get_element_type() << " vs "
-                                       << out_type.as<element::Type>();
+                        OPENVINO_DEBUG("[WARNING] Produced output type for operation ",
+                                       context.get_op_type(),
+                                       " for tensor id: ",
+                                       fw_tensor_id,
+                                       " is incompatible: produced ",
+                                       converted_outputs[i].get_element_type(),
+                                       " vs ",
+                                       out_type.as<element::Type>());
+                    }
+                }
+#endif
+                if (op_type == "<built-in function getitem>" && has_inputs && !m_may_be_alias.count(fw_tensor_id)) {
+                    // Elements of a tuple returned by an inlined subgraph may be views of its operands.
+                    if (const auto index_node = ov::util::get_constant_from_source(context.get_input(1))) {
+                        auto index = index_node->cast_vector<int64_t>().at(0);
+                        if (index < 0) {
+                            index += static_cast<int64_t>(get_list_as_outputs(context.get_input(0)).size());
+                        }
+                        const auto element_alias = m_tuple_element_aliases.find({first_input_id, index});
+                        if (element_alias != m_tuple_element_aliases.end()) {
+                            m_may_be_alias[fw_tensor_id] = element_alias->second;
+                        }
                     }
                 }
                 (*tensor_map)[fw_tensor_id] = converted_outputs[i];
@@ -203,9 +418,11 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
             }
         };
 
-        FRONT_END_GENERAL_CHECK(pytorch_model->get_subgraph_size() == 1, "Model should have exactly 1 subgraph.");
+        FRONT_END_GENERAL_CHECK(pytorch_model->decoder_type_name() != "ts" || pytorch_model->get_subgraph_size() == 1,
+                                "Model should have exactly 1 subgraph for TorchScript.");
         pytorch_model->visit_subgraph(node_visitor);
 
+        NodeContext output_context(pytorch_model, external_tensor_map, tensor_map, parameters, mutated_tensors, this);
         ResultVector results;
         if (input_model) {
             // For the case when we have InputModel we need to have same order as its outputs
@@ -213,8 +430,8 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
                 auto pytorch_place = std::dynamic_pointer_cast<pytorch::Place>(output_p);
                 FRONT_END_GENERAL_CHECK(pytorch_place, "Only place produced by PyTorch Frontend is supported.");
                 auto tensor_id = pytorch_place->get_tensor_index();
-                auto ov_output = tensor_map->at(tensor_id);
-                FRONT_END_GENERAL_CHECK(ov_output.get_names().size() > 0,
+                auto ov_output = output_context.resolve_tensor(tensor_id);
+                FRONT_END_GENERAL_CHECK(!ov_output.get_names().empty(),
                                         "Tensor doesn't have name, while it should have name: ",
                                         tensor_id);
                 auto result = std::make_shared<v0::Result>(ov_output);
@@ -223,18 +440,18 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
         } else {
             for (size_t i = 0; i < pytorch_model->num_of_outputs(); ++i) {
                 size_t id = pytorch_model->output(i);
-                if (tensor_map->find(id) == tensor_map->end()) {
+                auto it = tensor_map->find(id);
+                if (it == tensor_map->end()) {
                     // Not found in this scope, adding Parameter to connect to external scope
                     auto parameter = std::make_shared<v0::Parameter>(element::dynamic, PartialShape::dynamic());
                     encode_tensor_name(parameter->output(0), id);
                     parameters->push_back(parameter);
-                    (*tensor_map)[id] = parameter;
+                    it = tensor_map->emplace(id, parameter).first;
                 }
-                auto ov_output = tensor_map->at(id);
-                FRONT_END_GENERAL_CHECK(ov_output.get_names().size() > 0,
+                FRONT_END_GENERAL_CHECK(!it->second.get_names().empty(),
                                         "Tensor doesn't have name, while it should have name: ",
                                         id);
-                auto result = std::make_shared<v0::Result>(ov_output);
+                auto result = std::make_shared<v0::Result>(output_context.resolve_tensor(id));
                 results.push_back(result);
             }
         }
@@ -255,11 +472,28 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
                 // empty external_tensor_map means this is main body of the model and we don't want to create
                 // additional outputs in that case.
                 if (!external_tensor_map.empty()) {
-                    OPENVINO_DEBUG << "Creating Result for mutated tensor  " << tensor_id;
+                    OPENVINO_DEBUG("Creating Result for mutated tensor  ", tensor_id);
                     results.push_back(std::make_shared<v0::Result>(tensor_map->at(tensor_id)));
                 }
             } else {
-                OPENVINO_DEBUG << "Mutated tensor with id " << tensor_id << " doesn't exist in inputs, skipping.";
+                OPENVINO_DEBUG("Mutated tensor with id ", tensor_id, " doesn't exist in inputs, skipping.");
+            }
+        }
+        if (!external_tensor_map.empty() && !input_model) {
+            // Record declared outputs which are body inputs or their views, so a parent inlining the body keeps the
+            // alias.
+            m_body_output_aliases.clear();
+            for (size_t i = 0; i < pytorch_model->num_of_outputs(); ++i) {
+                auto root = pytorch_model->output(i);
+                for (auto alias = m_may_be_alias.find(root);
+                     alias != m_may_be_alias.end() && alias->second.element_ids.empty() &&
+                     alias->second.base_id != root;
+                     alias = m_may_be_alias.find(root)) {
+                    root = alias->second.base_id;
+                }
+                if (param_names.count(root)) {
+                    m_body_output_aliases[i] = root;
+                }
             }
         }
         if (!external_tensor_map.empty()) {
@@ -285,23 +519,41 @@ std::shared_ptr<Model> TranslateSession::convert_pytorch_model(
 OutputVector TranslateSession::convert_node(const NodeContext& context) {
     std::string exception;
     try {
-        auto it = m_translator_map.find(context.get_op_type());
-        if (it != m_translator_map.end()) {
-            return it->second(context);
+        const auto& raw_op_type = context.get_op_type();
+        auto it = m_translator_map.find(raw_op_type);
+        // FX names carry an overload suffix; fall back to the shared TorchScript translator for the same operator.
+        // Stays empty unless that fallback is needed, so the common path does not copy the name.
+        std::string canonical_op_type;
+        if (it == m_translator_map.end()) {
+            canonical_op_type = normalize_op_type(raw_op_type);
+            it = m_translator_map.find(canonical_op_type);
         }
-        OPENVINO_DEBUG << "No translator found for: " << context.get_op_type() << "\n";
-    } catch (std::exception& e) {
-        exception = e.what();
-        if (m_telemetry) {
-            auto cropped_message = ov::util::filter_lines_by_prefix(exception, get_pytorch_prefix());
-            if (cropped_message.size()) {
-                m_telemetry->send_event("error_info", cropped_message);
+        const std::string& op_type = canonical_op_type.empty() ? raw_op_type : canonical_op_type;
+        if (it != m_translator_map.end()) {
+            auto outputs = it->second(context);
+            // FX represents multiple operator results as a single tuple value.
+            if (outputs.size() > 1 && m_is_fx) {
+                return {context.mark_node(make_list_construct(outputs))};
+            }
+            return outputs;
+        } else if (op_type.back() == '_') {
+            // inplace op case
+            std::string op_type_cut = op_type.substr(0, op_type.size() - 1);
+            auto it = m_translator_map.find(op_type_cut);
+            if (it != m_translator_map.end()) {
+                const auto& res = it->second(context);
+                FRONT_END_OP_CONVERSION_CHECK(res.size() == 1, "inplace op must have single output.");
+                context.mutate_input(0, res[0]);
+                return res;
             }
         }
+        OPENVINO_DEBUG("No translator found for: ", op_type, "\n");
+    } catch (std::exception& e) {
+        exception = e.what();
     } catch (...) {
         exception = "Unknown exception type.";
     }
-    OPENVINO_DEBUG << exception << "\n";
+    OPENVINO_DEBUG(exception, "\n");
     try {
         // Create PtFrameworkNode for everything that wasn't able to be converted normally
         return make_framework_node(context, exception);
@@ -310,43 +562,42 @@ OutputVector TranslateSession::convert_node(const NodeContext& context) {
     } catch (...) {
         exception += " Unknown exception happened while creating FrameworkNode with subgraphs";
     }
-    OPENVINO_DEBUG << exception << "\n";
+    OPENVINO_DEBUG(exception, "\n");
     return make_framework_node_ignore_bodies(context, exception);
 }
 
 void TranslateSession::encode_tensor_name(Output<Node> output,
                                           size_t tensor_idx,
-                                          std::vector<std::string> additional_names) {
+                                          const std::vector<std::string>& additional_names) {
     if (!output.get_names().empty()) {
-        OPENVINO_DEBUG << "Tensor names already exist: " << output.get_any_name() << ". Will not be rewritten with "
-                       << tensor_idx << ". This is likely a mutated tensor.";
+        OPENVINO_DEBUG("Tensor names already exist: ",
+                       output.get_any_name(),
+                       ". Will not be rewritten with ",
+                       tensor_idx,
+                       ". This is likely a mutated tensor.");
         return;
     }
     auto name = std::to_string(tensor_idx);
-    std::unordered_set<std::string> names;
-    names.insert(name);
-    if (additional_names.size() > 0) {
+    std::unordered_set<std::string> names = {name};
+    if (!additional_names.empty()) {
         names.insert(additional_names.begin(), additional_names.end());
     }
 
-    if (m_counter_map.count(tensor_idx)) {
-        auto&& pair = m_counter_map[tensor_idx];
+    auto it = m_counter_map.find(tensor_idx);
+    if (it != m_counter_map.end()) {
+        auto& pair = it->second;
         auto new_name = name + '_' + std::to_string(++pair.first);
-        pair.second.set_names({new_name});
+        pair.second.set_names({std::move(new_name)});
         pair.second = output;
-        output.set_names(names);
     } else {
-        m_counter_map[tensor_idx] = {0, output};
-        output.set_names(names);
+        m_counter_map.emplace(tensor_idx, std::make_pair(0, output));
     }
+    output.set_names(std::move(names));
 }
 
 namespace {
 bool is_number(const std::string& s) {
-    std::string::const_iterator it = s.begin();
-    while (it != s.end() && std::isdigit(*it))
-        ++it;
-    return !s.empty() && it == s.end();
+    return !s.empty() && std::all_of(s.begin(), s.end(), ::isdigit);
 }
 }  // namespace
 
@@ -403,31 +654,113 @@ Output<Node> select_reverseprop(const Output<Node>& select_output, const Output<
 }
 }  // namespace
 
-using ReversepropCreatorFunction = std::function<ov::Output<ov::Node>(const Output<Node>&, const Output<Node>&)>;
-
 Output<Node> TranslateSession::get_reverseprop_op(const std::shared_ptr<TorchDecoder>& node,
                                                   const Output<Node>& direct_op_output,
-                                                  const Output<Node>& value) {
-    std::map<std::string, ReversepropCreatorFunction> backprop_map = {
-        {"aten::slice", slice_reverseprop},
-        {"aten::select", select_reverseprop},
-    };
-
-    Output<Node> backprop_node;
+                                                  const Output<Node>& value,
+                                                  const Output<Node>& base) {
     try {
-        auto it = backprop_map.find(node->get_op_type());
-        if (it != backprop_map.end()) {
-            return it->second(direct_op_output, value);
+        const auto direct_node = direct_op_output.get_node_shared_ptr();
+        if (base.get_node()) {
+            if (direct_op_output == base) {
+                return value;
+            }
+            if (const auto sequence = ov::as_type_ptr<SequenceMark>(base.get_node_shared_ptr())) {
+                auto elements = sequence->get_sequence();
+                for (auto& element : elements) {
+                    if (direct_op_output == element) {
+                        element = value;
+                        return make_list_construct(elements);
+                    }
+                }
+            }
+            if (const auto sequence = ov::as_type_ptr<SequenceMark>(direct_node)) {
+                const auto updated_sequence = ov::as_type_ptr<SequenceMark>(value.get_node_shared_ptr());
+                FRONT_END_OP_CONVERSION_CHECK(updated_sequence, "Expected an aliased list update.");
+                const auto elements = sequence->get_sequence();
+                const auto updates = updated_sequence->get_sequence();
+                FRONT_END_OP_CONVERSION_CHECK(elements.size() == updates.size(),
+                                              "An aliased list cannot change length.");
+                Output<Node> updated_base;
+                for (size_t i = 0; i < elements.size(); ++i) {
+                    if (elements[i] != updates[i]) {
+                        FRONT_END_OP_CONVERSION_CHECK(!updated_base.get_node(), "Expected one updated list element.");
+                        updated_base = get_reverseprop_op(node, elements[i], updates[i], base);
+                    }
+                }
+                return updated_base.get_node() ? updated_base : base;
+            }
+            if (const auto complex_base = ov::as_type_ptr<ComplexTypeMark>(base.get_node_shared_ptr())) {
+                if (direct_op_output == complex_base->get_data()) {
+                    return std::make_shared<ComplexTypeMark>(value, value.get_element_type());
+                }
+                if (direct_op_output == complex_base->get_real()) {
+                    return std::make_shared<ComplexTypeMark>(value, complex_base->get_imag());
+                }
+                if (direct_op_output == complex_base->get_imag()) {
+                    return std::make_shared<ComplexTypeMark>(complex_base->get_real(), value);
+                }
+            }
+            if (const auto complex_view = ov::as_type_ptr<ComplexTypeMark>(direct_node)) {
+                const auto complex_value = ov::as_type_ptr<ComplexTypeMark>(value.get_node_shared_ptr());
+                FRONT_END_OP_CONVERSION_CHECK(complex_value, "Expected a complex alias update.");
+                return get_reverseprop_op(node, complex_view->get_data(), complex_value->get_data(), base);
+            }
+            const auto updated = get_reverseprop_op(node, direct_op_output, value);
+            if (ov::as_type_ptr<PtFrameworkNode>(updated.get_node_shared_ptr())) {
+                return updated;
+            }
+            return get_reverseprop_op(node, direct_node->input_value(0), updated, base);
+        }
+        if (ov::is_type<v0::Convert>(direct_node) || ov::is_type<v1::ConvertLike>(direct_node)) {
+            return value;
+        }
+        if (ov::is_type<v8::Slice>(direct_node)) {
+            return slice_reverseprop(direct_op_output, value);
+        }
+        if (ov::is_type<v8::Gather>(direct_node)) {
+            return select_reverseprop(direct_op_output, value);
+        }
+        if (ov::is_type<v1::Split>(direct_node) || ov::is_type<v1::VariadicSplit>(direct_node)) {
+            const auto axis = ov::util::get_constant_from_source(direct_node->input_value(1));
+            FRONT_END_OP_CONVERSION_CHECK(axis, "Cannot reverse a split with a dynamic axis.");
+            auto outputs = direct_node->outputs();
+            outputs[direct_op_output.get_index()] = value;
+            return std::make_shared<v0::Concat>(outputs, axis->cast_vector<int64_t>().at(0));
+        }
+        if (ov::is_type<v1::Reshape>(direct_node) || ov::is_type<v0::Squeeze>(direct_node) ||
+            ov::is_type<v0::Unsqueeze>(direct_node)) {
+            return std::make_shared<v1::Reshape>(value,
+                                                 std::make_shared<v3::ShapeOf>(direct_node->input_value(0)),
+                                                 false);
+        }
+        if (ov::is_type<v1::Transpose>(direct_node)) {
+            const auto order = direct_node->input_value(1);
+            const auto zero = v0::Constant::create(element::i32, Shape{}, {0});
+            const auto one = v0::Constant::create(element::i32, Shape{}, {1});
+            const auto shape = std::make_shared<v3::ShapeOf>(order, element::i32);
+            const auto rank = std::make_shared<v8::Gather>(shape, zero, zero);
+            const auto axes = std::make_shared<v4::Range>(zero, rank, one, order.get_element_type());
+            // inverse[order[i]] = i, including permutations built from a dynamic rank.
+            const auto inverse = std::make_shared<v3::ScatterElementsUpdate>(axes, order, axes, zero);
+            return std::make_shared<v1::Transpose>(value, inverse);
         }
 
-    } catch (std::exception& e) {
-        OPENVINO_DEBUG << "Exception happened during conversion of backprop op: " << node->get_op_type()
-                       << " with schema: " << node->get_schema() << ": " << e.what();
     }
+#ifdef ENABLE_OPENVINO_DEBUG
+    catch (std::exception& e) {
+        OPENVINO_DEBUG("Exception happened during conversion of backprop op: ",
+                       node->get_op_type(),
+                       " with schema: ",
+                       node->get_schema(),
+                       ": ",
+                       e.what());
+    }
+#else
+    catch (std::exception&) {
+    }
+#endif
     // Create PtFrameworkNode representing unconverted backprop operation
-    return std::make_shared<PtFrameworkNode>(node, OutputVector{value}, 1, true);
+    return std::make_shared<PtFrameworkNode>(node, OutputVector{value}, 1, true, true);
 }
 
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch

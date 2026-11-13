@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -48,7 +48,7 @@ TEST(type_prop, unsqueeze_positive_axis_gt_ouput_rank) {
         auto unsqueeze = make_shared<op::v0::Unsqueeze>(param, axes_node);
         FAIL() << "Unsqueeze axes invalid rank not detected";
     } catch (const NodeValidationFailure& error) {
-        const auto exp_msg = "Parameter axis " + std::to_string(bad_axis) + " out of the tensor rank range";
+        const auto exp_msg = "Axis " + std::to_string(bad_axis) + " out of the tensor rank range";
         EXPECT_HAS_SUBSTRING(error.what(), exp_msg);
     } catch (...) {
         FAIL() << "Deduced type check failed for unexpected reason";
@@ -58,13 +58,13 @@ TEST(type_prop, unsqueeze_positive_axis_gt_ouput_rank) {
 TEST(type_prop, unsqueeze_negative_axis_gt_ouput_rank) {
     constexpr int64_t bad_axis = -7;
     auto param = make_shared<ov::op::v0::Parameter>(element::f32, Shape{4, 1, 4, 1, 8});
-    auto axes_node = make_shared<ov::op::v0::Constant>(element::u64, Shape{1}, bad_axis);
+    auto axes_node = make_shared<ov::op::v0::Constant>(element::i64, Shape{1}, bad_axis);
 
     try {
         auto unsqueeze = make_shared<op::v0::Unsqueeze>(param, axes_node);
         FAIL() << "Unsqueeze axes invalid rank not detected";
     } catch (const NodeValidationFailure& error) {
-        const auto exp_msg = "Parameter axis " + std::to_string(bad_axis) + " out of the tensor rank range";
+        const auto exp_msg = "Axis " + std::to_string(bad_axis) + " out of the tensor rank range";
         EXPECT_HAS_SUBSTRING(error.what(), exp_msg);
     } catch (...) {
         FAIL() << "Deduced type check failed for unexpected reason";
@@ -243,8 +243,8 @@ TEST_P(UnsqueezeTest, symbols_propagation) {
     if (p_shape.rank().is_dynamic()) {
         GTEST_SKIP() << "No dimension to set symbol";
     }
-    ov::TensorSymbol in_symbols, exp_symbols;
-    std::tie(in_symbols, exp_symbols) = make_in_exp_symbols();
+
+    const auto& [in_symbols, exp_symbols] = make_in_exp_symbols();
 
     set_shape_symbols(p_shape, in_symbols);
     param = make_shared<ov::op::v0::Parameter>(element::f32, p_shape);
@@ -264,7 +264,7 @@ INSTANTIATE_TEST_SUITE_P(
            std::make_tuple(PartialShape{Dimension(-1)}, PartialShape{Dimension(-1)}),
            std::make_tuple(PartialShape{Dimension::dynamic(), 8}, PartialShape{Dimension::dynamic()}),
            std::make_tuple(PartialShape{Dimension(2, 5), Dimension::dynamic()}, PartialShape{Dimension(2, 5)}),
-           std::make_tuple(PartialShape{Dimension(2, -1), Dimension::dynamic()}, PartialShape::dynamic(1)),
+           std::make_tuple(PartialShape{Dimension(2, -1), Dimension::dynamic()}, PartialShape{{2, -1}}),
            std::make_tuple(PartialShape{Dimension(-1, 3), Dimension::dynamic()}, PartialShape{Dimension(-1, 3)}),
            std::make_tuple(PartialShape{5}, PartialShape{5}),
            std::make_tuple(PartialShape{2, 6}, PartialShape{2})),

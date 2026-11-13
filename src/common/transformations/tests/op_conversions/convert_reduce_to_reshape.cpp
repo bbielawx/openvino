@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,6 +7,13 @@
 #include <gtest/gtest.h>
 
 #include "common_test_utils/ov_test_utils.hpp"
+#include "openvino/op/reduce_logical_and.hpp"
+#include "openvino/op/reduce_logical_or.hpp"
+#include "openvino/op/reduce_max.hpp"
+#include "openvino/op/reduce_mean.hpp"
+#include "openvino/op/reduce_min.hpp"
+#include "openvino/op/reduce_prod.hpp"
+#include "openvino/op/reduce_sum.hpp"
 #include "openvino/opsets/opset.hpp"
 #include "transformations/utils/utils.hpp"
 

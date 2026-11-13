@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
@@ -26,14 +26,20 @@ def check_bytes_based(tensor, string_data, to_flat=False):
     tensor_data = tensor.bytes_data
     encoded_data = string_data if string_data.dtype.kind == "S" else np.char.encode(string_data)
     assert tensor_data.dtype.kind == "S"
-    _check_tensor_string(tensor_data.flatten() if to_flat else tensor_data, encoded_data.flatten() if to_flat else encoded_data)
+    _check_tensor_string(
+        tensor_data.flatten() if to_flat else tensor_data,
+        encoded_data.flatten() if to_flat else encoded_data
+    )
 
 
 def check_string_based(tensor, string_data, to_flat=False):
     tensor_data = tensor.str_data
     decoded_data = string_data if string_data.dtype.kind == "U" else np.char.decode(string_data)
     assert tensor_data.dtype.kind == "U"
-    _check_tensor_string(tensor_data.flatten() if to_flat else tensor_data, decoded_data.flatten() if to_flat else decoded_data)
+    _check_tensor_string(
+        tensor_data.flatten() if to_flat else tensor_data,
+        decoded_data.flatten() if to_flat else decoded_data
+    )
 
 
 def test_string_tensor_shared_memory_fails():
@@ -66,17 +72,67 @@ def test_empty_string_tensor(init_type):
     assert tensor.element_type == ov.Type.string
 
 
+@pytest.mark.parametrize("shape", [(0,), (2, 0)])
+def test_zero_sized_string_tensor_data(shape):
+    tensor = ov.Tensor(type=ov.Type.string, shape=shape)
+
+    bytes_data = tensor.bytes_data
+    assert bytes_data.shape == shape
+    assert bytes_data.dtype.kind == "S"
+
+    string_data = tensor.str_data
+    assert string_data.shape == shape
+    assert string_data.dtype.kind == "U"
+
+    with pytest.warns(RuntimeWarning, match="Data of string type will be copied"):
+        data = tensor.data
+    assert data.shape == shape
+    assert data.dtype.kind == "S"
+
+    round_trip = ov.Tensor(bytes_data, shared_memory=False)
+    assert round_trip.shape == shape
+    assert round_trip.bytes_data.shape == shape
+    assert round_trip.bytes_data.size == 0
+
+
+def test_bytes_data_with_empty_strings():
+    tensor = ov.Tensor(type=ov.Type.string, shape=[2])
+
+    bytes_data = tensor.bytes_data
+    assert bytes_data.tolist() == [b"", b""]
+    bytes_data[0] = b"x"
+    assert bytes_data[1] == b""
+    assert bytes_data.tolist() == [b"x", b""]
+
+    copy = ov.Tensor(tensor.bytes_data, shared_memory=False)
+    assert copy.bytes_data.tolist() == [b"", b""]
+    assert tensor.str_data.tolist() == ["", ""]
+
+    bytes_data[1] = b"y"
+    assert bytes_data.tolist() == [b"x", b"y"]
+
+    round_trip = ov.Tensor(bytes_data, shared_memory=False)
+    assert round_trip.bytes_data.tolist() == [b"x", b"y"]
+
+
 @pytest.mark.parametrize(
     ("string_data"),
     [
         ([bytes("text", encoding="utf-8"), bytes("openvino", encoding="utf-8")]),
         ([[b"xyz"], [b"abc"], [b"this is my last"]]),
+        ([[b"text\0with\0null"], [b"openvino\0"]]),
         (["text", "abc", "openvino"]),
         (["text", "больше текста", "jeszcze więcej słów", "효과가 있었어"]),
         ([["text"], ["abc"], ["openvino"]]),
-        ([["jeszcze więcej słów", "효과가 있었어"]]),
-    ],
-)
+        ([["text"]]),
+        (["tex\u0000t\u0000tt"]),
+        ([["abĆ"]]),
+        ([["tex\u0000tttt"], ["abĆ"]]),
+        ([["jeszcze więcej słówe"], [u"효#과가 있었어"]]),
+        ([["jeszcze\u0000 więcej słówekó"]]),
+        ([["효과가 있었어"]]),
+        (["ab\u0000Ć"]),
+    ])
 def test_init_with_list(string_data):
     tensor = ov.Tensor(string_data)
     assert tensor.element_type == ov.Type.string
@@ -87,6 +143,25 @@ def test_init_with_list(string_data):
     check_bytes_based(tensor, _string_data)
     # Decoded:
     check_string_based(tensor, _string_data)
+
+
+def test_init_with_list_rare_real_scenario():
+    input_data = ["tex\u0000\u0000ttt\u0000\u0000", "ab\u0000Ć"]
+    tensor = ov.Tensor(input_data)
+    assert tensor.element_type == ov.Type.string
+    # Convert to numpy to perform all checks. Memory is not shared,
+    np_string_data = np.array(input_data)
+    # Encoded:
+    check_bytes_based(tensor, np_string_data)
+    # Decoded:
+    str_tensor_data = tensor.str_data
+    assert str_tensor_data.shape == np_string_data.shape
+    # case when OV is not aligned with numpy format
+    # strides are different as trailing null characters are not stored in the tensor
+    # is rare to have any use of trailing null character in the string
+    assert str_tensor_data.strides != np_string_data.strides
+    assert np.array_equal(str_tensor_data, np_string_data)
+    assert not (np.shares_memory(str_tensor_data, np_string_data))
 
 
 @pytest.mark.parametrize(
@@ -107,6 +182,29 @@ def test_init_with_numpy(string_data):
     check_bytes_based(tensor, string_data)
     # Decoded:
     check_string_based(tensor, string_data)
+
+
+@pytest.mark.parametrize(
+    ("string_data"),
+    [
+        (np.array(["text", "abc", "openvino"]).astype("S")[::-1]),  # "|S", reversed
+        (np.array(["text", "abc", "openvino", "xyz"]).astype(np.bytes_)[::2]),  # "|S", strided
+        (np.array(["text", "abc", "openvino"])[::-1]),  # "<U", reversed
+        (np.array([["text", "больше текста"], ["jeszcze więcej słów", "효과가 있었어"]]).T),  # "<U", transposed
+    ],
+)
+def test_init_with_non_contiguous_numpy(string_data):
+    assert not string_data.flags["C_CONTIGUOUS"]
+
+    tensor = ov.Tensor(string_data, shared_memory=False)
+
+    assert tensor.element_type == ov.Type.string
+    # Tensor keeps a C-contiguous copy of the data.
+    expected_data = np.ascontiguousarray(string_data)
+    # Encoded:
+    check_bytes_based(tensor, expected_data)
+    # Decoded:
+    check_string_based(tensor, expected_data)
 
 
 @pytest.mark.parametrize(
@@ -223,6 +321,7 @@ def test_populate_fails_type_check(string_data):
         (ov.Shape([3]), np.array(["text", "больше текста", "jeszcze więcej słów"])),
         (ov.Shape([3]), [b"xyz", b"abc", b"this is my last"]),
         (ov.Shape([3]), ["text", "abc", "openvino"]),
+        (ov.Shape([2]), [[b"text\0with\0null"], [b"openvino\0"]]),
         (ov.Shape([3]), ["text", "больше текста", "jeszcze więcej słów"]),
         (ov.Shape([2, 2]), np.array(["text", "abc", "openvino", "different"]).astype(np.bytes_)),
         (ov.Shape([2, 2]), np.array(["text", "больше текста", "jeszcze więcej słów", "abcdefg"])),
@@ -258,9 +357,21 @@ def test_empty_tensor_populate(init_type, init_shape, string_data, data_getter):
 
 def test_invalid_bytes_replaced():
     string_data = np.array(b"\xe2\x80")
-    tensor = ov.Tensor(string_data)
+    tensor = ov.Tensor(string_data, shared_memory=False)
 
     # Encoded:
     check_bytes_based(tensor, string_data, to_flat=True)
     # Decoded:
     check_string_based(tensor, np.char.decode(string_data, encoding="utf=8", errors="replace"), to_flat=True)
+
+
+@pytest.mark.parametrize(
+    ("string_data"),
+    [
+        (np.array(["\ud800"])),  # lone surrogate, not encodable to UTF-8
+        (np.array(["text", "\udfff", "openvino"])),
+    ],
+)
+def test_init_with_numpy_not_encodable_string(string_data):
+    with pytest.raises(UnicodeEncodeError, match="surrogates not allowed"):
+        ov.Tensor(string_data, shared_memory=False)

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -45,24 +45,29 @@ std::vector<layout> crop_inst::calc_output_layouts(const crop_node& /*node*/, co
            "Output data type forcing is not supported for crop_node!");
 
     auto desc = impl_param.typed_desc<crop>();
-    const auto in_layout = impl_param.get_input_layout();
+    const auto in_layout = impl_param.get_input_layout(0);
     std::vector<ShapeType> output_shapes = {ShapeType()};
     std::vector<ShapeType> input_shapes = {
         impl_param.input_layouts[0].get<ShapeType>(),
     };
-    for (size_t i = 1; i < impl_param.input_layouts.size(); ++i) {
+    for (size_t i = 1; i < desc->input.size(); ++i) {
         input_shapes.push_back(impl_param.input_layouts[i].get<ShapeType>());
     }
+    int64_t axis = desc->axis;
 
     // TODO: calling shape_infer for all cropped outpus is redundant... Need to optimize.
     if (desc->op_mode == cldnn::crop_ngraph_op_mode::variadic_split) {
         std::unordered_map<size_t, ov::Tensor> const_data;
 
-        OPENVINO_ASSERT(impl_param.memory_deps.count(1) > 0, "[GPU] Can't find Crop(ngraph VariadicSplit op mode) axis values memory dependency");
-        auto axis_values_mem = impl_param.memory_deps.at(1);
-        cldnn::mem_lock<uint8_t, mem_lock_type::read> axis_values_mem_lock(axis_values_mem, impl_param.get_stream());
-        const_data.emplace(1, make_tensor(axis_values_mem->get_layout(), axis_values_mem_lock.data()));
-
+        // If axis is negative value, it's not nomralized axis value, so it's non-constant input
+        if (axis < 0) {
+            OPENVINO_ASSERT(impl_param.memory_deps.count(1) > 0, "[GPU] Can't find Crop(ngraph VariadicSplit op mode) axis values memory dependency");
+            auto axis_values_mem = impl_param.memory_deps.at(1);
+            cldnn::mem_lock<uint8_t, mem_lock_type::read> axis_values_mem_lock(axis_values_mem, impl_param.get_stream());
+            const_data.emplace(1, make_tensor(axis_values_mem->get_layout(), axis_values_mem_lock.data()));
+        } else {
+            const_data.emplace(1, ov::Tensor(ov::element::i64, ov::Shape{}, static_cast<void*>(&axis)));
+        }
         if (impl_param.memory_deps.count(2) > 0) {
             auto split_length_mem = impl_param.memory_deps.at(2);
             cldnn::mem_lock<uint8_t, mem_lock_type::read> split_length_mem_lock(split_length_mem, impl_param.get_stream());
@@ -79,10 +84,15 @@ std::vector<layout> crop_inst::calc_output_layouts(const crop_node& /*node*/, co
     } else if (desc->op_mode == cldnn::crop_ngraph_op_mode::split) {
         std::unordered_map<size_t, ov::Tensor> const_data;
 
-        OPENVINO_ASSERT(impl_param.memory_deps.count(1) > 0, "[GPU] Can't find Crop(ngraph Split op mode) axis values memory dependency");
-        auto axis_values_mem = impl_param.memory_deps.at(1);
-        cldnn::mem_lock<uint8_t, mem_lock_type::read> axis_values_mem_lock(axis_values_mem, impl_param.get_stream());
-        const_data.emplace(1, make_tensor(axis_values_mem->get_layout(), axis_values_mem_lock.data()));
+        // If axis is negative value, it's not nomralized axis value, so it's non-constant input
+        if (axis < 0) {
+            OPENVINO_ASSERT(impl_param.memory_deps.count(1) > 0, "[GPU] Can't find Crop(ngraph Split op mode) axis values memory dependency");
+            auto axis_values_mem = impl_param.memory_deps.at(1);
+            cldnn::mem_lock<uint8_t, mem_lock_type::read> axis_values_mem_lock(axis_values_mem, impl_param.get_stream());
+            const_data.emplace(1, make_tensor(axis_values_mem->get_layout(), axis_values_mem_lock.data()));
+        } else {
+            const_data.emplace(1, ov::Tensor(ov::element::i64, ov::Shape{}, static_cast<void*>(&axis)));
+        }
 
         ov::op::v1::Split op;
         op.set_friendly_name(desc->id);
@@ -114,24 +124,27 @@ std::vector<layout> crop_inst::calc_output_layouts(const crop_node& /*node*/, co
         return {layout{ref_in_sizes.get_partial_shape(in_layout.get_partial_shape().size(), in_layout.get_rank()), in_layout.data_type, in_layout.format}};
     }
 
-    bool is_output_static = false;
     std::vector<layout> output_layouts;
     for (size_t i = 0; i < output_shapes.size(); ++i) {
         output_layouts.push_back(layout({output_shapes[i], in_layout.data_type, in_layout.format}));
-        is_output_static = (output_shapes[i].is_static()) ? true : is_output_static;
     }
 
     // update split offsets
-    if (is_output_static) {
-        auto p_param = const_cast<kernel_impl_params*>(&impl_param);
-        ov::Shape startOffset(p_param->input_layouts[0].get_partial_shape().size());
-        auto input_shape = p_param->input_layouts[0].get_partial_shape();
+    const auto& input_shape = impl_param.input_layouts[0].get_partial_shape();
+    bool can_update_offsets = input_shape.is_static();
+    for (int32_t prev = 0; prev < desc->output_idx && can_update_offsets; ++prev) {
+        can_update_offsets = output_layouts[prev].is_static();
+    }
+    if (can_update_offsets) {
+        auto* p_param = const_cast<kernel_impl_params*>(&impl_param);
+        ov::Shape startOffset(input_shape.size());
         auto dims = p_param->input_layouts[0].get_partial_shape().size();
         for (int32_t prev = 0; prev < desc->output_idx; prev++) {
             auto prev_crop_shape = output_layouts[prev].get_partial_shape().to_shape();
             for (size_t i = 0; i < dims; ++i) {
-                if (prev_crop_shape[i] != input_shape.to_shape()[i])
+                if (prev_crop_shape[i] != input_shape.to_shape()[i]) {
                     startOffset[i] += prev_crop_shape[i];
+                }
             }
         }
 
@@ -170,6 +183,9 @@ std::string crop_inst::to_string(crop_node const& node) {
     }
     crop_info.add("reference input size", ref_in_sizes.to_string());
     crop_info.add("offset", offsets.to_string());
+    crop_info.add("axis", desc->axis);
+    crop_info.add("num_splits", desc->num_splits);
+    crop_info.add("output_idx", desc->output_idx);
 
     node_info->add("crop info", crop_info);
     node_info->dump(primitive_description);
@@ -240,8 +256,7 @@ crop_inst::typed_primitive_inst(network& network, crop_node const& node) : paren
                                         "Invalid Batch offset: exceeds data for output!");
     }
 
-    if (node.can_be_optimized()) {
-        build_deps();
+    if (!node.is_dynamic() && node.can_be_optimized()) {
         update_output_memory();
     }
 }
@@ -251,12 +266,26 @@ void crop_inst::on_execute() {
 }
 
 void crop_inst::update_output_memory() {
-    if (!can_be_optimized())
+    if (!can_be_optimized()) {
         return;
+    }
 
-    if (_outputs[0] && _network.get_engine().is_the_same_buffer(output_memory(), input_memory()))
+    build_deps();
+
+    if (input_memory_ptr() == nullptr) {
         return;
+    }
 
+    if (_outputs[0] && get_network().get_engine().is_the_same_buffer(output_memory(), input_memory())) {
+        return;
+    }
+
+    // Can_be_optimized nodes are allocating from memory_pool too. In this case,
+    // we need release the legacy output memory from memory pool explicitly.
+    if (static_cast<bool>(_outputs[0]) &&
+        get_node().get_program().get_config().get_enable_memory_pool()) {
+        get_network().get_memory_pool().release_memory(_outputs[0].get(), get_node().get_unique_id(), get_node().id(), get_network_id());
+    }
     _outputs[0] = _network.get_engine().reinterpret_buffer(input_memory(), _impl_params->get_output_layout());
     _mem_allocated = false;
 }

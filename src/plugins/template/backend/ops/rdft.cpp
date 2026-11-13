@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,6 +6,7 @@
 
 #include "evaluate_node.hpp"
 #include "evaluates_map.hpp"
+#include "openvino/op/rdft.hpp"
 #include "openvino/reference/fft.hpp"
 #include "openvino/runtime/tensor.hpp"
 
@@ -53,7 +54,7 @@ InfoForRFFT9 get_info_for_rfft9_eval(const ov::TensorVector& inputs) {
     result.fft_output_shape = fft_output_shape;
     result.output_shape = output_shape;
 
-    result.axes_data = canonicalized_axes;
+    result.axes_data = std::move(canonicalized_axes);
 
     return result;
 }

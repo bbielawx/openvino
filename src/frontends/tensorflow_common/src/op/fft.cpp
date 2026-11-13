@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,10 +13,7 @@ using namespace std;
 using namespace ov;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_fft_op(const NodeContext& node) {
     default_op_checks(node, 1, {"FFT", "FFT2D", "FFT3D"}, true);
@@ -29,7 +26,7 @@ OutputVector translate_fft_op(const NodeContext& node) {
         node,
         complex_type_mark,
         "[TensorFlow Frontend] internal error: ComplexTypeMark is not set to input for " + op_type);
-    auto data = complex_type_mark->input_value(0);
+    auto data = complex_type_mark->get_data();
     auto complex_part_type = complex_type_mark->get_complex_part_type();
 
     // compute a number of inner-most dimensions
@@ -59,7 +56,4 @@ OutputVector translate_fft_op(const NodeContext& node) {
     return {complex_type_mark};
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

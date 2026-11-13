@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,15 +11,11 @@ namespace ov {
 namespace test {
 namespace snippets {
 
-std::string Transpose::getTestCaseName(testing::TestParamInfo<ov::test::snippets::TransposeParams> obj) {
-    ov::PartialShape inputShape;
-    std::vector<int> order;
-    std::string targetDevice;
-    size_t num_nodes, num_subgraphs;
-    std::tie(inputShape, order, num_nodes, num_subgraphs, targetDevice) = obj.param;
+std::string Transpose::getTestCaseName(const testing::TestParamInfo<ov::test::snippets::TransposeParams>& obj) {
+    const auto& [inputShapes, order, num_nodes, num_subgraphs, targetDevice] = obj.param;
 
     std::ostringstream result;
-    result << "IS=" << ov::test::utils::partialShape2str({inputShape}) << "_";
+    result << "IS=" << inputShapes << "_";
     result << "Order=" << ov::test::utils::vec2str(order) << "_";
     result << "#N=" << num_nodes << "_";
     result << "#S=" << num_subgraphs << "_";
@@ -28,28 +24,23 @@ std::string Transpose::getTestCaseName(testing::TestParamInfo<ov::test::snippets
 }
 
 void Transpose::SetUp() {
-    ov::PartialShape inputShape;
-    std::vector<int> order;
-    std::tie(inputShape, order, ref_num_nodes, ref_num_subgraphs, targetDevice) = this->GetParam();
-    init_input_shapes({{{inputShape}, {inputShape.get_shape(), }}});
+    const auto& [inputShape, order, _ref_num_nodes, _ref_num_subgraphs, _targetDevice] = this->GetParam();
+    ref_num_nodes = _ref_num_nodes;
+    ref_num_subgraphs = _ref_num_subgraphs;
+    targetDevice = _targetDevice;
+    init_input_shapes({inputShape});
 
-    auto f = ov::test::snippets::TransposeFunction({inputShape}, order);
+    auto f = ov::test::snippets::TransposeFunction(inputDynamicShapes, order);
     function = f.getOriginal();
-    if (!configuration.count("SNIPPETS_MODE")) {
-        configuration.insert({"SNIPPETS_MODE", "IGNORE_CALLBACK"});
-    }
+    setIgnoreCallbackMode();
 }
 
-std::string TransposeMul::getTestCaseName(testing::TestParamInfo<ov::test::snippets::TransposeMulParams> obj) {
-    std::vector<ov::PartialShape> inputShapes(2);
-    std::vector<int> order;
-    std::string targetDevice;
-    size_t num_nodes, num_subgraphs;
-    std::tie(inputShapes[0], inputShapes[1], order, num_nodes, num_subgraphs, targetDevice) = obj.param;
+std::string TransposeMul::getTestCaseName(const testing::TestParamInfo<ov::test::snippets::TransposeMulParams>& obj) {
+    const auto& [inputShapes, order, num_nodes, num_subgraphs, targetDevice] = obj.param;
 
     std::ostringstream result;
-    for (int i = 0; i < inputShapes.size(); i++)
-        result << "IS[" << i << "]=" << ov::test::utils::partialShape2str({inputShapes[i]}) << "_";
+    result << "IS[0]=" << inputShapes.first << "_";
+    result << "IS[1]=" << inputShapes.second << "_";
     result << "Order=" << ov::test::utils::vec2str(order) << "_";
     result << "#N=" << num_nodes << "_";
     result << "#S=" << num_subgraphs << "_";
@@ -58,27 +49,22 @@ std::string TransposeMul::getTestCaseName(testing::TestParamInfo<ov::test::snipp
 }
 
 void TransposeMul::SetUp() {
-    std::vector<ov::PartialShape> inputShapes(2);
-    std::vector<int> order;
-    std::tie(inputShapes[0], inputShapes[1], order, ref_num_nodes, ref_num_subgraphs, targetDevice) = this->GetParam();
-    init_input_shapes(static_partial_shapes_to_test_representation(inputShapes));
-    auto f = ov::test::snippets::TransposeMulFunction(inputShapes, order);
+    const auto& [inputShapes, order, _ref_num_nodes, _ref_num_subgraphs, _targetDevice] = this->GetParam();
+    ref_num_nodes = _ref_num_nodes;
+    ref_num_subgraphs = _ref_num_subgraphs;
+    targetDevice = _targetDevice;
+    init_input_shapes({inputShapes.first, inputShapes.second});
+    auto f = ov::test::snippets::TransposeMulFunction(inputDynamicShapes, order);
     function = f.getOriginal();
-    if (!configuration.count("SNIPPETS_MODE")) {
-        configuration.insert({"SNIPPETS_MODE", "IGNORE_CALLBACK"});
-    }
+    setIgnoreCallbackMode();
 }
 
 TEST_P(Transpose, CompareWithRefImpl) {
-    SKIP_IF_CURRENT_TEST_IS_DISABLED()
     run();
-    validateNumSubgraphs();
 }
 
 TEST_P(TransposeMul, CompareWithRefImpl) {
-    SKIP_IF_CURRENT_TEST_IS_DISABLED()
     run();
-    validateNumSubgraphs();
 }
 
 } // namespace snippets

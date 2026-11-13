@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
 import pytest
 from sys import platform
 from openvino import compile_model, Model
-from openvino.runtime import Extension
-import openvino.runtime.opset8 as ov
-from openvino.runtime.exceptions import UserInputError
-from openvino.runtime.utils.node_factory import NodeFactory
+from openvino import Extension
+import openvino.opset8 as ov
+from openvino.exceptions import UserInputError
+from openvino.utils.node_factory import NodeFactory
 
 
 def test_node_factory_add():
@@ -78,7 +78,8 @@ def test_node_factory_empty_topk_with_args_and_attrs():
     node.set_attribute("axis", 1)
     node.set_attribute("mode", "max")
     node.set_attribute("sort", "value")
-    node.validate()
+
+    node.constructor_validate_and_infer_types()
 
     assert node.get_type_name() == "TopK"
     assert node.get_output_size() == 2

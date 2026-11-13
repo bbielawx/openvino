@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -30,14 +30,13 @@ SoftmaxKernelBase::DispatchData SoftmaxKernelBase::SetDefault(const softmax_para
     dispatchData.normIndex = 0;
     dispatchData.dataSetsCount = 0;
     dispatchData.dataSetSize = 0;
-    dispatchData.maxSlmSize = 0;
 
     return dispatchData;
 }
 
 bool SoftmaxKernelBase::Validate(const Params& p) const {
     if (p.GetType() != KernelType::SOFT_MAX) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     return true;
@@ -76,15 +75,11 @@ KernelsData SoftmaxKernelBase::GetCommonKernelsData(const Params& params) const 
 
 bool SoftmaxKernelBaseBF::Validate(const Params& p) const {
     if (!Parent::Validate(p)) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     const softmax_params& params = static_cast<const softmax_params&>(p);
     const auto& input = params.inputs[0];
-
-    if (!params.activations.empty()) {
-        return false;
-    }
 
     if (input.GetLayout() == DataLayout::bf || input.GetLayout() == DataLayout::fb) {
         return true;
@@ -108,7 +103,7 @@ bool SoftmaxKernelBaseBF::Validate(const Params& p) const {
                    !input.Y().is_dynamic && input.Y().v == 1 &&
                    !input.Z().is_dynamic && input.Z().v == 1;
         default:
-            return false;
+            DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 }
 

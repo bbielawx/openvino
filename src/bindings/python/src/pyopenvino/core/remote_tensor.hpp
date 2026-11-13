@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #pragma once
@@ -9,8 +9,6 @@
 #include <openvino/runtime/intel_gpu/properties.hpp>
 #include <openvino/runtime/intel_gpu/remote_properties.hpp>
 #include <openvino/runtime/remote_tensor.hpp>
-#include <openvino/runtime/tensor.hpp>
-#include <pyopenvino/core/tensor.hpp>
 
 namespace py = pybind11;
 

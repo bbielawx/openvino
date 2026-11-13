@@ -1,29 +1,36 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "node.h"
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
+#include <vector>
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+#include "graph_context.h"
+#include "node.h"
+#include "openvino/core/node.hpp"
+
+namespace ov::intel_cpu::node {
 
 class PriorBoxClustered : public Node {
 public:
-    PriorBoxClustered(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context);
+    PriorBoxClustered(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context);
 
     void getSupportedDescriptors() override {};
     void initSupportedPrimitiveDescriptors() override;
     void createPrimitive() override;
-    void execute(dnnl::stream strm) override;
+    void execute(const dnnl::stream& strm) override;
     bool created() const override;
 
     bool needShapeInfer() const override;
     bool needPrepareParams() const override;
 
-    void executeDynamicImpl(dnnl::stream strm) override { execute(strm); }
+    void executeDynamicImpl(const dnnl::stream& strm) override {
+        execute(strm);
+    }
 
     static bool isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::string& errorMessage) noexcept;
 
@@ -37,9 +44,7 @@ private:
     float step_widths;
     float offset;
 
-    int number_of_priors;
+    size_t number_of_priors;
 };
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,10 +8,7 @@
 
 using namespace std;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow_lite {
-namespace op {
+namespace ov::frontend::tensorflow_lite::op {
 
 OutputVector reshape(const ov::frontend::tensorflow_lite::NodeContext& node) {
     size_t input_size = node.get_input_size();
@@ -20,12 +17,10 @@ OutputVector reshape(const ov::frontend::tensorflow_lite::NodeContext& node) {
                             input_size,
                             ", for node ",
                             node.get_op_type());
-    const auto& decoder = get_decoder(node);
-    bool has_attribute = decoder->has_attribute(&tflite::ReshapeOptions::new_shape);
+    auto has_attribute = node.has_attribute("new_shape");
     Output<Node> shape;
     if (has_attribute) {
-        auto reshape_new_shape = decoder->get_attribute(&tflite::ReshapeOptions::new_shape);
-        const auto new_shape = std::vector<int64_t>(reshape_new_shape->begin(), reshape_new_shape->end());
+        auto new_shape = node.get_attribute<std::vector<int64_t>>("new_shape");
         shape = opset10::Constant::create(element::i64, ov::Shape{new_shape.size()}, new_shape);
     } else {
         FRONT_END_GENERAL_CHECK(
@@ -38,7 +33,4 @@ OutputVector reshape(const ov::frontend::tensorflow_lite::NodeContext& node) {
     return reshape->outputs();
 }
 
-}  // namespace op
-}  // namespace tensorflow_lite
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow_lite::op

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -22,12 +22,8 @@ using OVDynamicBatchParams = std::tuple<
 class OVDynamicBatchShape_Tests : public ::testing::WithParamInterface<OVDynamicBatchParams>,
                                   virtual public ov::test::SubgraphBaseTest {
 public:
-    static std::string getTestCaseName(::testing::TestParamInfo<OVDynamicBatchParams> obj) {
-        std::vector<InputShape> input_shapes;
-        ov::element::Type model_type;
-        std::string target_device;
-        ov::AnyMap configuration;
-        std::tie(input_shapes, model_type, target_device, configuration) = obj.param;
+    static std::string getTestCaseName(const ::testing::TestParamInfo<OVDynamicBatchParams>& obj) {
+        const auto& [input_shapes, model_type, target_device, configuration] = obj.param;
 
         std::ostringstream result;
         result << "IS=";
@@ -62,9 +58,11 @@ protected:
             core.reset();
             core = ov::test::utils::PluginCache::get().core();
         }
-        std::vector<InputShape> input_shape;
 
-        std::tie(input_shape, model_type, targetDevice, configuration) = this->GetParam();
+        const auto& [input_shape, _model_type, _targetDevice, _configuration] = this->GetParam();
+        model_type = _model_type;
+        targetDevice = _targetDevice;
+        configuration = _configuration;
 
         init_input_shapes(input_shape);
         //TODO: think how we can switch between several input topologies in the future
@@ -116,10 +114,6 @@ auto config = []() {
     return ov::AnyMap{};
 };
 
-auto hetero_config = []() {
-    return ov::AnyMap{{ov::device::priorities.name(), ov::test::utils::DEVICE_GPU}};
-};
-
 const std::vector<InputShape> input_shapes = {
     { { {1, 19}, 4, 20, 20}, { {1, 4, 20, 20}, {7, 4, 20, 20}, {17, 4, 20, 20} } }
 };
@@ -135,13 +129,5 @@ INSTANTIATE_TEST_SUITE_P(smoke_GPU_DynBatch, OVDynamicBatchShape_Tests,
         ::testing::ValuesIn(model_types),
         ::testing::Values(ov::test::utils::DEVICE_GPU),
         ::testing::Values(config())),
-    OVDynamicBatchShape_Tests::getTestCaseName);
-
-INSTANTIATE_TEST_SUITE_P(smoke_GPU_DynBatchHetero, OVDynamicBatchShape_Tests,
-    ::testing::Combine(
-        ::testing::Values(input_shapes),
-        ::testing::ValuesIn(model_types),
-        ::testing::Values(ov::test::utils::DEVICE_HETERO),
-        ::testing::Values(hetero_config())),
     OVDynamicBatchShape_Tests::getTestCaseName);
 }  // namespace

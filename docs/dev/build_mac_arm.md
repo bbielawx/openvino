@@ -6,28 +6,29 @@ There are two options how to use OpenVINO on Apple Silicon:
 - (Native) Compile OpenVINO for arm64 architecture. Note, build steps will cover this as a default scenario.
 - (Rosetta) Compile Intel CPU plugin `x86_64` architecture and run under [Rosetta](https://support.apple.com/en-us/HT211861).
 
-The software was validated on:
-- macOS 11.x, 12.x, 13.x, arm64
+The software was:
+- validated on macOS 15 (native arm64)
+- produced for macOS 11.0 (deployment target)
 
 ## Software requirements
 
 - [brew](https://brew.sh) package manager to install additional dependencies. Use [install brew](https://brew.sh) guide to achieve this.
 
 - Installation step for python and python libraries varies depending on the host architecture:
-  - **arm64** Python 3.8 - 3.11 for the OpenVINO Runtime Python API, Development tools (Model Optimizer, POT and others):
+  - **arm64** Python 3.11 - 3.15 for the OpenVINO Runtime Python API:
   ```sh
   % # let's have a look what python versions are available in brew
   % brew search python
   % # select preferred version of python based on available ones, e.g. 3.11
   % brew install python@3.11
   ```
-  - **x86_64** Select universal2 installer from [Python releases](https://www.python.org/downloads/macos/) download page and install `python-3.X.Y-macos11.pkg` image. This allows to have universal python libraries, build x86_64 OpenVINO Python API and Development tools.
+  - **x86_64** Select universal2 installer from [Python releases](https://www.python.org/downloads/macos/) download page and install `python-3.X.Y-macos11.pkg` image. This allows you to have universal python libraries of OpenVINO Python API (build x86_64).
 
 - Clang compiler and other command line tools from Xcode 10.1 or higher:
   ```sh
   % xcode-select --install
   ```
-- [CMake](https://cmake.org/download/) 3.13 or higher and other build dependencies:
+- [CMake](https://cmake.org/download/) 3.26 or higher and other build dependencies:
   ```sh
   % brew install cmake scons fdupes git-lfs ninja
   ```
@@ -35,13 +36,13 @@ The software was validated on:
   ```sh
   % brew install tbb pugixml flatbuffers snappy protobuf
   ```
-- Additional `pip` dependencies to build OpenVINO Runtime Python API, Development tools (Model Optimizer, POT and others):
+- Additional `pip` dependencies to build OpenVINO Runtime Python API:
   ```sh
   % # update pip and setuptools to newer versions
   % python3 -m pip install -U pip
   % python3 -m pip install -r <openvino source tree>/src/bindings/python/requirements.txt
   ```
-  Additional install requirements (after OpenVINO repo clone) in order to build OpenVINO Python API and Development tools as wheel packages:
+  Additional install requirements (after OpenVINO repo clone) in order to build OpenVINO Python API as wheel packages:
   ```sh
   % python3 -m pip install -r <openvino source tree>/src/bindings/python/wheel/requirements-dev.txt
   ```

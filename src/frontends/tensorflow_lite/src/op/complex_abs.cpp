@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,19 +8,13 @@
 
 using namespace std;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow_lite {
-namespace op {
+namespace ov::frontend::tensorflow_lite::op {
 
 OutputVector complex_abs(const ov::frontend::tensorflow_lite::NodeContext& node) {
-    const auto& decoder = get_decoder(node);
+    auto decoder = node.get_decoder();
     auto abs = make_shared<ov::frontend::tensorflow_lite::ComplexAbs>(node.get_input(0), decoder);
     abs->set_friendly_name(decoder->get_op_name());
     return abs->outputs();
 }
 
-}  // namespace op
-}  // namespace tensorflow_lite
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow_lite::op

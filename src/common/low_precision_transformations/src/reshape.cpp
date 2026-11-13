@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -18,6 +18,9 @@
 
 #include "low_precision/common/ie_lpt_exception.hpp"
 #include "low_precision/network_helper.hpp"
+#include "openvino/core/graph_util.hpp"
+#include "openvino/op/broadcast.hpp"
+#include "openvino/op/matmul.hpp"
 
 namespace ov {
 namespace pass {
@@ -33,7 +36,7 @@ ReshapeTransformation::ReshapeTransformation(const Params& params) : LayerTransf
     auto reshape_pattern = std::make_shared<pass::pattern::op::Or>(OutputVector{ reshape_pattern_const, reshape_pattern_nonconst });
     auto matcher = pattern::wrap_type<ov::opset1::Reshape>({ mul_m, reshape_pattern });
 
-    ov::graph_rewrite_callback callback = [=](pattern::Matcher& m) {
+    ov::graph_rewrite_callback callback = [OV_CAPTURE_CPY_AND_THIS](pattern::Matcher& m) {
         auto op = m.get_match_root();
         if (transformation_callback(op)) {
             return false;
@@ -48,7 +51,7 @@ ReshapeTransformation::ReshapeTransformation(const Params& params) : LayerTransf
             }
         }
 
-        return transform(*context, m);
+        return transform(m);
     };
 
     auto m = std::make_shared<ov::pass::pattern::Matcher>(matcher, matcher_name);
@@ -77,19 +80,34 @@ void reshapeDequantizationConstant(const std::shared_ptr<ov::opset1::Reshape>& r
 
         auto const reshapeInputRank = reshape->get_input_partial_shape(0).rank();
         assert(reshapeInputRank.is_static());
-        if (constantShape.size() > 1ul) {
-            while (constantShape.size() < static_cast<size_t>(reshapeInputRank.get_length())) {
-                constantShape.insert(constantShape.begin(), 1ul);
-            }
+        // Left-pad up to the Reshape input rank: rank-1 per-channel constants must be padded too,
+        // otherwise the channel indexing below goes out of bounds.
+        while (constantShape.size() < static_cast<size_t>(reshapeInputRank.get_length())) {
+            constantShape.insert(constantShape.begin(), 1ul);
+        }
+
+        // Materialize the padded shape on the constant itself, so the broadcast helper below
+        // sees a consistent rank instead of the original (possibly rank-1) shape.
+        std::shared_ptr<ov::opset1::Constant> paddedConstant = originalConstant;
+        if (originalConstant->get_shape().size() != constantShape.size()) {
+            paddedConstant = ov::as_type_ptr<ov::opset1::Constant>(fold<ov::opset1::Reshape>(
+                originalConstant,
+                ov::opset1::Constant::create(element::i32, Shape{ constantShape.size() }, constantShape),
+                false));
         }
 
         const auto reshapeOutputPShape = reshape->get_output_partial_shape(0);
         const auto reshapeOutputRank = reshapeOutputPShape.rank();
         assert(reshapeOutputRank.is_static());
-        assert(reshapeOutputRank.get_length() >= 2);
-        assert(reshapeOutputPShape[1].is_static());
-        assert(static_cast<size_t>(reshapeOutputPShape[1].get_length()) >= constantShape[1]);
-        assert(reshapeOutputPShape[1].get_length() % constantShape[1] == 0);
+        // Explicit guard: the equivalent asserts are compiled out under NDEBUG.
+        if (reshapeOutputRank.is_dynamic() || reshapeOutputRank.get_length() < 2 ||
+            reshapeOutputPShape[1].is_dynamic() || constantShape.size() < 2ul) {
+            return;
+        }
+        if ((static_cast<size_t>(reshapeOutputPShape[1].get_length()) < constantShape[1]) ||
+            (reshapeOutputPShape[1].get_length() % constantShape[1] != 0)) {
+            return;
+        }
         const size_t dimensionsToBroadcast = reshapeOutputPShape[1].get_length() / constantShape[1];
         if (dimensionsToBroadcast == 0ul) {
             return;
@@ -116,7 +134,7 @@ void reshapeDequantizationConstant(const std::shared_ptr<ov::opset1::Reshape>& r
             return fold<ov::opset1::Broadcast>(constant, targetShapeConstant);
         };
 
-        const std::shared_ptr<Node> broadcastedConstant = getBCastedConst(originalConstant, dimensionsToBroadcast);
+        const std::shared_ptr<Node> broadcastedConstant = getBCastedConst(paddedConstant, dimensionsToBroadcast);
 
         std::vector<int> newReshapeConstValues(reshapeOutputRank.get_length(), 1ul);
         newReshapeConstValues[1] = static_cast<int>(reshapeOutputPShape[1].get_length());
@@ -146,21 +164,18 @@ void reshapeDequantizationConstant(const std::shared_ptr<ov::opset1::Reshape>& r
 
 } // namespace
 
-bool ReshapeTransformation::transform(TransformationContext& context, ov::pass::pattern::Matcher &m) {
-    std::shared_ptr<ov::opset1::Reshape> reshape = ov::as_type_ptr<ov::opset1::Reshape>(m.get_match_root());
-    if (NetworkHelper::isConstantPath(reshape)) {
+bool ReshapeTransformation::transform(ov::pass::pattern::Matcher &m) {
+    const auto layer = m.get_match_root();
+    if (!canBeTransformed(layer) || NetworkHelper::isConstantPath(layer)) {
         return false;
     }
 
-    if (!canBeTransformed(context, reshape)) {
-        return false;
-    }
-
-    reshape = ov::as_type_ptr<ov::opset1::Reshape>(NetworkHelper::separateInStandaloneBranch(reshape, defaultPrecisions));
+    const auto reshape = ov::as_type_ptr<ov::opset1::Reshape>(NetworkHelper::separateInStandaloneBranch(layer, defaultPrecisions));
+    OPENVINO_ASSERT(reshape != nullptr, "ReshapeTransformation: failed to separate Reshape in standalone branch");
     reshapeDequantizationConstant(reshape, defaultPrecisions);
-    const auto newOperation = moveDequantizationAfter(context, reshape, NetworkHelper::getDequantization(reshape, defaultPrecisions, 0));
+    const auto newOperation = moveDequantizationAfter(reshape, NetworkHelper::getDequantization(reshape, defaultPrecisions, 0));
 
-    OPENVINO_DEBUG << "LPT: done: " << newOperation;
+    OPENVINO_DEBUG("LPT: done: ", newOperation);
     return true;
 }
 
@@ -188,8 +203,8 @@ inline size_t getFirstChangedDimension(const PartialShape& shape1, const Partial
     return i;
 }
 
-bool ReshapeTransformation::canBeTransformed(const TransformationContext& context, std::shared_ptr<Node> op) const {
-    if (!LayerTransformation::canBeTransformed(context, op)) {
+bool ReshapeTransformation::canBeTransformed(const std::shared_ptr<Node>& op) const {
+    if (!LayerTransformation::canBeTransformed(op)) {
         return false;
     }
 

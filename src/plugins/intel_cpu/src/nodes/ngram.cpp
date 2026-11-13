@@ -1,19 +1,35 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "ngram.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <numeric>
+#include <oneapi/dnnl/dnnl_common.hpp>
 #include <string>
 #include <vector>
 
-#include "ngram.h"
-#include "openvino/core/parallel.hpp"
 #include "common/cpu_memcpy.h"
-#include "transformations/cpu_opset/common/op/ngram.hpp"
+#include "cpu_types.h"
+#include "graph_context.h"
+#include "memory_desc/blocked_memory_desc.h"
+#include "memory_desc/cpu_memory_desc.h"
+#include "node.h"
+#include "onednn/iml_type_mapper.h"
+#include "openvino/core/except.hpp"
+#include "openvino/core/node.hpp"
+#include "openvino/core/type.hpp"
+#include "openvino/core/type/element_type.hpp"
 #include "shape_inference/custom/ngram.hpp"
+#include "transformations/cpu_opset/common/op/ngram.hpp"
+#include "utils/general_utils.h"
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+namespace ov::intel_cpu::node {
 
 bool Ngram::isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::string& errorMessage) noexcept {
     try {
@@ -51,16 +67,16 @@ Ngram::Ngram(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& cont
 }
 
 void Ngram::initSupportedPrimitiveDescriptors() {
-    if (!supportedPrimitiveDescriptors.empty())
+    if (!supportedPrimitiveDescriptors.empty()) {
         return;
+    }
 
     idcesPrecision = getOriginalInputPrecisionAtPort(1);
-    if (idcesPrecision != ov::element::i32 && idcesPrecision != ov::element::i64) {
+    if (none_of(idcesPrecision, ov::element::i32, ov::element::i64)) {
         idcesPrecision = ov::element::i32;
     }
 
-    addSupportedPrimDesc({{LayoutType::ncsp, ov::element::f32},
-                          {LayoutType::ncsp, idcesPrecision}},
+    addSupportedPrimDesc({{LayoutType::ncsp, ov::element::f32}, {LayoutType::ncsp, idcesPrecision}},
                          {{LayoutType::ncsp, ov::element::f32}},
                          ref_any);
 }
@@ -68,10 +84,12 @@ void Ngram::initSupportedPrimitiveDescriptors() {
 void Ngram::prepareParams() {
     const auto& srcDataDims = getSrcMemoryAtPort(0)->getStaticDims();
     const auto& srcIndicesDims = getSrcMemoryAtPort(1)->getStaticDims();
-    const auto& outDims = getDstMemoryAtPort(0)->getStaticDims();;
+    const auto& outDims = getDstMemoryAtPort(0)->getStaticDims();
+    ;
 
-    idcesShapeSize = std::accumulate(srcIndicesDims.begin(), srcIndicesDims.end(), 1, std::multiplies<size_t>());
-    numOutElems = std::accumulate(outDims.begin(), outDims.end(), 1, std::multiplies<size_t>());
+    idcesShapeSize =
+        std::accumulate(srcIndicesDims.begin(), srcIndicesDims.end(), static_cast<Dim>(1), std::multiplies<>());
+    numOutElems = std::accumulate(outDims.begin(), outDims.end(), static_cast<Dim>(1), std::multiplies<>());
     idcesStride = getSrcMemoryAtPort(1)->getDescWithType<BlockedMemoryDesc>()->getStrides()[0];
     numIdces = srcIndicesDims[0];
 
@@ -97,9 +115,10 @@ std::vector<size_t> Ngram::computeBatchLenghts() {
     return batchLenghts;
 }
 
-void Ngram::execute(dnnl::stream strm) {
-    auto* srcData = getSrcDataAtPortAs<const float>(0);
+void Ngram::execute([[maybe_unused]] const dnnl::stream& strm) {
+    const auto* srcData = getSrcDataAtPortAs<const float>(0);
     auto* dstData = getDstDataAtPortAs<float>(0);
+    const auto& cpu_parallel = context->getCpuParallel();
 
     std::vector<size_t> batchLenghts;
     if (idcesPrecision == ov::element::i32) {
@@ -107,7 +126,7 @@ void Ngram::execute(dnnl::stream strm) {
     } else if (idcesPrecision == ov::element::i64) {
         batchLenghts = computeBatchLenghts<std::int64_t>();
     } else {
-        OPENVINO_THROW("Unsupported idces precision: ", idcesPrecision);
+        CPU_NODE_THROW("Unsupported indices precision: ", idcesPrecision);
     }
 
     /* The following procedure applied to each batch:
@@ -115,7 +134,7 @@ void Ngram::execute(dnnl::stream strm) {
        2. Apply sliding window of windowSize with a step windowStride and form k new embedding vectors for the embedding
     */
     memset(dstData, 0, numOutElems * sizeof(float));
-    parallel_for(batchLenghts.size() - 1, [&](const size_t batchIdx) {
+    cpu_parallel->parallel_for(batchLenghts.size() - 1, [&](const size_t batchIdx) {
         size_t srcWindowBias = 0;
         size_t dstWindowBias = 0;
 
@@ -124,19 +143,23 @@ void Ngram::execute(dnnl::stream strm) {
         const size_t dstBatchBias = batchLenghts[batchIdx] * windowStride * k;
         for (size_t i = 0; i < niter; ++i) {
             const size_t curLeftPad = leftPad >= i ? leftPaddingSize - i * windowStride : 0;
-            const size_t curRightPad = rightPad >= niter - 1 - i ? rightPaddingSize - (niter - 1 - i) * windowStride : 0;
+            const size_t curRightPad =
+                rightPad >= niter - 1 - i ? rightPaddingSize - (niter - 1 - i) * windowStride : 0;
             const size_t dataSize = windowSize - curLeftPad - curRightPad;
 
             dstWindowBias += curLeftPad;
-            cpu_memcpy(dstData + dstBatchBias + dstWindowBias, srcData + srcBatchBias + srcWindowBias, dataSize * sizeof(float));
+            cpu_memcpy(dstData + dstBatchBias + dstWindowBias,
+                       srcData + srcBatchBias + srcWindowBias,
+                       dataSize * sizeof(float));
             dstWindowBias += dataSize + curRightPad;
-            if (curLeftPad == 0)
+            if (curLeftPad == 0) {
                 srcWindowBias += windowStride;
+            }
         }
     });
 }
 
-void Ngram::executeDynamicImpl(dnnl::stream strm) {
+void Ngram::executeDynamicImpl(const dnnl::stream& strm) {
     execute(strm);
 }
 
@@ -144,6 +167,4 @@ bool Ngram::created() const {
     return getType() == Type::Ngram;
 }
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

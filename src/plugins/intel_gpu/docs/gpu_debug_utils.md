@@ -3,64 +3,202 @@
 This document is a list of useful debug features / tricks that might be used to find root cause of performance / functional issues. Some of them
 are available by default, but some others might require plugin recompilation.
 
-## Debug Config
-
-`Debug_config` is an infrastructure that contains several easy-to-use debugging features. It has various control parameters, which you can check from the source code `cldnn::debug_configuration`.
-
 ### How to use it
 
-First, this feature should be enabled from cmake configuration `ENABLE_DEBUG_CAPS`. When OpenVINO is released, it is turned off by default.
-The parameters should be set from an environment variable when calling inference engine API.
+First, debug features should be enabled from cmake configuration `ENABLE_DEBUG_CAPS`. When OpenVINO is released, it is turned off by default.
+
+The parameters can be set from an environment variable when calling inference engine API.
+The environment variable name is concatenation of `OV_` prefix and string identifier of corresponding ov property (for instance, one of the properties here `src/plugins/intel_gpu/include/intel_gpu/runtime/internal_properties.hpp`)
+
 
 ```
-$ OV_GPU_Verbose=1 ./benchmark_app ...      # Run benchmark_app with OV_GPU_Verbose option
-$ OV_GPU_DumpLayersPath="cldnn/" ./benchmark_app ...   # Run benchmark_app and store intermediate buffers into cldnn/ directory.
+$ OV_VERBOSE=1 ./benchmark_app ...                       # Run benchmark_app with OV_VERBOSE option
+$ OV_GPU_DUMP_TENSORS_PATH="dump/" ./benchmark_app ...   # Run benchmark_app and store intermediate buffers into dump/ directory.
 ```
 
 For Windows OS, use the following syntax:
 
 ```
 Windows Power Shell:
-> $env:OV_GPU_Verbose=1
-> .\benchmark_app.exe ...      # Run benchmark_app with OV_GPU_Verbose option
+> $env:OV_VERBOSE=1
+> .\benchmark_app.exe ...      # Run benchmark_app with OV_VERBOSE option
 
 Windows cmd.exe:
-> set "OV_GPU_Verbose=1"
-> benchmark_app.exe ...      # Run benchmark_app with OV_GPU_Verbose option
+> set "OV_VERBOSE=1"
+> benchmark_app.exe ...      # Run benchmark_app with OV_VERBOSE option
 ```
 
-### Options syntax
+Alternative approach, is to prepate config file in json format and set path to it via `OV_DEBUG_CONFIG=path` option.
+NOTE:
+    1. Options set via environment has higher priority than options from the config file.
+    2. Global options can't be activated via config to avoid mess when the finalize() call changes the value of globally visible variable which may lead to some weird behavior.
+Config example:
+```json
+{"GPU.1":{"OV_VERBOSE":"ON","PERF_COUNT":"ON"}}
+```
 
-Plugin is able to parse different naming styles for debug options:
-1. `OV_GPU_SOME_OPTION`
-2. `OV_GPU_SomeOption`
+### Option types
+Plugin config supports 4 option types:
+1. `OV_CONFIG_RELEASE_OPTION` - options that are available via public API for any kind of builds
+1. `OV_CONFIG_RELEASE_INTERNAL_OPTION` - available for any build type, but can't be set via public API.
+1. `OV_CONFIG_DEBUG_OPTION` - these options are available for the builds with `ENABLE_DEBUG_CAPS` only.
+1. `OV_CONFIG_DEBUG_GLOBAL_OPTION` - same as above, but a little bit different behavior (see below).
 
-Behavior when both versions are specified is not defined.
+The difference between "local" and "global" options is that value for local option is resolved during "finalize" call for the config class which typically happens somewhere after `Core::{compile,import,query}_model()` call. That means that the local options can be set per-model basis for the multi model pipelines if env is modified from the code for each model.
 
-Some options also allow multiple prefixes: `OV` and `OV_GPU`. `OV` prefix is intended to be used for options common for all OpenVINO components. When an option is set twice with different prefixes, then `OV_GPU` has higher priority.
+Value of the global options is read from env on the first access to the option, or set as default value if not present in environment. Global option variables are static members of the config which is needed to activate some basic debug capabilities (such as logging) in the arbitrary part of the project w/o need to pass `ExecutionConfig` object to all the places where we need to log something.
 
 ### List of parameters
 
-This is a part of the full list. To get all parameters, see OV_GPU_Help result.
+Full options list is defined in `src/plugins/intel_gpu/include/intel_gpu/runtime/options.inl` file. This can also be printed to console by setting `OV_HELP=1` option
 
-* `OV_GPU_Help`: Shows help message of debug config.
-* `OV_GPU_Verbose`: Verbose execution. Currently, `Verbose=1` and `2` are supported.
-* `OV_GPU_PrintMultiKernelPerf`: Prints kernel latency for multi-kernel primitives. This is turned on by setting `1`. Execution time is printed.
-* `OV_GPU_DisableUsm`: Disables the usage of usm (unified shared memory). This is turned on by setting `1`.
-* `OV_GPU_DisableOnednn`: Disables oneDNN for discrete GPU (no effect for integrated GPU).
-* `OV_GPU_DumpGraphs`: Dumps an optimized graph into the path that this variable points. This is turned on by setting the destination path into this variable.
-* `OV_GPU_DumpSources`: Dumps openCL sources
-* `OV_GPU_DumpLayersPath`: Enables intermediate buffer dump and store the tensors. This is turned on by setting the destination path into this variable. You can check the exact layer name from `OV_GPU_Verbose=1`.
-* `OV_GPU_DumpLayers`: Dumps intermediate buffers only for the layers that this variable specifies. Multiple layers can be specified with a space delimiter. Dump feature should be enabled through `OV_GPU_DumpLayersPath`.
-* `OV_GPU_DumpLayersResult`: Dumps output buffers of result layers only.
-* `OV_GPU_DumpLayersDstOnly`: When dumping intermediate buffer, dumps destination buffer only. This is turned on by setting `1`.
-* `OV_GPU_DumpLayersLimitBatch`:        Limits the size of a batch to dump.
-* `OV_GPU_DryRunPath`:                  Dry runs and serializes the execution graph into the specified path.
-* `OV_GPU_BaseBatchForMemEstimation`:   Base batch size to be used in memory estimation.
-* `OV_GPU_AfterProc`:                   Runs inference after the specified process PIDs are finished, separated by space. Supported only on Linux.
-* `OV_GPU_SerialCompile`:               Serializes creating primitives and compiling kernels.
-* `OV_GPU_ForceImplType`:               Forces implementation type of a target primitive or a layer. [primitive or layout_name]:[impl_type] For primitives, `fc:onednn`, `fc:ocl`, `do:cpu`, `do:ocl`, `reduce:ocl` and `reduce:oneDNN` are supported
-* `OV_GPU_MaxKernelsPerBatch`:          Maximum number of kernels in a batch during compiling kernels.
+### Quick lookup table for debug configuration
+These are the most commonly used GPU debug knobs.
+
+| Env variable name | When/how to use |
+|---|---|
+| `OV_VERBOSE` | Verbosity level. Supported range: `0` (disabled) to `4` (maximum). |
+| `OV_GPU_LOG_TO_FILE` | Saves verbose logs to the specified file. |
+| `OV_GPU_LIST_LAYERS` | Set to `1` to print the list of executed primitives. This is a subset of the `OV_VERBOSE` log. |
+| `OV_GPU_FORCE_FP32_LAYER_TYPES` | Space-separated operation types, including the optional `PASSTHROUGH_OPS` alias, to promote from FP16 to FP32. See [Selective FP32 precision](#selective-fp32-precision). |
+| `OV_GPU_FORCE_FP32_LAYER_NAMES` | Space-separated friendly-name substrings to select for FP32 promotion. Combined with the type filter using AND. |
+| `OV_DYNAMIC_QUANTIZATION_GROUP_SIZE` | Sets the dynamic quantization group size. For best accuracy, disable dynamic quantization by setting this value to `0`. |
+| `OV_ACTIVATIONS_SCALE_FACTOR` | Scalar floating-point value used for runtime activation tensor scaling. This is mainly useful for accuracy troubleshooting where `NaN` or `inf` is created in the middle of network execution. |
+| `OV_GPU_DUMP_GRAPHS_PATH` | Saves intermediate graph representations during model compilation to the specified directory. Useful for debugging fusion, layout selection, or opt-out decisions. See the graph dump section below for details. |
+| `OV_GPU_DUMP_MEMORY_POOL` | Enables verbose output for the memory pool. Supported values: `0` (disabled), `1` (summary), `2` (detailed entries). |
+| `OV_GPU_DUMP_SOURCES_PATH` | Saves generated OpenCL sources for each kernel to the specified directory. Useful for debugging kernel generation and source-level issues. See the source dump section below for details. |
+| `OV_GPU_ENABLE_LARGE_ALLOCATIONS` | Allows buffer allocations that exceed the device maximum allocation size. This is enabled by default on Xe2+ platforms. |
+| `OV_GPU_HOST_TIME_PROFILING` | Measures and prints host-side time spent from the beginning of inference until all host work is done and the plugin is ready to block on the final `clFinish()` call. It reports enqueue and wait times separately. Set to `1` for enqueue time only; set to `2` for detailed breakdown (`input processing`, `enqueue`, `wait`, and `output processing`). |
+| `OV_GPU_NETWORK_MARKER` | Inserts named OpenCL marker kernels at the start and end of network execution for tools such as CLIntercept. Useful for low-level debugging of execution traces and device timeline data. |
+| `OV_GPU_PRINT_INPUT_DATA_SHAPES` | Prints network input tensor shapes. Useful for understanding runtime behavior and shape-related issues. |
+| `OV_GPU_VALIDATE_OUTPUT_BUFFER` | Validates output buffers for all layers with `fp16` data type to detect `inf` and `nan` values. |
+
+#### Family of debug configuration options for inspecting intermediate data (primitive output)
+These options enable inspection of intermediate tensor data and are primarily used for accuracy troubleshooting.
+
+| Env variable name | When/how to use |
+|---|---|
+| `OV_GPU_DUMP_TENSORS_PATH` | Saves intermediate input/output tensors for each primitive to the specified directory. This is the main switch for tensor dump mode. See the tensor dump section below for details. |
+| `OV_GPU_DUMP_SINCOS_PATH` | Saves raw binary input/output of every Sin/Cos activation to the specified directory (must end with `/`). Files are named `SINCOS__<seq>__p<program>_n<network>_i<iteration>__<sin\|cos>__<src0\|dst0>__<dtype>__<AxBxC>__<layer>.bin`. Synchronizes the stream on every Sin/Cos node. Useful for troubleshooting position-embedding accuracy. |
+| `OV_GPU_DUMP_TENSORS` | Tensor types to dump. Supported values: `all`, `in`, `out`. |
+| `OV_GPU_DUMP_ITERATIONS` | Space-separated list of iterations when the other dump options should be enabled. |
+| `OV_GPU_DUMP_LAYER_NAMES` | Enables dumping only for the specified layer names. |
+| `OV_GPU_DUMP_SRC_TENSORS_AFTER_EXEC` | Enables source data dump after layer execution. Useful for capturing updated state in stateful models. |
+| `OV_GPU_DUMP_TENSORS_FORMAT` | Tensor dump format. Supported values: `binary`, `text`, `text_raw`. Text dumps are planar and are slower because of in-flight reorder. `text_raw` dumps without reordering. For weights, `binary` or `text` is usually preferred because weight-reorder support is not available for all formats. |
+| `OV_GPU_LOAD_DUMP_RAW_BINARY` | Load input data of layers from raw binary dump files. When tensors are dumped in `binary` format, this allows them to be loaded during inference for accuracy debugging. |
+
+### How to check debug-config works
+All options that are found in environment or config file are printed to stdout:
+```
+$ OV_VERBOSE=1 ./benchmark_app
+...
+Non default env value for VERBOSE = 1
+...
+```
+
+## Selective FP32 precision
+
+Use `ForceFP32Selective` to investigate FP16 accuracy issues by promoting selected operations' FP16 inputs and outputs to FP32. This feature requires `ENABLE_DEBUG_CAPS=ON` and `ENABLE_GPU_DEBUG_CAPS=ON`. Sources remain in the build lists, following the GPU debug helper pattern. When GPU debug caps are disabled, `GPU_DEBUG_CONFIG` guards exclude the pass declaration, implementation, registration, and unit tests during preprocessing. Configuration options use the standard `OV_CONFIG_DEBUG_OPTION` mechanism, controlled by `ENABLE_DEBUG_CAPS`.
+
+The pass runs at the end of the GPU model transformation pipeline, after precision conversion and fusion. Filters use the operation's current type (`get_type_name()`) and friendly name at this stage. For example, an original `MatMul` may already be `FullyConnected`, and an RMS pattern may be fused into the internal `RMS` operation. Use types and names from the transformed model; names from the original model may have changed.
+
+### Filters and examples
+
+Both variables accept **space-separated** values. Quote a list in the shell; commas do not separate values. Operation type matching is exact and case-sensitive; `PASSTHROUGH_OPS` is a reserved type-list alias. Name matching uses case-sensitive substrings, with no regular expressions or wildcards.
+
+| Type list | Name list | Initial selection |
+|---|---|---|
+| Empty | Empty | No changes. |
+| Set | Empty | Any listed type (OR). |
+| Empty | Set | Any listed name substring (OR). |
+| Set | Set | A listed type AND a listed name substring. |
+
+A matching operation must have at least one FP16 output. If no operation qualifies, the pass makes no changes. GPU `Placeholder`, model `Parameter`/`Result`, and operations with no outputs are excluded from initial selection.
+
+The examples below set only the filters shown. Leave the other filter unset when using type-only or name-only selection. Replace the example names with friendly-name substrings present in your transformed model.
+
+```bash
+# Type-only: select FullyConnected OR RMS.
+OV_GPU_FORCE_FP32_LAYER_TYPES="FullyConnected RMS" ./benchmark_app -m model.xml -d GPU
+
+# Name-only: select names containing block.19 OR ff.net.0.proj.
+OV_GPU_FORCE_FP32_LAYER_NAMES="block.19 ff.net.0.proj" ./benchmark_app -m model.xml -d GPU
+
+# Combined: select RMS nodes whose names contain block.19; print changed ports.
+OV_GPU_FORCE_FP32_LAYER_TYPES="RMS" OV_GPU_FORCE_FP32_LAYER_NAMES="block.19" \
+OV_VERBOSE=2 ./benchmark_app -m model.xml -d GPU
+
+# Opt in to FP32 data movement operations as well as RMS.
+OV_GPU_FORCE_FP32_LAYER_TYPES="RMS PASSTHROUGH_OPS" ./benchmark_app -m model.xml -d GPU
+```
+
+### Selection region and precision boundaries
+
+The region contains only operations selected by the filters; there is no automatic propagation to neighboring operations. To include intermediate data movement operations, list their types or names explicitly, or add `PASSTHROUGH_OPS` to the type list.
+
+`PASSTHROUGH_OPS` matches `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `StridedSlice`, `Gather`, `Concat`, `Split`, `VariadicSplit`, `ShapeOf`, and `Broadcast`. This is a model-wide type alias, not a search for paths between target operations. Without a name filter, it also selects disconnected operations and branches of these types. With a name filter, alias matches must satisfy the same name condition. Only FP16 outputs qualify, so integer ShapeOf outputs are preserved.
+
+For example, `OV_GPU_FORCE_FP32_LAYER_TYPES="RMS PASSTHROUGH_OPS"` selects RMS and the listed data movement types across the model. Adding `OV_GPU_FORCE_FP32_LAYER_NAMES="block.19"` restricts both groups to matching names; intermediate nodes with other names remain unselected.
+
+Only originally FP16 output ports are promoted. Existing FP32, integer, boolean, and BF16 outputs keep their types; for example, TopK values are promoted while its integer indices remain unchanged. External FP16 inputs get FP32 Converts, and outputs leaving the region are restored to their original FP16 type. Model input and output types remain unchanged.
+
+Unselected intermediate operations keep their FP16 boundaries. A path such as selected FP32 operation → FP16 Reshape/Transpose → selected FP32 operation still introduces FP16 rounding. Select all required intermediate operations to keep that path FP32; the alias makes this an explicit user choice.
+
+Region nodes connect directly where possible. FP16/FP32 Convert chains can be bypassed on a selected input edge when they lead back to a promoted region output or an external FP32 source. Other consumers keep the original chain. Chains containing integer, boolean, or BF16 conversions, or starting from an external FP16 producer, are preserved.
+
+### Supported scope and limits
+
+The unit suite covers filtering (type-only, name-only, OR within lists, AND between lists, and no matches), internal RMS and GPU FullyConnected precision attributes, TypeRelaxed overrides, mixed output types, internal and shared Convert edges, explicit pass-through selection and alias/name filtering, and Placeholder inputs. Selected arithmetic graphs are also evaluated to check rounding and preservation of unselected branches. The pass updates recognized FP16 output precision attributes as well as output descriptors; these tests do not establish GPU kernel execution precision.
+
+Constant data, shared state (`ReadValue`/`Assign` and caches), and `Loop`/`If` boundaries are not fully supported. The pass does not recursively select operations inside subgraph bodies. Constant, state, and subgraph operations are excluded from precision attribute updates, but are not all excluded by the initial filters; avoid selecting them until coordinated type handling is implemented. Separate calculation attributes such as `RMSNorm::compute_type` are not updated.
+
+Widening an already rounded FP16 value to FP32 does not recover the lost precision. This applies to previously compressed constants and values produced outside the region. Check the compiled runtime graph and GPU results to confirm the execution precision and accuracy of the selected operations.
+
+With `OV_VERBOSE=2` or higher, the pass logs changed graph output ports. Example output (without the file/line prefix):
+
+```text
+[ForceFP32Selective] FORCED: type=RMS  name=block.19.rms  output=0 f16->f32
+[ForceFP32Selective] Done. Region=1  Forced=1  Outputs=1
+```
+
+`Region` is the number of operations selected by the filters, `Forced` counts nodes with logged promotions still present in the model, and `Outputs` counts their promoted ports. Unmatched or unchanged nodes have no `FORCED` entry. Logs describe the graph at the end of this pass, before automatic validation and GPU kernel selection; they do not confirm kernel execution precision.
+
+## Tagged verbose logs
+
+Some verbose logs belong to a feature family and carry a tag right after the regular log prefix, so all decisions of one feature can be collected with a single grep:
+
+```
+GPU_Debug: dynamic_quantize.cpp:43:should_skip_execution: [dynquan] dynamicquantize:DynamicQuantize_155332 skipped at runtime: ...
+```
+
+In code, use `GPU_DEBUG_TAGGED(level, "tag")` where `level` is one of `COUT`, `INFO`, `LOG`, `TRACE`, `TRACE_DETAIL` (the same levels as `OV_VERBOSE`):
+
+```cpp
+GPU_DEBUG_TAGGED(TRACE, "dynquan") << node.id() << " turned off: <reason>" << std::endl;
+```
+
+Tag naming convention: a short string literal of lowercase letters and digits only, without separators (no `_` or `-`). Reuse an existing tag for the same family and add new tags to the table below.
+
+| Tag | Feature | Useful `OV_VERBOSE` level |
+|---|---|---|
+| `dynquan` | Dynamic quantization of fully connected activations | `3` |
+
+## Why was dynamic quantization (not) applied?
+
+Dynamic quantization quantizes the activation of a fully connected (FC) layer with compressed (4/8-bit) weights to int8 at runtime, so that the matmul runs in int8. It is enabled by default, but the plugin decides per -FC and per-inference whether to use it. Every decision is logged with the `dynquan` tag:
+
+```
+$ OV_VERBOSE=3 OV_GPU_LOG_TO_FILE=dq.log ./benchmark_app ...    # or any application
+$ grep "\[dynquan\]" dq.log
+```
+
+Example of `grep "\[dynquan\]" dq.log` on an XMX GPU:
+
+```
+GPU_Debug: transformations_pipeline.cpp:1942:operator(): [dynquan] __module.lm_head/aten::linear/MatMul turned off: N == 1 (activation quantization is unprofitable; keep weight-only quantization with f16 activation)
+GPU_Debug: dynamic_quantize_fully_connected.cpp:159:operator(): [dynquan] __module.model.layers.0.mlp.down_proj/aten::linear/MatMul applied: group_size per-token, dt i8, sym
+GPU_Debug: dynamic_quantize.cpp:43:should_skip_execution: [dynquan] dynamicquantize:DynamicQuantize_155332 skipped at runtime: token count 1 <= dynamic_quantization_threshold 64
+```
 
 ## Dump execution graph
 
@@ -147,7 +285,7 @@ So it allows you to quickly check the execution time of some operation on the de
 
 *Intel_GPU* plugin allows you to dump some info about intermediate stages in the graph optimizer.
 
-* You can dump graphs with `OV_GPU_DumpGraphs` of debug config. For the usage of debug config, see the [link](#debug-config).
+* You can dump graphs with `OV_GPU_DUMP_GRAPHS_PATH` of debug config. For the usage of debug config, see the [link](#how-to-check-debug-config-works).
 
 
 For each stage, it dumps:
@@ -165,7 +303,7 @@ The main graph usually has `program_id = 0`. Graphs with other `program_id` valu
 
 Since *Intel_GPU* source tree contains only *templates* of the OpenCL™ kernels, it is quite important to get full kernels source code.
 
-* You can use `OV_GPU_DumpSources` of debug config. For the usage of debug config, see [link](#debug-config).
+* You can use `OV_GPU_DUMP_SOURCES_PATH` of debug config. For the usage of debug config, see [link](#how-to-check-debug-config-works).
 
 
 When this key is enabled, the plugin dumps multiple files with the following names:
@@ -193,21 +331,34 @@ When the source is dumped, it contains a huge amount of macros(`#define`). For r
 
 `$ cpp dumped_source.cl > clean_source.cl`
 
+## Forcing implementations
+
+You can force a specific implementation for chosen primitives by setting ```OV_GPU_FORCE_IMPLEMENTATIONS``` option. Variable expects strings with the following format:
+
+`OV_GPU_FORCE_IMPLEMENTATIONS={Name:Impl:Kernel:Layout}`, where
+ - ```Name``` is the name of the primitive, for which you'd like to force a specific implementation. Name used in this context has the following form: ```'layer_name:primitive_id'```. Use quotation marks, otherwise the colon in the name will be treated as a separator.
+ - ```Impl``` is the forced implementation name, available: ```any```, ```ocl```, ```cm```, ```sycl```, ```onednn```, ```common```, ```cpu```
+ - ```Kernel``` is the name of the kernel you'd like to be executed. Please note that currently forcing the specific kernel works only for ```ocl``` implementation
+ - ```Layout``` is the output layout. The full list of available layouts is available [here](../include/intel_gpu/runtime/format.hpp)
+
+ You can force implementation for more than 1 primitive:
+
+ `OV_GPU_FORCE_IMPLEMENTATIONS={Name:Impl:Kernel:Layout},{Name:Impl:Kernel:Layout},...`
 
 ## Layer in/out buffer dumps
 
 In some cases, you might want to get actual values in each layer execution to compare it with some reference blob. To do that, choose the
-`OV_GPU_DumpLayersPath` option in debug config. For the usage of debug config, see [link](#debug-config).
+`OV_GPU_DUMP_TENSORS_PATH` option in debug config. For the usage of debug config, see [link](#how-to-check-debug-config-works.
 
 As a prerequisite, enable `ENABLE_DEBUG_CAPS` from the cmake configuration.
 
-Then, check the runtime layer name by executing *benchmark_app* with `OV_GPU_Verbose=1`. It is better to check it with `OV_GPU_Verbose=1` than through IR because this may be slightly different. `OV_GPU_Verbose=1` will show the log of execution of each layer.
+Then, check the runtime layer name by executing *benchmark_app* with `OV_VERBOSE=1`. It is better to check it with `OV_VERBOSE=1` than through IR because this may be slightly different. `OV_VERBOSE=1` will show the log of execution of each layer.
 
 ```
 # As a prerequisite, enable ENABLE_DEBUG_CAPS from cmake configuration.
-export OV_GPU_DumpLayersPath=path/to/dir
-export OV_GPU_DumpLayers="layer_name_to_dump1 layer_name_to_dump2"
-export OV_GPU_DumpLayersDstOnly=1              # Set as 1 when you want to dump dest buff only
+export OV_GPU_DUMP_TENSORS_PATH=path/to/dir
+export OV_GPU_DUMP_LAYER_NAMES="layer_name_to_dump1 layer_name_to_dump2"
+export OV_GPU_DUMP_TENSORS=out              # only out tensors should be saved
 ```
 
 Dump files are named in the following convention:
@@ -220,18 +371,7 @@ Each file contains a single buffer in a common planar format (`bfyx`, `bfzyx`, o
 shape: [b:1, f:1280, x:1, y:1, z:1, w:1, g:1] (count: 1280, original format: b_fs_yx_fsv16)
 ```
 
-For troubleshooting the accuracy, you may want to compare the results of GPU plugin and CPU plugin. For CPU dump, see [Blob dumping](https://github.com/openvinotoolkit/openvino/blob/master/src/plugins/intel_cpu/src/docs/blob_dumping.md)
-
-
-## Run int8 model on Gen9 HW
-
-As Gen9 HW does not have hardware acceleration, low-precision transformations are disabled by default. Therefore, quantized networks are executed in full precision (FP16 or FP32), with explicit execution of quantize operations.
-If you do not have Gen12 HW, but want to debug the network's accuracy or performance of simple operations (which does not require dp4a support), then you can enable low precision pipeline on Gen9, with one of the following approaches:
-1. Add `ov::intel_gpu::enable_lp_transformations(true)` option to the plugin config.
-2. Enforce `supports_imad = true` [here](https://github.com/openvinotoolkit/openvino/blob/master/inference-engine/thirdparty/clDNN/src/gpu/device_info.cpp#L226)
-3. Enforce `conf.enableInt8 = true` [here](https://github.com/openvinotoolkit/openvino/blob/master/inference-engine/src/cldnn_engine/cldnn_engine.cpp#L366)
-
-After that, the plugin will run exactly the same scope of transformations as on Gen12 HW and generate similar kernels (a small difference is possible due to different EUs count).
+For troubleshooting the accuracy, you may want to compare the results of GPU plugin and CPU plugin. For CPU dump, see [Blob dumping](https://github.com/openvinotoolkit/openvino/blob/master/src/plugins/intel_cpu/docs/debug_capabilities/blob_dumping.md)
 
 
 ## Checking OpenCL execution

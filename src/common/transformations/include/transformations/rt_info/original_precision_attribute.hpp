@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -23,7 +23,7 @@ TRANSFORMATIONS_API element::Type_t get_original_precision(const std::shared_ptr
  */
 class TRANSFORMATIONS_API OriginalPrecisionAttribute : public RuntimeAttribute {
 public:
-    OPENVINO_RTTI("original_precision", "0");
+    OPENVINO_RTTI("original_precision", "0", RuntimeAttribute);
 };
 
 }  // namespace ov

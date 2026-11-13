@@ -1,33 +1,29 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include "openvino/core/rtti.hpp"
 #include "pass.hpp"
+#include "snippets/lowered/linear_ir.hpp"
+#include "snippets/lowered/loop_info.hpp"
 
-#include "snippets/lowered/loop_manager.hpp"
-
-namespace ov {
-namespace snippets {
-namespace lowered {
-namespace pass {
+namespace ov::snippets::lowered::pass {
 
 /**
  * @interface InitLoops
- * @brief The pass initializes scheduling information in LoopInfo
+ * @brief The pass initializes scheduling information in UnifiedLoopInfo
  * @ingroup snippets
  */
 class InitLoops : public Pass {
 public:
-    OPENVINO_RTTI("InitLoops", "Pass")
+    OPENVINO_RTTI("InitLoops", "", Pass);
     InitLoops() = default;
     bool run(LinearIR& linear_ir) override;
 
-    static void init_loop_info(const LinearIR::LoopManager::LoopInfoPtr& loop_info, bool only_runtime_args = false);
+private:
+    static void update_compile_parameters(const UnifiedLoopInfoPtr& loop_info);
 };
 
-} // namespace pass
-} // namespace lowered
-} // namespace snippets
-} // namespace ov
+}  // namespace ov::snippets::lowered::pass

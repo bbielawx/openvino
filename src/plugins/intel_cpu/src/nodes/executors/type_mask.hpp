@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,45 +9,48 @@
 
 #include "openvino/core/type/element_type.hpp"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 struct TypeMask {
-    enum Value : uint64_t {
-        _undefined = 1 << 0,
-        _dynamic   = 1 << 1,
-        _boolean   = 1 << 2,
-        _bf16      = 1 << 3,
-        _f16       = 1 << 4,
-        _f32       = 1 << 5,
-        _f64       = 1 << 6,
-        _i4        = 1 << 7,
-        _i8        = 1 << 8,
-        _i16       = 1 << 9,
-        _i32       = 1 << 10,
-        _i64       = 1 << 11,
-        _u1        = 1 << 12,
-        _u4        = 1 << 13,
-        _u8        = 1 << 14,
-        _u16       = 1 << 15,
-        _u32       = 1 << 16,
-        _u64       = 1 << 17,
-        _nf4       = 1 << 18,
-        _f8e4m3    = 1 << 19,
-        _f8e5m2    = 1 << 20,
-        _string    = 1 << 21
+    enum Value : uint32_t {
+        _dynamic = 1 << 0,
+        _boolean = 1 << 1,
+        _bf16 = 1 << 2,
+        _f16 = 1 << 3,
+        _f32 = 1 << 4,
+        _f64 = 1 << 5,
+        _i4 = 1 << 6,
+        _i8 = 1 << 7,
+        _i16 = 1 << 8,
+        _i32 = 1 << 9,
+        _i64 = 1 << 10,
+        _u1 = 1 << 11,
+        _u4 = 1 << 12,
+        _u8 = 1 << 13,
+        _u16 = 1 << 14,
+        _u32 = 1 << 15,
+        _u64 = 1 << 16,
+        _nf4 = 1 << 17,
+        _f8e4m3 = 1 << 18,
+        _f8e5m2 = 1 << 19,
+        _string = 1 << 20,
+        _f4e2m1 = 1 << 21,
+        _f8e8m0 = 1 << 22,
+        _u2 = 1 << 23,
+        _u3 = 1 << 24,
     };
 
-    TypeMask(const ov::element::Type precision) : value(generateMask(precision)), precision(precision) {}
+    explicit TypeMask(const ov::element::Type precision) : value(generateMask(precision)), precision(precision) {}
 
-    TypeMask(const uint64_t value) : value(value) {}
+    // TypeMask is designed to be implicitly convertible from uint64_t
+    TypeMask(const uint64_t value) : value(value) {}  // NOLINT(google-explicit-constructor)
 
     // can be treated as uint64_t mask
-    operator uint64_t() const {
+    operator uint64_t() const {  // NOLINT(google-explicit-constructor)
         return value;
     }
     // match
     bool operator&(const ov::element::Type precision) const {
-        return value & TypeMask(precision);
+        return (value & TypeMask(precision)) != 0U;
     }
 
     const uint64_t value;
@@ -59,8 +62,6 @@ private:
     case ov::element::typeM: \
         return _##typeM;
         switch (type) {
-            CASE(undefined)
-            CASE(dynamic)
             CASE(boolean)
             CASE(bf16)
             CASE(f16)
@@ -81,18 +82,21 @@ private:
             CASE(f8e4m3)
             CASE(f8e5m2)
             CASE(string)
+            CASE(f4e2m1)
+            CASE(f8e8m0)
+            CASE(u2)
+            CASE(u3)
         default:
-            return _undefined;
+            return _dynamic;
         }
 #undef CASE
     }
 };
 
 namespace TypeMaskAlias {
-constexpr ov::element::Type fxx(ov::element::Type_t::undefined);
-#define DEFINE_TYPE_ALIAS(x) constexpr auto x = TypeMask::Value::x
+constexpr ov::element::Type fxx(ov::element::Type_t::dynamic);
+#define DEFINE_TYPE_ALIAS(x) constexpr uint64_t x = TypeMask::Value::x
 // use underscore for naming to avoid conflicts with Precision aliases
-DEFINE_TYPE_ALIAS(_undefined);
 DEFINE_TYPE_ALIAS(_dynamic);
 DEFINE_TYPE_ALIAS(_boolean);
 DEFINE_TYPE_ALIAS(_bf16);
@@ -114,11 +118,16 @@ DEFINE_TYPE_ALIAS(_nf4);
 DEFINE_TYPE_ALIAS(_f8e4m3);
 DEFINE_TYPE_ALIAS(_f8e5m2);
 DEFINE_TYPE_ALIAS(_string);
+DEFINE_TYPE_ALIAS(_f4e2m1);
+DEFINE_TYPE_ALIAS(_f8e8m0);
+DEFINE_TYPE_ALIAS(_u2);
+DEFINE_TYPE_ALIAS(_u3);
 constexpr auto _any_float = _f64 | _f32 | _f16 | _bf16;
+constexpr auto _hw_float = _f32 | _f16 | _bf16;
 constexpr auto _half_float = _f16 | _bf16;
 constexpr auto _quant = _u8 | _i8;
+constexpr auto _more_than_two_bytes = _f64 | _f32 | _i32 | _u32 | _i64 | _u64;
 constexpr auto _any = std::numeric_limits<uint64_t>::max();
 }  // namespace TypeMaskAlias
 
-}  // namespace intel_cpu
-}  // namespace ov
+}  // namespace ov::intel_cpu

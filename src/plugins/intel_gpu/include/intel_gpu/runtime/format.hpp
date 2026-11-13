@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,11 +9,12 @@
 #include <cstdint>
 #include <numeric>
 #include <algorithm>
+#include <optional>
 #include <vector>
 #include <string>
 #include <utility>
 #include <stdexcept>
-#include "intel_gpu/runtime/optionals.hpp"
+#include "openvino/core/except.hpp"
 
 namespace cldnn {
 /// @addtogroup cpp_api C++ API
@@ -42,6 +43,9 @@ struct format_traits {
     std::string internal_order;
     /// @brief Block sizes as a vector of pairs of dimension number and block size ordered from rare to often.
     std::vector<std::pair<size_t, int>> block_sizes;
+    std::vector<std::pair<size_t, int>> logic_block_sizes;
+    /// @brief Onednn memory descriptor size used for asymmetric compensation.
+    size_t desc_size = 0;
     /// @brief Characters representing batch dimensions in an order.
     static const char* batch_chars() { return "bno"; }
     /// @brief Characters representing feature map/channel dimensions in an order.
@@ -61,6 +65,17 @@ struct format_traits {
 
     /// @brief Checks if order has @p c dimension.
     bool has_dimension(char c) const { return order.find_first_of(c) != std::string::npos; }
+
+    friend bool operator==(const format_traits& lft, const format_traits& rft) {
+        return lft._order == rft._order &&
+            lft.block_sizes == rft.block_sizes &&
+            lft.logic_block_sizes == rft.logic_block_sizes &&
+            lft.desc_size == rft.desc_size &&
+            lft.batch_num == rft.batch_num &&
+            lft.feature_num == rft.feature_num &&
+            lft.spatial_num == rft.spatial_num &&
+            lft.group_num == rft.group_num;
+    }
 };
 
 /// @brief Represents memory formats (orders).
@@ -75,6 +90,7 @@ struct format {
     enum type : int32_t {
         // Data formats
         bfyx,                                   ///< the most common format for activations in clDNN.
+        bfxy,
         bfzyx,                                  ///< format for 5d data tensors
         bfwzyx,                                 ///< batch, feature, 4D spatial
         bfuwzyx,                                ///< 7d tensor
@@ -83,6 +99,9 @@ struct format {
         byxf,                                   ///< used in bitmaps, input from user i.e b images of RGB format
         fbyx,
         fyxb,                                   ///< format not used inside clDNN, but supported in reorder as extension
+        fybx,                                   ///< To be used when onednn gemm allows permute fusing in transformer network. Not for normal use from cldnn.
+        xbfy,                                   ///< To be used when onednn gemm allows permute fusing in transformer network. Not for normal use from cldnn.
+        ybfx,                                   ///< To be used when onednn gemm allows permute fusing in transformer network. Not for normal use from cldnn.
         bzyxf,
         byfx,                                   ///< To be used when onednn gemm allows permute fusing in transformer network. Not for normal use from cldnn.
         bxfy,                                   ///< To be used when onednn gemm allows permute fusing in transformer network. Not for normal use from cldnn.
@@ -143,7 +162,9 @@ struct format {
         o_is_yx_isv16,                                ///< format used only for convolution weights
         os_is_yx_osv16_isv16,                         ///< format used for convolution i8 weights
         os_is_zyx_osv32_isv16,
+        os_is_yx_osv32_isv2,                          ///< format used only for fully connected weights compressed for i4
         os_is_zyx_osv64_isv16,
+        os_is_yx_osv64_isv2,                          ///< format used only for fully connected weights compressed for i4
         os_zyxi_osv16,                                ///< format used for weights for 3D convolution
         os_is_yx_isv16_osv16,                         ///< format used for blocked convolution
         os_is_zyx_isv16_osv16,                        ///< format used for weights for blocked 3D convolution
@@ -179,6 +200,8 @@ struct format {
         os_is_zyx_isa8_osv16_isv4,                    ///< format for weights for fully connected MMAD
         os_is_yx_osa4_isa8_osv8_isv4_swizzled_by_4,   ///< format for weights for MMAD fsv32 convolution
         os_is_zyx_osa4_isa8_osv8_isv4_swizzled_by_4,  ///< format for weights for MMAD fsv32 convolution
+        os_is_yx_osa2_isa8_osv16_isv4_swizzled_by_2,   ///< format for weights for MMAD fsv32 convolution
+        os_is_zyx_osa2_isa8_osv16_isv4_swizzled_by_2,   ///< format for weights for MMAD fsv32 convolution
         os_is_zyx_osa4_isa8_osv8_isv4,                ///< format for weights for MMAD fsv32 convolution
         os_is_yx_osa4_isa8_osv8_isv4,                 ///< format for weights for MMAD fsv32 convolution
         os_is_yx_osv16_isv4,                          ///< format for weights for IMAD convolutions
@@ -227,6 +250,9 @@ struct format {
         gi_yxs_os_yxsv2_osv16,
         giy_xs_os_xsv2_osv8__ao32,
         giy_xs_os_xsv2_osv16__ao32,
+        is_os_yx_isv16_ternary,                       ///< u2 fully connected weights for the TernOCL int2 impl: K blocked by 16 into one
+                                                      ///< dword per (K/16, N), values re-encoded from codes {0,1,2} (zero point 1)
+                                                      ///< to 2-bit two's complement {-1,0,+1}
 
         format_num,  ///< number of format types
         custom,      ///< means that this format is created based on custom format traits and may have no corresponding label
@@ -252,6 +278,7 @@ struct format {
     static const std::string& internal_order(const format& fmt) { return fmt.traits().internal_order; }
     /// @brief Returns block sizes for @p format.
     static const std::vector<std::pair<size_t, int>>& block_sizes(const format& fmt) { return fmt.traits().block_sizes; }
+    static const std::vector<std::pair<size_t, int>>& logic_block_sizes(const format& fmt) { return fmt.traits().logic_block_sizes; }
     /// @brief Returns number of dimensions contained within a @p format
     static size_t dimension(const format& fmt) { return order(fmt).size(); }
     /// @brief Checks if @p format is a winograd format
@@ -273,8 +300,9 @@ struct format {
     }
     /// @brief Checks if @p format is weights format
     static bool is_weights_format(const format& fmt) {
-        if (fmt == format::custom)
+        if (fmt == format::custom) {
             return true;
+        }
         const auto internal_order = fmt.traits().internal_order;
         const auto weights_chars = { "o", "i" };
         for (const auto& c : weights_chars) {
@@ -286,12 +314,29 @@ struct format {
     }
     /// @brief Checks if @p format is simple data format
     static bool is_simple_data_format(const format& fmt) {
-        return (fmt == yxfb || fmt == byxf ||
-                fmt == byfx || fmt == bxfy ||
-                fmt == bfyx || fmt == fyxb ||
-                fmt == fbyx || fmt == bfzyx ||
-                fmt == bfwzyx || fmt == bfuwzyx ||
+        return (fmt == yxfb || fmt == byxf || fmt == byfx || fmt == bxfy || fmt == bfyx || fmt == fyxb || fmt == fybx ||
+                fmt == bfxy ||fmt == xbfy || fmt == ybfx || fmt == fbyx || fmt == bfzyx || fmt == bfwzyx || fmt == bfuwzyx ||
                 fmt == bfvuwzyx);
+    }
+
+    static std::vector<int64_t> get_internal_dims(const format& fmt) {
+        const auto& o_order = fmt.order();
+        const auto& i_order = fmt.internal_order();
+
+        std::vector<int64_t> i_dims;
+
+        for (size_t i = 0; i < o_order.size(); i++) {
+            auto c = o_order[i];
+            auto pos = i_order.find(c);
+
+            if (pos == std::string::npos) {
+                OPENVINO_THROW("Unknown coord type: " + std::to_string(c));
+            }
+
+            i_dims.push_back(pos);
+        }
+
+        return i_dims;
     }
 
     static format get_default_format(size_t rank, bool is_weights = false, bool is_grouped = false);
@@ -301,7 +346,7 @@ struct format {
 
     static const std::vector<std::pair<size_t, int>> per_axis_block_size(format fmt);
 
-    static format find_format(const std::vector<uint64_t>& order,
+    static format find_format(const std::vector<size_t>& order,
                               const std::vector<std::pair<size_t, int>>& block_sizes,
                               bool is_weights = false,
                               bool is_grouped = false,
@@ -331,13 +376,16 @@ struct format {
     /// @brief Returns number of group dimensions.
     size_t group_num() const { return traits().group_num; }
     /// @brief Returns an order of dimensions.
-    const std::vector<uint64_t>& dims_order() const { return traits()._order; }
+    const std::vector<size_t>& dims_order() const {
+        return traits()._order;
+    }
     /// @brief Returns an order of dimensions in form of string.
     const std::string& order() const { return traits().order; }
     /// @brief Returns an internal orders of dimensions form of string.
     const std::string& internal_order() const { return traits().internal_order; }
     /// @brief Returns block sizes as vector of pairs of dimension and block size for that dimension.
     const std::vector<std::pair<size_t, int>>& block_sizes() const { return traits().block_sizes; }
+    const std::vector<std::pair<size_t, int>>& logic_block_sizes() const { return traits().logic_block_sizes; }
     /// @brief Returns number of dimensions contained within this format
     size_t dimension() const { return traits()._order.size(); }
     /// @brief Checks if @p format is a winograd format
@@ -354,14 +402,15 @@ struct format {
     /// @brief Transforms dimension from internal order to external order
     size_t internal_to_external(size_t idx) const {
         auto index = order().find_first_of(internal_order()[idx]);
-        if (index == std::string::npos)
+        if (index == std::string::npos) {
             throw std::invalid_argument("Internal dimension index does not map to external index.");
+        }
         return index;
     }
 
     type value;
 
-    optional_value<format_traits> custom_traits = {};
+    std::optional<format_traits> custom_traits;
 
     /// @brief Implicit conversion from format::type.
     format(type t) : value(t) {}
@@ -373,6 +422,7 @@ struct format {
     constexpr operator type() const { return value; }
 
     std::string to_string() const;
+    format get_default_format() const;
 };
 
 inline std::ostream& operator<<(std::ostream& os, const format& fmt) {

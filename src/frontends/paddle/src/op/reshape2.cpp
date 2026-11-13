@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,10 +6,7 @@
 #include "openvino/frontend/paddle/visibility.hpp"
 #include "openvino/opsets/opset6.hpp"
 
-namespace ov {
-namespace frontend {
-namespace paddle {
-namespace op {
+namespace ov::frontend::paddle::op {
 NamedOutputs reshape2(const NodeContext& node) {
     auto data = node.get_input("X");
     if (!node.has_input("Shape") && !node.has_input("ShapeTensor")) {
@@ -26,6 +23,11 @@ NamedOutputs reshape2(const NodeContext& node) {
         auto nodes = node.get_ng_inputs(name);
         ov::NodeVector node_vec;
         for (auto& input_node : nodes) {
+            if (input_node.get_shape().size() == 0) {
+                input_node =
+                    std::make_shared<ov::opset6::Unsqueeze>(input_node,
+                                                            ov::opset6::Constant::create(ov::element::i64, {1}, {0}));
+            }
             auto cast = std::make_shared<ov::opset6::Convert>(input_node, element::i64);
             node_vec.push_back(cast);
         }
@@ -36,7 +38,4 @@ NamedOutputs reshape2(const NodeContext& node) {
     }
 }
 
-}  // namespace op
-}  // namespace paddle
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::paddle::op

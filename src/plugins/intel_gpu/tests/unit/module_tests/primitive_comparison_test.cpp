@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,6 +10,7 @@
 #include <intel_gpu/primitives/fully_connected.hpp>
 #include <intel_gpu/primitives/gather.hpp>
 #include <intel_gpu/primitives/permute.hpp>
+#include <intel_gpu/primitives/dynamic_quantize.hpp>
 
 namespace cldnn {
 // For gtest NE compare, class defines only `==` operator. Required when building using C++20
@@ -36,15 +37,9 @@ TEST(primitive_comparison, common_params) {
 
     auto range_prim_data_type = range("range", def_inputs, layout{def_shape, data_types::f16, def_format, def_padding});
 
-    auto range_prim_padding_values = range("range", def_inputs, layout{def_shape, def_data_type, def_format, padding({1, 1, 1, 2})});
-
-    auto range_prim_padding_fill_value = range("range", def_inputs, layout{def_shape, def_data_type, def_format, padding({1, 1, 1, 1}, 1.f)});
-
     ASSERT_NE(range_prim, fc_prim);
     ASSERT_NE(range_prim, range_prim_inputs);
     ASSERT_NE(range_prim, range_prim_data_type);
-    ASSERT_NE(range_prim, range_prim_padding_values);
-    ASSERT_NE(range_prim, range_prim_padding_fill_value);
 }
 
 TEST(primitive_comparison, convolution) {
@@ -85,10 +80,10 @@ TEST(primitive_comparison, gemm) {
 }
 
 TEST(primitive_comparison, fully_connected) {
-    auto fc_prim = fully_connected("fc", input_info("input"), "weights", "bias", {}, 2);
-    auto fc_prim_eq = fully_connected("fc_eq", input_info("input_eq"), "weights_eq", "bias_eq", {}, 2);
-    auto fc_prim_bias = fully_connected("fc", input_info("input"), "weights", "", {}, 2);
-    auto fc_prim_input_size = fully_connected("fc", input_info("input"), "weights", "bias", {}, 4);
+    auto fc_prim = fully_connected("fc", input_info("input"), "weights", "bias", 2);
+    auto fc_prim_eq = fully_connected("fc_eq", input_info("input_eq"), "weights_eq", "bias_eq", 2);
+    auto fc_prim_bias = fully_connected("fc", input_info("input"), "weights", "", 2);
+    auto fc_prim_input_size = fully_connected("fc", input_info("input"), "weights", "bias", 4);
 
     ASSERT_EQ(fc_prim, fc_prim_eq);
     ASSERT_NE(fc_prim, fc_prim_bias);
@@ -115,6 +110,27 @@ TEST(primitive_comparison, permute) {
 
     ASSERT_EQ(permute_prim, permute_prim_eq);
     ASSERT_NE(permute_prim, permute_prim_order);
+}
+
+TEST(primitive_comparison, dynamic_quantize_innermost_size) {
+    dynamic_quantize::Attributes attrs;
+    attrs.quantization_type = ov::op::internal::DynamicQuantize::QuantizationType::Symmetric;
+    attrs.quantization_dt = data_types::i8;
+    attrs.scale_dt = data_types::f16;
+    attrs.zp_dt = data_types::dynamic;
+    attrs.group_sizes = {1, 1, UINT64_MAX};
+    attrs.scales_zp_output_order = {0, 1, 2};
+    attrs.output_storage_type = ov::op::internal::DynamicQuantize::OutputStorageType::Planar;
+
+    auto dq_prim = dynamic_quantize("dq", input_info("input"), attrs, 3, 4096);
+    auto dq_prim_eq = dynamic_quantize("dq_eq", input_info("input_eq"), attrs, 3, 4096);
+    // The innermost dimension drives the group count baked into the kernel, so two primitives that
+    // only differ by it must not compare equal - otherwise they share a kernel built for one of them
+    auto dq_prim_innermost = dynamic_quantize("dq", input_info("input"), attrs, 3, 8192);
+
+    ASSERT_EQ(dq_prim, dq_prim_eq);
+    ASSERT_NE(dq_prim, dq_prim_innermost);
+    ASSERT_NE(dq_prim.hash(), dq_prim_innermost.hash());
 }
 
 TEST(primitive_comparison, reorder_weights) {

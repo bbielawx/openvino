@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -122,7 +122,7 @@ TEST_P(broadcast_test_two_inputs_blocked_format, shape_infer) {
 
     auto outputs = network.execute();
     auto output = outputs.at("output").get_memory();
-    cldnn::mem_lock<float> output_ptr(output, get_test_stream());
+    cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output, get_test_stream());
 
     ASSERT_EQ(output->get_layout(), p.expected_layout);
 }
@@ -148,6 +148,17 @@ INSTANTIATE_TEST_SUITE_P(smoke, broadcast_test_two_inputs_blocked_format,
              10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
             {}, ov::op::BroadcastType::NUMPY,
             layout{ov::PartialShape{16, 50, 24, 20}, data_types::i32, format::b_fs_yx_fsv16}
+        },
+        {
+            layout{ov::PartialShape{16}, data_types::i32, format::b_fs_zyx_fsv16}, //data layout
+            layout{ov::PartialShape{5}, data_types::i64, format::b_fs_zyx_fsv16},
+            {8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+             1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+             25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+             12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+             10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+            {0}, ov::op::BroadcastType::EXPLICIT,
+            layout{ov::PartialShape{16, 2, 50, 24, 20}, data_types::i32, format::b_fs_zyx_fsv16}
         },
         {
             layout{ov::PartialShape{16}, data_types::i32, format::b_fs_zyx_fsv16}, //data layout

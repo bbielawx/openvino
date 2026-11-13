@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -30,24 +30,12 @@ using DeconvLayerTestParamsSet = std::tuple<convBackpropDataSpecificParams,
 class DeconvolutionLayerGPUTest : public testing::WithParamInterface<DeconvLayerTestParamsSet>,
                                   virtual public ov::test::SubgraphBaseTest {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<DeconvLayerTestParamsSet> obj) {
-        convBackpropDataSpecificParams basicParamsSet;
-        DeconvInputData inputData;
-        ov::element::Type model_type;
-        std::string targetDevice;
-        std::map<std::string, std::string> additionalConfig;
-        std::tie(basicParamsSet, inputData, model_type, targetDevice, additionalConfig) = obj.param;
+    static std::string getTestCaseName(const testing::TestParamInfo<DeconvLayerTestParamsSet>& obj) {
+        const auto& [basicParamsSet, inputData, model_type, targetDevice, additionalConfig] = obj.param;
 
-        ov::op::PadType padType;
-        std::vector<size_t> kernel, stride, dilation;
-        std::vector<ptrdiff_t> padBegin, padEnd, outPadding;
-        size_t convOutChannels;
-        std::tie(kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType, outPadding) = basicParamsSet;
+        const auto& [kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType, outPadding] = basicParamsSet;
 
-        InputShape inputShape;
-        ov::test::utils::InputLayerType outShapeType;
-        std::vector<std::vector<int32_t>> outShapeData;
-        std::tie(inputShape, outShapeType, outShapeData) = inputData;
+        const auto& [inputShape, outShapeType, outShapeData] = inputData;
 
         std::ostringstream result;
         result << "IS=";
@@ -102,8 +90,8 @@ public:
                 tensor = ov::Tensor(funcInput.get_element_type(), targetInputStaticShapes[i], outShapeData[inferRequestNum].data());
             } else {
                 ov::test::utils::InputGenerateData in_data;
-                in_data.start_from = 0;
-                in_data.range = 2560;
+                in_data.start_from = -20;
+                in_data.range = 20;
                 in_data.resolution = 256;
                 tensor = ov::test::utils::create_and_fill_tensor(funcInput.get_element_type(), targetInputStaticShapes[i], in_data);
             }
@@ -150,14 +138,12 @@ public:
 
 protected:
     void SetUp() override {
-        convBackpropDataSpecificParams basicParamsSet;
-        DeconvInputData inputData;
-        std::map<std::string, std::string> additionalConfig;
-        std::tie(basicParamsSet, inputData, model_type, targetDevice, additionalConfig) = this->GetParam();
+        const auto& [basicParamsSet, inputData, _model_type, _targetDevice, additionalConfig] = this->GetParam();
+        model_type = _model_type;
+        targetDevice = _targetDevice;
 
-        InputShape inputShape;
-        ov::test::utils::InputLayerType outShapeType;
-        std::tie(inputShape, outShapeType, outShapeData) = inputData;
+        const auto& [inputShape, outShapeType, _outShapeData] = inputData;
+        outShapeData = _outShapeData;
 
         std::tie(kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType, outPadding) = basicParamsSet;
 
@@ -280,4 +266,49 @@ INSTANTIATE_TEST_SUITE_P(smoke_Deconv_2D_Dynamic_OutputShape_FP32, Deconvolution
         ::testing::Values(emptyAdditionalConfig)),
     DeconvolutionLayerGPUTest::getTestCaseName);
 
+
+const std::vector<std::vector<ptrdiff_t>> emptyOutputPadding1d = { {0} };
+
+/* ============= Deconvolution params ============= */
+const std::vector<size_t> numOutChannels1d = { 256 };
+
+/* ============= Deconvolution params (1D) ============= */
+const std::vector<std::vector<size_t>> kernels1d = { {16} };
+const std::vector<std::vector<size_t>> strides1d = { {8} };
+const std::vector<std::vector<ptrdiff_t>> padBegins1d = { {4} };
+const std::vector<std::vector<ptrdiff_t>> padEnds1d = { {4} };
+const std::vector<std::vector<size_t>> dilations1d = { {1} };
+
+/* ============= Deconvolution (1D) ============= */
+const auto convParams_ExplicitPadding_1D = ::testing::Combine(
+    ::testing::ValuesIn(kernels1d),
+    ::testing::ValuesIn(strides1d),
+    ::testing::ValuesIn(padBegins1d),
+    ::testing::ValuesIn(padEnds1d),
+    ::testing::ValuesIn(dilations1d),
+    ::testing::ValuesIn(numOutChannels1d),
+    ::testing::Values(ov::op::PadType::EXPLICIT),
+    ::testing::ValuesIn(emptyOutputPadding1d)
+);
+
+const std::vector<DeconvInputData> dyn_1D_inputs_smoke = {
+    DeconvInputData{
+        InputShape{{1, 512, -1}, {{1, 512, 577}}},
+        ov::test::utils::InputLayerType::CONSTANT,
+        {}
+    },
+};
+
+const std::vector<ov::element::Type> netPrecisions1D = {
+        ov::element::f32
+};
+
+INSTANTIATE_TEST_SUITE_P(smoke_Deconv_1D_Dynamic_FP32, DeconvolutionLayerGPUTest,
+    ::testing::Combine(
+        convParams_ExplicitPadding_1D,
+        ::testing::ValuesIn(dyn_1D_inputs_smoke),
+        ::testing::ValuesIn(netPrecisions1D),
+        ::testing::Values(ov::test::utils::DEVICE_GPU),
+        ::testing::Values(emptyAdditionalConfig)),
+    DeconvolutionLayerGPUTest::getTestCaseName);
 } // namespace

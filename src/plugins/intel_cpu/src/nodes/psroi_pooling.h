@@ -1,24 +1,31 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "node.h"
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+#include "graph_context.h"
+#include "memory_desc/blocked_memory_desc.h"
+#include "node.h"
+#include "openvino/core/node.hpp"
+
+namespace ov::intel_cpu::node {
 
 class PSROIPooling : public Node {
 public:
-    PSROIPooling(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context);
+    PSROIPooling(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context);
 
     void getSupportedDescriptors() override {};
     void initSupportedPrimitiveDescriptors() override;
     void createPrimitive() override {};
-    void execute(dnnl::stream strm) override;
-    bool created() const override;
+    void execute(const dnnl::stream& strm) override;
+    [[nodiscard]] bool created() const override;
 
     static bool isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::string& errorMessage) noexcept;
 
@@ -30,7 +37,7 @@ private:
     size_t pooledWidth = 0;
     size_t spatialBinsX = 0;
     size_t spatialBinsY = 0;
-    std::string mode = "";
+    std::string mode;
 
     int channels = 0;
     int height = 0;
@@ -41,42 +48,58 @@ private:
     int nh = 0;
     int nw = 0;
 
+    size_t inBatchNum = 0;
+
     // for Deformable PSROIPolling
     bool noTrans;
     int partSize = 1;
-    float transStd = 1.f;
+    float transStd = 1.F;
 
-    std::string errorPrefix;
-
-    void unpackParams(const BlockedMemoryDesc& srcDesc, const BlockedMemoryDesc& dstDesc,
-                      int& hInputStride, int& wInputStride,
-                      int& hOutputStride, int& wOutputStride,
-                      int& inBlockSize, int& outBlockSize,
-                      int& outBlockCount,
-                      unsigned long& inputChannelsPadding, unsigned long& outputChannelsPadding);
-
-    template <typename inputType, typename outputType>
-    void executeAverage(const inputType *srcData, outputType *dstData, const float *bottomRois,
-                        const int n, const int roiBatchInd,
-                        const BlockedMemoryDesc& srcDesc, const BlockedMemoryDesc& dstDesc);
+    void unpackParams(const BlockedMemoryDesc& srcDesc,
+                      const BlockedMemoryDesc& dstDesc,
+                      size_t& hInputStride,
+                      size_t& wInputStride,
+                      size_t& hOutputStride,
+                      size_t& wOutputStride,
+                      size_t& inBlockSize,
+                      size_t& outBlockSize,
+                      size_t& outBlockCount,
+                      uint64_t& inputChannelsPadding,
+                      uint64_t& outputChannelsPadding);
 
     template <typename inputType, typename outputType>
-    void executeBilinear(const inputType *srcData, outputType *dstData, const float *bottomRois,
-                         const int currentRoi, const int roiBatchInd,
-                         const BlockedMemoryDesc& srcDesc, const BlockedMemoryDesc& dstDesc);
+    void executeAverage(const inputType* srcData,
+                        outputType* dstData,
+                        const float* bottomRois,
+                        int n,
+                        int roiBatchInd,
+                        const BlockedMemoryDesc& srcDesc,
+                        const BlockedMemoryDesc& dstDesc);
 
     template <typename inputType, typename outputType>
-    void executeBilinearDeformable(const inputType *srcData, outputType *dstData, const float *bottomRois,
-                                   const float *bottomTrans, const int numClasses, const int channelsEachClass,
-                                   const int currentRoi, const int roiBatchInd);
+    void executeBilinear(const inputType* srcData,
+                         outputType* dstData,
+                         const float* bottomRois,
+                         int currentRoi,
+                         int roiBatchInd,
+                         const BlockedMemoryDesc& srcDesc,
+                         const BlockedMemoryDesc& dstDesc);
+
+    template <typename inputType, typename outputType>
+    void executeBilinearDeformable(const inputType* srcData,
+                                   outputType* dstData,
+                                   const float* bottomRois,
+                                   const float* bottomTrans,
+                                   int numClasses,
+                                   int channelsEachClass,
+                                   int currentRoi,
+                                   int roiBatchInd);
 
     template <typename inputType, typename outputType>
     void executeSpecified();
 
-    template<typename T>
+    template <typename T>
     struct PSROIPoolingExecute;
 };
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

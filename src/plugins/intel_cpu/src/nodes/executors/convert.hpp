@@ -1,31 +1,35 @@
-// Copyright (C) 2018-2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "cpu_memory.h"
-#include "onednn/iml_type_mapper.h"
-#include "executor.hpp"
+#include <cstddef>
+#include <memory>
+#include <oneapi/dnnl/dnnl.hpp>
 
-namespace ov {
-namespace intel_cpu {
+#include "executor.hpp"
+#include "memory_desc/cpu_memory_desc.h"
+#include "openvino/core/type/element_type.hpp"
+
+namespace ov::intel_cpu {
 
 struct ConvertParams {
     ov::element::Type srcPrc;
     ov::element::Type origPrc;
     ov::element::Type dstPrc;
-    size_t size;
+    size_t size = 0UL;
 };
 
 class ConvertExecutor : public Executor {
 public:
-    explicit ConvertExecutor(const ExecutorContext::CPtr context);
+    explicit ConvertExecutor(ExecutorContext::CPtr context);
     virtual bool init(const ConvertParams& convertParams,
                       const MemoryDescPtr& srcDesc,
                       const MemoryDescPtr& dstDesc,
-                      const dnnl::primitive_attr &attr) = 0;
-    virtual ~ConvertExecutor() = default;
+                      const dnnl::primitive_attr& attr) = 0;
+    ~ConvertExecutor() override = default;
+
 protected:
     ConvertParams convertParams;
     const ExecutorContext::CPtr convertContext;
@@ -36,14 +40,13 @@ using ConvertExecutorCPtr = std::shared_ptr<const ConvertExecutor>;
 class ConvertExecutorBuilder {
 public:
     virtual ~ConvertExecutorBuilder() = default;
-    virtual bool isSupported(const ConvertParams& convertParams,
-                             const MemoryDescPtr& srcDesc,
-                             const MemoryDescPtr& dstDesc) const = 0;
-    virtual ConvertExecutorPtr makeExecutor(const ExecutorContext::CPtr context) const = 0;
+    [[nodiscard]] virtual bool isSupported(const ConvertParams& convertParams,
+                                           const MemoryDescPtr& srcDesc,
+                                           const MemoryDescPtr& dstDesc) const = 0;
+    [[nodiscard]] virtual ConvertExecutorPtr makeExecutor(ExecutorContext::CPtr context) const = 0;
 };
 
 using ConvertExecutorBuilderPtr = std::shared_ptr<ConvertExecutorBuilder>;
 using ConvertExecutorBuilderCPtr = std::shared_ptr<const ConvertExecutorBuilder>;
 
-} // namespace intel_cpu
-} // namespace ov
+}  // namespace ov::intel_cpu

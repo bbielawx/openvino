@@ -1,10 +1,11 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "convolution/convolution_kernel_selector.h"
 #include "convolution/convolution_params.h"
 #include "convolution_inst.h"
+#include "convolution.hpp"
 #include "convolution_shape_inference.hpp"
 #include "intel_gpu/plugin/common_utils.hpp"
 #include "kernel_base.h"
@@ -23,7 +24,7 @@ struct convolution_impl : typed_primitive_impl_ocl<convolution> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::convolution_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<convolution_impl>(*this);
+        return make_deep_copy<convolution_impl, kernel_params_t>(*this);
     }
 
     void load(BinaryInputBuffer& ib) override {
@@ -31,6 +32,10 @@ struct convolution_impl : typed_primitive_impl_ocl<convolution> {
         if (is_dynamic()) {
             auto& kernel_selector = kernel_selector_t::Instance();
             auto kernel_impl = kernel_selector.GetImplementation(_kernel_data.kernelName);
+
+            const kernel_impl_params* impl_params = reinterpret_cast<kernel_impl_params*>(ib.getKernelImplParams());
+            _kernel_data.params = std::make_shared<kernel_params_t>(get_kernel_params(*impl_params, true));
+
             kernel_impl->GetUpdateDispatchDataFunc(_kernel_data);
         }
     }
@@ -76,13 +81,25 @@ public:
         conv_params.deformable_groups = deformable_groups;
 
         conv_params.groups = groups;
+        conv_params.grouped_weights_shape = primitive->grouped_weights_shape;
 
         auto deform_conv_dep_offset = primitive->deformable_mode ? 1 : 0;
-        if (primitive->input.size() == 3)
+        if (primitive->input.size() == 3) {
             deform_conv_dep_offset++;
+        }
 
-        const auto& weights_layout = impl_param.input_layouts[1 + 0 + deform_conv_dep_offset]
+        const size_t weights_input_idx = 1 + deform_conv_dep_offset;
+        auto weights_layout = impl_param.input_layouts[weights_input_idx]
                                                .convert_to_weights_layout(primitive->grouped_weights_shape);
+
+        // Extend grouped 1d conv weights shape from 4d to 5d when conv input shape is canonicalized to 4d by allow_new_shape_infer=false
+        const bool is_1d_group_conv = (primitive->filter_rank == 4) && conv_params.grouped_weights_shape && groups > 1;
+        const bool needs_weights_extension = is_1d_group_conv && weights_layout.get_rank() == 4;
+
+        if (needs_weights_extension) {
+            weights_layout = extend_weights_layout_to_5d(weights_layout);
+            conv_params.weights = convert_weights_tensor(weights_layout, true);
+        }
 
         ov::CoordinateDiff pads_begin(primitive->padding_begin.begin(), primitive->padding_begin.end());
         ov::CoordinateDiff pads_end(primitive->padding_end.begin(), primitive->padding_end.end());
@@ -92,6 +109,12 @@ public:
         if (auto_pad == ov::op::PadType::SAME_UPPER || auto_pad == ov::op::PadType::SAME_LOWER) {
             const auto& input_layout = impl_param.get_input_layout();
             const auto spatial_rank = input_layout.get_spatial_rank();
+
+            // Match the trailing singleton axis added when canonicalizing 1D convolution shapes.
+            stride.resize(spatial_rank, 1);
+            dilation.resize(spatial_rank, 1);
+            pads_begin.resize(spatial_rank, 0);
+            pads_end.resize(spatial_rank, 0);
 
             ov::PartialShape kernel;
             for (int32_t i = static_cast<int32_t>(spatial_rank) - 1; i >= 0; i--) {
@@ -114,9 +137,9 @@ public:
             std::fill(pads_end.begin(), pads_end.end(), 0);
         }
 
-        uint32_t kx = weights_layout.spatial(0);
-        uint32_t ky = weights_layout.spatial(1);
-        uint32_t kz = weights_layout.spatial(2);
+        uint32_t kx = static_cast<uint32_t>(weights_layout.spatial(0));
+        uint32_t ky = static_cast<uint32_t>(weights_layout.spatial(1));
+        uint32_t kz = static_cast<uint32_t>(weights_layout.spatial(2));
         conv_params.filterSize = { kx, ky, kz };
 
         uint32_t pad_begin_x, pad_begin_y, pad_begin_z;
@@ -135,14 +158,22 @@ public:
         std::tie(dilation_x, dilation_y, dilation_z) = ov::intel_gpu::get_xyz<ov::Strides, uint32_t>(dilation, 1);
         conv_params.dilation = {dilation_x, dilation_y, dilation_z};
 
+        // gpu plugin avg_pool has forced f32 output data type when input is u8/i8.
+        // So quantize(u8)->avg_pool(u8)->conv(f32) is changes to quantize(u8)->avg_pool(f32)->conv(f32)
+        // Add condition to check this case and set proper quantization mode
         if ((impl_param.input_layouts[0].data_type == data_types::u8 ||
-             impl_param.input_layouts[0].data_type == data_types::i8) &&
-             impl_param.input_layouts[1].data_type == data_types::i8) {
-            if (!primitive->weights_zero_points.empty() && !primitive->activations_zero_points.empty()) {
+             impl_param.input_layouts[0].data_type == data_types::i8 ||
+             (impl_param.input_layouts[0].data_type == data_types::f32 &&
+              (primitive->weights_zero_points.is_valid() ||
+               primitive->activations_zero_points.is_valid() ||
+               primitive->compensation.is_valid())))
+            && (impl_param.input_layouts[1].data_type == data_types::i8 ||
+                impl_param.input_layouts[1].data_type == data_types::u8)) {
+            if (primitive->weights_zero_points.is_valid() && primitive->activations_zero_points.is_valid()) {
                 conv_params.quantization = kernel_selector::QuantizationType::ASYMMETRIC_DATA_AND_WEIGHTS;
-            } else if (!primitive->weights_zero_points.empty()) {
+            } else if (primitive->weights_zero_points.is_valid()) {
                 conv_params.quantization = kernel_selector::QuantizationType::ASYMMETRIC_WEIGHTS;
-            } else if (!primitive->activations_zero_points.empty()) {
+            } else if (primitive->activations_zero_points.is_valid()) {
                 conv_params.quantization = kernel_selector::QuantizationType::ASYMMETRIC_DATA;
             } else {
                 conv_params.quantization = kernel_selector::QuantizationType::SYMMETRIC;
@@ -158,16 +189,20 @@ public:
                 && cp.outputs[0].GetLayout() == kernel_selector::Tensor::DataLayout::bfyx
                 && cp.outputs[0].X().v == 1 && cp.outputs[0].Y().v > 1
                 && cp.weights.X().v == 1 && cp.weights.Y().v > 1
-                && !(cp.groups == cp.inputs[0].Feature().v && cp.inputs[0].Feature().v == cp.outputs[0].Feature().v)) {
+                && (cp.groups != cp.inputs[0].Feature().v || cp.inputs[0].Feature().v != cp.outputs[0].Feature().v)) {
                 auto can_swap = [](const kernel_selector::Tensor::DataTensor& dt) -> bool {
-                    auto x_channel_idx = static_cast<uint32_t>(kernel_selector::Tensor::DataTensor::Channelndex(dt.GetLayout(),
-                                                    kernel_selector::Tensor::DataChannelName::X));
-                    auto x_axis_dim = dt.GetDims()[x_channel_idx];
+                    auto x_channel_idx = kernel_selector::Tensor::DataTensor::Channelndex(dt.GetLayout(),
+                                                                                        kernel_selector::Tensor::DataChannelName::X);
+                    if (x_channel_idx < 0) {
+                        return false;
+                    }
+                    auto x_axis_dim = dt.GetDims()[static_cast<size_t>(x_channel_idx)];
                     return (x_axis_dim.pad.Total() == 0 && x_axis_dim.v == 1);
                 };
 
                 for (auto& desc : cp.fused_ops) {
-                    if (!can_swap(desc.output_tensor)) {
+                    OPENVINO_ASSERT(desc.output_tensors.size() == 1, "Design changed to allow multiple layouts, this path is not expected to be impacted.");
+                    if (!can_swap(desc.output_tensors[0])) {
                         return false;
                     }
                     for (size_t i = 0; i < desc.tensors.size(); i++) {
@@ -182,12 +217,12 @@ public:
         };
 
         // Swap XY axes
-        if (can_swap_xy(conv_params) && primitive->deformable_mode == false) {
+        if (can_swap_xy(conv_params) && !primitive->deformable_mode) {
             conv_params.inputs[0].SwapXY();
             conv_params.outputs[0].SwapXY();
             conv_params.weights.SwapXY();
             for (auto& desc : conv_params.fused_ops) {
-                desc.output_tensor.SwapXY();
+                desc.output_tensors[0].SwapXY();
                 for (size_t i = 0; i < desc.tensors.size(); i++) {
                     desc.tensors[i].SwapXY();
                 }
@@ -198,12 +233,23 @@ public:
             conv_params.dilation = {dilation_y, dilation_x, dilation_z};
         }
 
+        if (primitive->deformable_mode) {
+            auto interpolated_layout = impl_param.output_layouts[0];
+            auto in_shape = impl_param.input_layouts[0].get_partial_shape();
+            auto interpolated_shape = interpolated_layout.get_partial_shape();
+            interpolated_shape[0] = in_shape[0];
+            interpolated_shape[1] = in_shape[1] * conv_params.filterSize.x * conv_params.filterSize.y;
+            interpolated_layout.set_partial_shape(interpolated_shape);
+            conv_params.intermediate_tensor = convert_data_tensor(interpolated_layout);
+        }
+
         auto format = impl_param.get_output_layout().format;
         if (format == format::b_fs_zyx_fsv16 ||
             format == format::bs_fs_zyx_bsv16_fsv16 ||
             format == format::bs_fs_yx_bsv16_fsv16 ||
-            format == format::b_fs_zyx_fsv32)
+            format == format::b_fs_zyx_fsv32) {
             conv_params.allowInputReordering = true;
+        }
 
         conv_params.set_dynamic_shape_offsets();
 
@@ -243,112 +289,36 @@ public:
     }
 
     void update_dispatch_data(const kernel_impl_params& impl_param) override {
-       auto kernel_params = get_kernel_params(impl_param, true);
-       (_kernel_data.update_dispatch_data_func)(kernel_params, _kernel_data);
+        // If model loaded from cache, params are not initialized, so we create a new object and reuse it in the future
+        if (_kernel_data.params == nullptr) {
+            _kernel_data.params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true));
+        }
+
+        update_shapes(*_kernel_data.params, impl_param);
+        (_kernel_data.update_dispatch_data_func)(*_kernel_data.params, _kernel_data);
     }
 };
 
-namespace detail {
+std::unique_ptr<primitive_impl> ConvolutionImplementationManager::create_impl(const program_node& node, const kernel_impl_params& params) const {
+    OPENVINO_ASSERT(node.is_type<convolution>());
+    auto impl = typed_primitive_impl_ocl<convolution>::create<convolution_impl>(static_cast<const convolution_node&>(node), params);
 
-attach_convolution_impl::attach_convolution_impl() {
-    implementation_map<convolution>::add(impl_types::ocl, typed_primitive_impl_ocl<convolution>::create<convolution_impl>, {
-        std::make_tuple(data_types::f32, format::bfyx),
-        std::make_tuple(data_types::f16, format::bfyx),
-        std::make_tuple(data_types::i8, format::bfyx),
-        std::make_tuple(data_types::u8, format::bfyx),
+    if (auto weights_reorder_params = impl->get_weights_reorder_params()) {
+        const auto& input_layout = params.get_input_layout(0);
+        if (input_layout.get_partial_shape().size() == 3) {
+            const auto& weights_pshape = node.get_input_layout(1).get_partial_shape();
+            auto weights_input_layout = weights_reorder_params->get_input_layout();
+            weights_input_layout.set_partial_shape(weights_pshape);
+            weights_reorder_params->set_input_layout(weights_input_layout);
 
-        std::make_tuple(data_types::f32, format::yxfb),
-        std::make_tuple(data_types::f16, format::yxfb),
-
-        std::make_tuple(data_types::f32, format::bfzyx),
-        std::make_tuple(data_types::f16, format::bfzyx),
-        std::make_tuple(data_types::i8, format::bfzyx),
-        std::make_tuple(data_types::u8, format::bfzyx),
-
-        std::make_tuple(data_types::f32, format::winograd_2x3_s1_data),
-        std::make_tuple(data_types::f16, format::winograd_2x3_s1_data),
-
-        std::make_tuple(data_types::f16, format::fs_b_yx_fsv32),
-
-        std::make_tuple(data_types::f32, format::byxf),
-        std::make_tuple(data_types::f16, format::byxf),
-        std::make_tuple(data_types::u8, format::byxf),
-        std::make_tuple(data_types::i8, format::byxf),
-
-        std::make_tuple(data_types::u8, format::b_fs_yx_fsv4),
-        std::make_tuple(data_types::i8, format::b_fs_yx_fsv4),
-
-        std::make_tuple(data_types::f32, format::b_fs_yx_fsv16),
-        std::make_tuple(data_types::f16, format::b_fs_yx_fsv16),
-        std::make_tuple(data_types::u8, format::b_fs_yx_fsv16),
-        std::make_tuple(data_types::i8, format::b_fs_yx_fsv16),
-
-        std::make_tuple(data_types::f32, format::b_fs_zyx_fsv16),
-        std::make_tuple(data_types::f16, format::b_fs_zyx_fsv16),
-        std::make_tuple(data_types::u8, format::b_fs_zyx_fsv16),
-        std::make_tuple(data_types::i8, format::b_fs_zyx_fsv16),
-
-        std::make_tuple(data_types::f16, format::b_fs_yx_fsv32),
-        std::make_tuple(data_types::f32, format::b_fs_yx_fsv32),
-        std::make_tuple(data_types::u8, format::b_fs_yx_fsv32),
-        std::make_tuple(data_types::i8, format::b_fs_yx_fsv32),
-
-        std::make_tuple(data_types::u8, format::b_fs_zyx_fsv32),
-        std::make_tuple(data_types::i8, format::b_fs_zyx_fsv32),
-
-        std::make_tuple(data_types::f32, format::bs_fs_zyx_bsv16_fsv16),
-        std::make_tuple(data_types::f16, format::bs_fs_zyx_bsv16_fsv16),
-
-        std::make_tuple(data_types::f32, format::bs_fs_yx_bsv16_fsv16),
-        std::make_tuple(data_types::f16, format::bs_fs_yx_bsv16_fsv16),
-        std::make_tuple(data_types::u8, format::bs_fs_yx_bsv16_fsv16),
-        std::make_tuple(data_types::i8, format::bs_fs_yx_bsv16_fsv16),
-
-        std::make_tuple(data_types::f32, format::bs_fs_yx_bsv32_fsv32),
-        std::make_tuple(data_types::f16, format::bs_fs_yx_bsv32_fsv32),
-        std::make_tuple(data_types::u8, format::bs_fs_yx_bsv32_fsv32),
-        std::make_tuple(data_types::i8, format::bs_fs_yx_bsv32_fsv32),
-
-        std::make_tuple(data_types::f32, format::bs_fs_yx_bsv32_fsv16),
-        std::make_tuple(data_types::f16, format::bs_fs_yx_bsv32_fsv16),
-        std::make_tuple(data_types::u8, format::bs_fs_yx_bsv32_fsv16),
-        std::make_tuple(data_types::i8, format::bs_fs_yx_bsv32_fsv16),
-
-        std::make_tuple(data_types::f32, format::bs_fs_yx_bsv4_fsv4),
-        std::make_tuple(data_types::f16, format::bs_fs_yx_bsv4_fsv4),
-        std::make_tuple(data_types::u8, format::bs_fs_yx_bsv4_fsv4),
-        std::make_tuple(data_types::i8, format::bs_fs_yx_bsv4_fsv4),
-
-        std::make_tuple(data_types::f32, format::bs_fs_yx_bsv8_fsv4),
-        std::make_tuple(data_types::f16, format::bs_fs_yx_bsv8_fsv4),
-        std::make_tuple(data_types::u8, format::bs_fs_yx_bsv8_fsv4),
-        std::make_tuple(data_types::i8, format::bs_fs_yx_bsv8_fsv4),
-
-        std::make_tuple(data_types::f32, format::bs_fs_yx_bsv4_fsv2),
-        std::make_tuple(data_types::f16, format::bs_fs_yx_bsv4_fsv2),
-        std::make_tuple(data_types::u8, format::bs_fs_yx_bsv4_fsv2),
-        std::make_tuple(data_types::i8, format::bs_fs_yx_bsv4_fsv2),
-    });
-
-    auto types = {
-        data_types::f32,
-        data_types::f16,
-        data_types::i8,
-        data_types::u8
-    };
-    auto dyn_formats = {
-        format::bfyx,
-        format::bfzyx
-    };
-
-    implementation_map<convolution>::add(impl_types::ocl,
-                                         shape_types::dynamic_shape,
-                                         typed_primitive_impl_ocl<convolution>::create<convolution_impl>,
-                                         types,
-                                         dyn_formats);
+            auto weights_output_layout = weights_reorder_params->get_output_layout();
+            weights_output_layout.set_partial_shape(weights_pshape);
+            weights_reorder_params->set_output_layout(weights_output_layout);
+        }
+    }
+    return impl;
 }
 
-}  // namespace detail
 }  // namespace ocl
 }  // namespace cldnn
 

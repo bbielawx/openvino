@@ -1,79 +1,76 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
 #include <cmath>
-#include <limits>
 #include <cstdint>
+#include <limits>
+
+#include "cpp/bit_cast.hpp"
 
 /**
- * The bfloat16_t class can be used as an arithmetic type. All arithmetic operations goes through conversion to the float data type.
+ * The bfloat16_t class can be used as an arithmetic type. All arithmetic operations goes through conversion to the
+ * float data type.
  */
-
 
 #define BFLOAT16_ROUND_MODE_TO_NEAREST_EVEN
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
 class bfloat16_t {
 public:
     bfloat16_t() = default;
-    bfloat16_t(float value) noexcept
-            : m_value{
+    // Implicit conversion from float to bfloat16_t is intentionally allowed
+    // to avoid verbosity in the codebase
+    bfloat16_t(float value) noexcept  // NOLINT(google-explicit-constructor)
+        : m_value{
 #if defined BFLOAT16_ROUND_MODE_TO_NEAREST
-        round_to_nearest(value)
+              round_to_nearest(value)
 #elif defined BFLOAT16_ROUND_MODE_TO_NEAREST_EVEN
-        round_to_nearest_even(value)
+              round_to_nearest_even(value)
 #elif defined BFLOAT16_ROUND_MODE_TRUNCATE
-        truncate(value)
+              truncate(value)
 #else
-#error                                                                                             \
-    "ROUNDING_MODE must be one of BFLOAT16_ROUND_MODE_TO_NEAREST, BFLOAT16_ROUND_MODE_TO_NEAREST_EVEN, or BFLOAT16_ROUND_MODE_TRUNCATE"
+#    error \
+        "ROUNDING_MODE must be one of BFLOAT16_ROUND_MODE_TO_NEAREST, BFLOAT16_ROUND_MODE_TO_NEAREST_EVEN, or BFLOAT16_ROUND_MODE_TRUNCATE"
 #endif
-    }
-    {
-    }
-
-    operator float() const {
-        return F32{uint32_t(m_value) << 16}.vfloat;
-    }
-    static constexpr bfloat16_t from_bits(uint16_t bits) { return bfloat16_t(bits, true); }
-    uint16_t to_bits() const { return m_value; }
-
-    static inline uint16_t round_to_nearest_even(float x) {
-        return static_cast<uint16_t>((F32(x).vint + ((F32(x).vint & 0x00010000) >> 1)) >> 16);
+          } {
     }
 
-    static inline uint16_t round_to_nearest(float x) {
-        return static_cast<uint16_t>((F32(x).vint + 0x8000) >> 16);
+    operator float() const {  // NOLINT(google-explicit-constructor)
+        auto bits = static_cast<uint32_t>(m_value) << 16;
+        return ov::intel_cpu::bit_cast<float>(bits);
+    }
+    static constexpr bfloat16_t from_bits(uint16_t bits) {
+        return {bits, true};
+    }
+    [[nodiscard]] uint16_t to_bits() const {
+        return m_value;
     }
 
-    static inline uint16_t truncate(float x) { return static_cast<uint16_t>((F32(x).vint) >> 16); }
+    static uint16_t round_to_nearest_even(float x) {
+        auto bits = ov::intel_cpu::bit_cast<uint32_t>(x);
+        return static_cast<uint16_t>((bits + ((bits & 0x00010000U) >> 1)) >> 16);
+    }
+
+    static uint16_t round_to_nearest(float x) {
+        auto bits = ov::intel_cpu::bit_cast<uint32_t>(x);
+        return static_cast<uint16_t>((bits + 0x8000U) >> 16);
+    }
+
+    static uint16_t truncate(float x) {
+        auto bits = ov::intel_cpu::bit_cast<uint32_t>(x);
+        return static_cast<uint16_t>(bits >> 16);
+    }
 
 private:
-    constexpr bfloat16_t(uint16_t x, bool)
-            : m_value{x}
-    {
-    }
-    union alignas(16) F32 {
-        F32(float val)
-                : vfloat{val} {
-        }
-
-        F32(uint32_t val)
-                : vint{val} {
-        }
-        float vfloat;
-        uint32_t vint;
-    };
-    uint16_t m_value;
+    constexpr bfloat16_t(uint16_t x, [[maybe_unused]] bool flag) : m_value{x} {}
+    uint16_t m_value{};
 };
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu
 
 /**
  * std::numeric_limits overloaded for better compatibility with template metaprogramming.
@@ -140,5 +137,4 @@ public:
     static constexpr bool tinyness_before = false;
     static constexpr float_round_style round_style = round_to_nearest;
 };
-} // namespace std
-
+}  // namespace std

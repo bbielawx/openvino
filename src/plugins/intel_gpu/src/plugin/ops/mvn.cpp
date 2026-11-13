@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,8 +11,7 @@
 #include "openvino/op/constant.hpp"
 #include "openvino/op/mvn.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 static void CreateCommonMVNOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op,
                               std::vector<int64_t> axes, bool normalize_variance, float eps, bool eps_inside_sqrt = true) {
@@ -34,7 +33,7 @@ static void CreateMVNOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::MVN
 
     bool across_channels = op->get_across_channels();
     bool normalize_variance = op->get_normalize_variance();
-    float eps = op->get_eps();
+    float eps = static_cast<float>(op->get_eps());
 
     int64_t axes_count = std::max<int64_t>(static_cast<int64_t>(op->get_input_partial_shape(0).size()) - 2, 0);
     std::vector<int64_t> axes(axes_count);
@@ -50,14 +49,14 @@ static void CreateMVNOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v0::MVN
 static void CreateMVNOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v6::MVN>& op) {
     validate_inputs_count(op, {2});
 
-    auto inConst = std::dynamic_pointer_cast<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
+    auto inConst = ov::as_type_ptr<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
     OPENVINO_ASSERT(inConst != nullptr, "[GPU] Unsupported parameter nodes type in ", op->get_friendly_name(), " (", op->get_type_name(), ")");
 
     std::vector<int64_t> axes = inConst->cast_vector<int64_t>();
-    ov::util::normalize_axes(op.get(), op->get_output_partial_shape(0).size(), axes);
+    ov::util::try_normalize_axes(axes, op->get_output_partial_shape(0).rank(), *op);
 
     bool normalize_variance = op->get_normalize_variance();
-    float eps = op->get_eps();
+    float eps = static_cast<float>(op->get_eps());
     bool eps_inside_sqrt = op->get_eps_mode() == ov::op::MVNEpsMode::INSIDE_SQRT;
 
     CreateCommonMVNOp(p, op, axes, normalize_variance, eps, eps_inside_sqrt);
@@ -66,5 +65,4 @@ static void CreateMVNOp(ProgramBuilder& p, const std::shared_ptr<ov::op::v6::MVN
 REGISTER_FACTORY_IMPL(v0, MVN);
 REGISTER_FACTORY_IMPL(v6, MVN);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

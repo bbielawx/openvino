@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -30,7 +30,7 @@ public:
 
         topology topology(
                 input_layout("input", input->get_layout()),
-                activation("relu", input_info("input"), activation_func::relu_negative_slope, activation_additional_params{ 0.5f, 0.f }, padding{ { 0, 0, 0, 0 }, 0 }));
+                activation("relu", input_info("input"), activation_func::relu_negative_slope, activation_additional_params{ 0.5f, 0.f }));
 
         cldnn::network::ptr network = get_network(engine, topology, get_test_default_config(engine), get_test_stream_ptr(), is_caching_test);
         network->set_input_data("input", input);
@@ -40,7 +40,7 @@ public:
 
         auto output_memory = outputs.at("relu").get_memory();
         auto output_layout = output_memory->get_layout();
-        cldnn::mem_lock<float> output_ptr(output_memory, get_test_stream());
+        cldnn::mem_lock<float, mem_lock_type::read> output_ptr(output_memory, get_test_stream());
 
         int y_size = output_layout.spatial(1);
         int x_size = output_layout.spatial(0);
@@ -118,8 +118,8 @@ public:
         auto output_memory0 = outputs0.at("conv").get_memory();
         auto output_memory1 = outputs1.at("conv").get_memory();
         auto output_layout = output_memory0->get_layout();
-        cldnn::mem_lock<float> output_ptr0(output_memory0, get_test_stream());
-        cldnn::mem_lock<float> output_ptr1(output_memory1, get_test_stream());
+        cldnn::mem_lock<float, mem_lock_type::read> output_ptr0(output_memory0, get_test_stream());
+        cldnn::mem_lock<float, mem_lock_type::read> output_ptr1(output_memory1, get_test_stream());
 
         auto wmem0 = network0->get_output_memory("weights");
         auto wmem1 = network1->get_output_memory("weights");
@@ -206,8 +206,8 @@ public:
         auto output_memory0 = outputs0.at("conv").get_memory();
         auto output_memory1 = outputs1.at("conv").get_memory();
         auto output_layout = output_memory0->get_layout();
-        cldnn::mem_lock<float> output_ptr0(output_memory0, get_test_stream());
-        cldnn::mem_lock<float> output_ptr1(output_memory1, get_test_stream());
+        cldnn::mem_lock<float, mem_lock_type::read> output_ptr0(output_memory0, get_test_stream());
+        cldnn::mem_lock<float, mem_lock_type::read> output_ptr1(output_memory1, get_test_stream());
 
         auto wmem0 = network0->get_output_memory("weights");
         auto wmem1 = network1->get_output_memory("weights");

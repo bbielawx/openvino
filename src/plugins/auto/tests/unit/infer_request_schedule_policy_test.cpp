@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include <gmock/gmock.h>
@@ -6,6 +6,7 @@
 
 #include <vector>
 
+#include "common_test_utils/test_assertions.hpp"
 #include "async_infer_request.hpp"
 #include "common.hpp"
 #include "cumulative_schedule.hpp"
@@ -24,12 +25,8 @@ protected:
     std::vector<std::string> expectedScheDevs;
 
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ConfigParams> obj) {
-        std::vector<ov::auto_plugin::DeviceInformation> devicesInfo;
-        ov::intel_auto::SchedulePolicy schedulePolicy;
-        std::map<std::string, int> numOfInferRequests;
-        std::vector<std::string> expectedScheDevs;
-        std::tie(devicesInfo, schedulePolicy, numOfInferRequests, expectedScheDevs) = obj.param;
+    static std::string getTestCaseName(const testing::TestParamInfo<ConfigParams>& obj) {
+        const auto& [devicesInfo, schedulePolicy, numOfInferRequests, expectedScheDevs] = obj.param;
         std::ostringstream result;
         std::string candidateDevList;
         result << "candaidateDeviceList_";
@@ -64,7 +61,7 @@ TEST_P(MockCumuSchedule, scheduleInferRequestBasedOnSchedulePolicy) {
     int expectedDevIndex = 0;
     while (true) {
         std::string actualSelectedDev;
-        ASSERT_NO_THROW(actualSelectedDev = schedule_to_next_device(devicesInfo, deviceIndexWithInferReq));
+        OV_ASSERT_NO_THROW(actualSelectedDev = schedule_to_next_device(devicesInfo, deviceIndexWithInferReq));
         if (numOfInferRequests[actualSelectedDev] > 0) {
             EXPECT_EQ(actualSelectedDev, expectedScheDevs[expectedDevIndex++]);
             // consume an available infer request on selected device

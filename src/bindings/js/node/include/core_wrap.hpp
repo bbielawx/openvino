@@ -1,11 +1,14 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
+//
 
 #pragma once
 
 #include <napi.h>
 
+#include <sstream>
 #include <thread>
+#include <variant>
 
 #include "openvino/runtime/core.hpp"
 
@@ -68,27 +71,25 @@ public:
     Napi::Value set_property(const Napi::CallbackInfo& info);
     Napi::Value get_property(const Napi::CallbackInfo& info);
 
+    Napi::Value query_model(const Napi::CallbackInfo& info);
+
+    void add_extension(const Napi::CallbackInfo& info);
+
 protected:
     Napi::Value compile_model_sync(const Napi::CallbackInfo& info,
                                    const Napi::Object& model,
                                    const Napi::String& device);
 
     Napi::Value compile_model_sync(const Napi::CallbackInfo& info,
-                                   const Napi::String& model_path,
-                                   const Napi::String& device);
-
-    Napi::Value compile_model_sync(const Napi::CallbackInfo& info,
                                    const Napi::Object& model,
-                                   const Napi::String& device,
-                                   const std::map<std::string, ov::Any>& config);
-
-    Napi::Value compile_model_sync(const Napi::CallbackInfo& info,
-                                   const Napi::String& model_path,
                                    const Napi::String& device,
                                    const std::map<std::string, ov::Any>& config);
 
     /** @brief Imports a compiled model from the previously exported one. */
     Napi::Value import_model(const Napi::CallbackInfo& info);
+
+    /** @brief Implements Core.importModel() defined in ../lib/addon.ts. */
+    Napi::Value import_model_async(const Napi::CallbackInfo& info);
 
     /** @brief Returns devices available for inference. */
     Napi::Value get_available_devices(const Napi::CallbackInfo& info);
@@ -98,35 +99,50 @@ protected:
 
 private:
     ov::Core _core;
+    std::mutex _mutex;
 };
 
-struct TsfnContextModel {
-    TsfnContextModel(Napi::Env env) : deferred(Napi::Promise::Deferred::New(env)){};
+struct TsfnCompileModelContext {
+    TsfnCompileModelContext(Napi::Env env, ov::Core& core,
+                            std::variant<std::shared_ptr<ov::Model>, std::filesystem::path> model,
+                            const std::string& device,
+                            ov::AnyMap config)
+        : deferred(Napi::Promise::Deferred::New(env)),
+          _core{core},
+          _model(std::move(model)),
+          _device(device),
+          _config(std::move(config)) {};
+
+    std::thread native_thread;
+
+    Napi::Promise::Deferred deferred;
+    Napi::ThreadSafeFunction tsfn;
+    
+    ov::Core& _core;
+    std::variant<std::shared_ptr<ov::Model>, std::filesystem::path> _model;
+    std::string _device;
+    ov::AnyMap _config;
+
+    ov::CompiledModel _compiled_model;
+};
+
+struct ImportModelContext {
+    ImportModelContext(Napi::Env env, ov::Core& core) : deferred(Napi::Promise::Deferred::New(env)), _core{core} {};
     std::thread nativeThread;
 
     Napi::Promise::Deferred deferred;
     Napi::ThreadSafeFunction tsfn;
 
-    std::shared_ptr<ov::Model> _model;
+    std::stringstream _stream;
+    Napi::Reference<Napi::Buffer<uint8_t>> _buffer;
+    const char* _buffer_data = nullptr;
+    size_t _buffer_size = 0;
+
     std::string _device;
-    ov::CompiledModel _compiled_model;
     std::map<std::string, ov::Any> _config = {};
+    ov::Core& _core;
+    ov::CompiledModel _compiled_model;
 };
 
-struct TsfnContextPath {
-    TsfnContextPath(Napi::Env env) : deferred(Napi::Promise::Deferred::New(env)){};
-    std::thread nativeThread;
-
-    Napi::Promise::Deferred deferred;
-    Napi::ThreadSafeFunction tsfn;
-
-    std::string _model;
-    std::string _device;
-    ov::CompiledModel _compiled_model;
-    std::map<std::string, ov::Any> _config = {};
-};
-
-void FinalizerCallbackModel(Napi::Env env, void* finalizeData, TsfnContextModel* context);
-void FinalizerCallbackPath(Napi::Env env, void* finalizeData, TsfnContextPath* context);
-void compileModelThreadModel(TsfnContextModel* context);
-void compileModelThreadPath(TsfnContextPath* context);
+void tsfn_finalizer_callback(Napi::Env env, void* finalize_data, TsfnCompileModelContext* context);
+void compile_model_thread(TsfnCompileModelContext* context);

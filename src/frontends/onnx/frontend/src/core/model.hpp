@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,9 +12,7 @@
 
 #include "core/operator_set.hpp"
 
-namespace ov {
-namespace frontend {
-namespace onnx {
+namespace ov::frontend::onnx {
 using ::ONNX_NAMESPACE::GraphProto;
 using ::ONNX_NAMESPACE::ModelProto;
 using ::ONNX_NAMESPACE::NodeProto;
@@ -103,7 +101,7 @@ public:
     std::int64_t get_opset_version(const std::string& domain) {
         try {
             return ov::frontend::onnx::get_opset_version(*this->m_model_proto, domain);
-        } catch (ov::Exception const&) {
+        } catch (const ov::Exception&) {
             return -1;
         }
     }
@@ -117,6 +115,4 @@ inline std::ostream& operator<<(std::ostream& outs, const Model& model) {
     return (outs << "<Model: " << model.get_producer_name() << ">");
 }
 
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::onnx

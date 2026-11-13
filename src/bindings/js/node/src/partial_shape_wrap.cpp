@@ -1,25 +1,27 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
+//
 
 #include "node/include/partial_shape_wrap.hpp"
 
 #include "node/include/addon.hpp"
 #include "node/include/errors.hpp"
 #include "node/include/helper.hpp"
+#include "node/include/type_validation.hpp"
 
 PartialShapeWrap::PartialShapeWrap(const Napi::CallbackInfo& info) : Napi::ObjectWrap<PartialShapeWrap>(info) {
-    const size_t attrs_length = info.Length();
+    std::vector<std::string> allowed_signatures;
 
-    if (attrs_length == 1 && info[0].IsString()) {
-        try {
-            const auto& shape = std::string(info[0].ToString());
-
-            _partial_shape = ov::PartialShape(shape);
-        } catch (std::exception& e) {
-            reportError(info.Env(), e.what());
+    try {
+        if (ov::js::validate<Napi::String>(info, allowed_signatures)) {
+            _partial_shape = ov::PartialShape(info[0].ToString());
+        } else if (ov::js::validate(info, allowed_signatures)) {
+            return;
+        } else {
+            OPENVINO_THROW("'PartialShape' constructor", ov::js::get_parameters_error_msg(info, allowed_signatures));
         }
-    } else {
-        reportError(info.Env(), "Invalid parameters for PartialShape constructor.");
+    } catch (std::exception& err) {
+        reportError(info.Env(), err.what());
     }
 }
 
@@ -60,4 +62,8 @@ Napi::Value PartialShapeWrap::to_string(const Napi::CallbackInfo& info) {
 
 Napi::Value PartialShapeWrap::get_dimensions(const Napi::CallbackInfo& info) {
     return cpp_to_js<ov::PartialShape, Napi::Array>(info, _partial_shape);
+}
+
+ov::PartialShape& PartialShapeWrap::get_value() {
+    return _partial_shape;
 }

@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,7 +10,7 @@ namespace kernel_selector {
 class EltwiseKernelRef : public EltwiseKernelBase {
 public:
     EltwiseKernelRef() : EltwiseKernelBase("generic_eltwise_ref") {}
-    virtual ~EltwiseKernelRef() {}
+    ~EltwiseKernelRef() override = default;
 
     KernelsData GetKernelsData(const Params& params) const override;
     KernelsPriority GetKernelsPriority(const Params& params) const override;
@@ -19,7 +19,8 @@ public:
         return {
             FusedOpType::QUANTIZE,
             FusedOpType::ACTIVATION,
-            FusedOpType::ELTWISE
+            FusedOpType::ELTWISE,
+            FusedOpType::REORDER
         };
     }
 
@@ -27,5 +28,6 @@ public:
 
 protected:
     bool Validate(const Params& p) const override;
+    bool SupportsFeaturePadReset() const override { return true; }
 };
 }  // namespace kernel_selector

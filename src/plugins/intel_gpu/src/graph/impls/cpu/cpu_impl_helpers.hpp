@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <vector>
+
+#include "intel_gpu/runtime/event.hpp"
+#include "intel_gpu/runtime/stream.hpp"
 
 namespace cldnn {
 namespace cpu {
@@ -50,14 +53,16 @@ inline float iou(const bounding_box& box1, const bounding_box& box2) {
     float intersection_x = (inter_xmax - inter_xmin);
     float intersection_y = (inter_ymax - inter_ymin);
 
-    if (intersection_x <= 0 || intersection_y <= 0)
+    if (intersection_x <= 0 || intersection_y <= 0) {
         return 0.f;
+    }
 
     float intersection = intersection_x * intersection_y;
     float union_ = (area1 + area2 - intersection);
 
-    if (union_ <= 0)
+    if (union_ <= 0) {
         return 0.f;
+    }
 
     return intersection / union_;
 }
@@ -73,6 +78,13 @@ using vector3D = vector2D<vector1D<T>>;
 
 template <typename T>
 using vector4D = vector2D<vector2D<T>>;
+
+inline event::ptr make_output_event(cldnn::stream& stream, bool is_output) {
+    if (is_output) {
+        return stream.create_user_event(true);
+    }
+    return nullptr;
+}
 
 }  // namespace cpu
 }  // namespace cldnn

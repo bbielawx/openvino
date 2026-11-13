@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -24,7 +24,7 @@ namespace pass {
  */
 class TRANSFORMATIONS_API ConvolutionToGroupConvolutionFusion : public MatcherPass {
 public:
-    OPENVINO_RTTI("ConvolutionToGroupConvolutionFusion", "0");
+    OPENVINO_MATCHER_PASS_RTTI("ConvolutionToGroupConvolutionFusion");
     ConvolutionToGroupConvolutionFusion();
 };
 

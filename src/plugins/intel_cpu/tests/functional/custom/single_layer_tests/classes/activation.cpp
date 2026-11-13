@@ -1,12 +1,16 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "activation.hpp"
 #include "gtest/gtest.h"
+#include "internal_properties.hpp"
 #include "utils/cpu_test_utils.hpp"
 #include "common_test_utils/node_builders/activation.hpp"
 #include "shared_test_classes/single_op/activation.hpp"
+#if defined(OPENVINO_ARCH_RISCV64)
+#   include "nodes/kernels/riscv64/cpu_isa_traits.hpp"
+#endif
 
 using namespace CPUTestUtils;
 using namespace ov::test::utils;
@@ -14,13 +18,8 @@ using namespace ov::test::utils;
 namespace ov {
 namespace test {
 std::string ActivationLayerCPUTest::getTestCaseName(const testing::TestParamInfo<ActivationLayerCPUTestParamSet> &obj) {
-    std::vector<ov::test::InputShape> inputShapes;
-    std::vector<size_t> activationShapes;
-    std::pair<utils::ActivationTypes, std::vector<float>> activationTypeAndConstValue;
-    ov::element::Type netPrecision, inPrecision, outPrecision;
-    CPUTestUtils::CPUSpecificParams cpuParams;
-    std::tie(inputShapes, activationShapes, activationTypeAndConstValue, netPrecision, inPrecision, outPrecision, cpuParams) = obj.param;
-
+    const auto& [inputShapes, activationShapes, activationTypeAndConstValue, netPrecision, inPrecision, outPrecision,
+                 cpuParams, enforceSnippets] = obj.param;
     std::ostringstream result;
     result << activationNames[activationTypeAndConstValue.first] << "_";
     if (inputShapes.front().first.size() != 0) {
@@ -43,6 +42,7 @@ std::string ActivationLayerCPUTest::getTestCaseName(const testing::TestParamInfo
     result << "inPRC=" << inPrecision.to_string() << "_";
     result << "outPRC=" << outPrecision.to_string() << "_";
     result << CPUTestUtils::CPUTestsBase::getTestCaseName(cpuParams);
+    result << "_enforceSnippets=" << enforceSnippets;
 
     return result.str();
 }
@@ -67,11 +67,21 @@ void ActivationLayerCPUTest::generate_inputs(const std::vector<ov::Shape>& targe
         resolution = 128;
     } else if (activationType == utils::ActivationTypes::Acos ||
                activationType == utils::ActivationTypes::Asin ||
-               activationType == utils::ActivationTypes::Atanh) {
-        // range [-1. 1] is required
+               activationType == utils::ActivationTypes::Atanh ||
+               activationType == utils::ActivationTypes::ErfInv) {
+        // range [-1, 1] is required; edge values ±1 and |x|>1 are injected explicitly below
         startFrom = -1;
         range = 2;
         resolution = 128;
+    } else if (activationType == utils::ActivationTypes::LogicalNot) {
+        startFrom = 0;
+        range = 2;
+        resolution = 1;
+    } else if (activationType == utils::ActivationTypes::RoundHalfAwayFromZero ||
+               activationType == utils::ActivationTypes::RoundHalfToEven) {
+        startFrom = -10;
+        range = 20;
+        resolution = 4;
     } else {
         startFrom = 0;
         range = 15;
@@ -91,6 +101,47 @@ void ActivationLayerCPUTest::generate_inputs(const std::vector<ov::Shape>& targe
             // cover Sign NAN test case
             if ((activationType == utils::ActivationTypes::Sign) && funcInput.get_element_type() == ov::element::f32) {
                 static_cast<float*>(tensor.data())[0] = std::numeric_limits<float>::quiet_NaN();
+            } else if ((activationType == utils::ActivationTypes::Floor ||
+                        activationType == utils::ActivationTypes::Ceiling) &&
+                       funcInput.get_element_type() == ov::element::f32) {
+                auto inject = [&](size_t idx, float val) {
+                    if (idx < tensor.get_size()) {
+                        static_cast<float*>(tensor.data())[idx] = val;
+                    }
+                };
+                inject(0, -1.25f);
+                inject(1, -0.25f);
+                inject(2, 0.25f);
+                inject(3, -2147483904.0f);
+                inject(4, 2147483904.0f);
+                inject(5, std::numeric_limits<float>::infinity());
+                inject(6, -std::numeric_limits<float>::infinity());
+                inject(7, std::numeric_limits<float>::quiet_NaN());
+            } else if (activationType == utils::ActivationTypes::ErfInv && funcInput.get_element_type().is_real()) {
+                const auto sz = tensor.get_size();
+                auto inject = [&](size_t idx, float val) {
+                    if (idx >= sz) return;
+                    switch (funcInput.get_element_type()) {
+                    case ov::element::f32:  static_cast<float*>(tensor.data())[idx]          = val; break;
+                    case ov::element::f64:  static_cast<double*>(tensor.data())[idx]         = val; break;
+                    case ov::element::f16:  static_cast<ov::float16*>(tensor.data())[idx]    = val; break;
+                    case ov::element::bf16: static_cast<ov::bfloat16*>(tensor.data())[idx]   = val; break;
+                    default: break;
+                    }
+                };
+                inject(0,  1.0f);
+                inject(1, -1.0f);
+                inject(2,  2.0f);
+                inject(3, -1.5f);
+            } else if ((activationType == utils::ActivationTypes::IsFinite ||
+                        activationType == utils::ActivationTypes::IsInf ||
+                        activationType == utils::ActivationTypes::IsNaN) &&
+                       funcInput.get_element_type() == ov::element::f32 && tensor.get_size() >= 5) {
+                static_cast<float*>(tensor.data())[0] = std::numeric_limits<float>::quiet_NaN(); // nan
+                static_cast<float*>(tensor.data())[1] = std::numeric_limits<float>::signaling_NaN(); // nan
+                static_cast<float*>(tensor.data())[2] = std::sqrt(-1); // -nan
+                static_cast<float*>(tensor.data())[3] = std::numeric_limits<float>::infinity(); // infinite
+                static_cast<float*>(tensor.data())[4] = -std::numeric_limits<float>::infinity(); // -infinite
             }
         } else {
             tensor = ov::test::utils::create_and_fill_tensor(funcInput.get_element_type(), targetInputStaticShapes[i]);
@@ -101,13 +152,9 @@ void ActivationLayerCPUTest::generate_inputs(const std::vector<ov::Shape>& targe
 
 void ActivationLayerCPUTest::SetUp() {
     targetDevice = ov::test::utils::DEVICE_CPU;
-
-    std::vector<ov::test::InputShape> inputShapes;
-    std::vector<size_t> activationShapes;
-    std::pair<utils::ActivationTypes, std::vector<float>> activationTypeAndConstValue;
-    ov::element::Type inPrecision, outPrecision;
-    CPUTestUtils::CPUSpecificParams cpuParams;
-    std::tie(inputShapes, activationShapes, activationTypeAndConstValue, netPrecision, inPrecision, outPrecision, cpuParams) = this->GetParam();
+    const auto& [inputShapes, activationShapes, activationTypeAndConstValue, _netPrecision, inPrecision, outPrecision,
+                 cpuParams, enforceSnippets] = this->GetParam();
+    netPrecision = _netPrecision;
     std::tie(inFmts, outFmts, priority, selectedType) = cpuParams;
     activationType = activationTypeAndConstValue.first;
     auto constantsValue = activationTypeAndConstValue.second;
@@ -115,16 +162,19 @@ void ActivationLayerCPUTest::SetUp() {
     inType  = inPrecision;
     outType = outPrecision;
     const auto primitiveType = getPrimitiveType(activationType, inType, inputShapes);
-    selectedType = primitiveType.empty() ? "" : getPrimitiveType(activationType, inType, inputShapes) + "_" + netPrecision.to_string();
+    selectedType = primitiveType.empty() ? "" : primitiveType + "_" + netPrecision.to_string();
 
 #if defined(OPENVINO_ARCH_ARM) || defined(OPENVINO_ARCH_ARM64)
 #    if defined(OPENVINO_ARCH_ARM)
     if (activationType == utils::ActivationTypes::GeluErf) // @todo tmp fallback to ref, gelu erf is disabled for 32bit ARM
         selectedType = std::string("ref_") + netPrecision.to_string();
 #    endif
-    if (activationType == utils::ActivationTypes::GeluTanh ||  // @todo not supported by ACL, can be decomposed with transformation
-        activationType == utils::ActivationTypes::SoftSign ||  // @todo not supported by ACL, can be decomposed with transformation
-        inputShapes.front().first.rank().get_length() > 5)               // @todo tmp fallback to ref, remove after 6D+ ranks are properly supported
+    if ((primitiveType != "jit") &&
+        (activationType == utils::ActivationTypes::SoftSign || // @todo not supported by ACL, can be decomposed with transformation
+#if defined(OPENVINO_ARCH_ARM)
+        activationType == utils::ActivationTypes::GeluTanh ||  // @todo not supported by ACL, can be decomposed with transformation
+#endif
+        inputShapes.front().first.rank().get_length() > 5))    // @todo tmp fallback to ref, remove after 6D+ ranks are properly supported
         selectedType = std::string("ref_") + netPrecision.to_string();
 #else
     if (activationType == utils::ActivationTypes::Log)  // @todo tmp fallback to ref, remove after Log is supported in emitters
@@ -133,10 +183,16 @@ void ActivationLayerCPUTest::SetUp() {
 
     init_input_shapes(inputShapes);
 
+    if (enforceSnippets) {
+        configuration.insert(ov::intel_cpu::snippets_mode(ov::intel_cpu::SnippetsMode::IGNORE_CALLBACK));
+    } else {
+        configuration.insert(ov::intel_cpu::snippets_mode(ov::intel_cpu::SnippetsMode::DISABLE));
+    }
+
     auto params = std::make_shared<ov::op::v0::Parameter>(netPrecision, inputDynamicShapes.front());
     auto activation = utils::make_activation(params, netPrecision, activationType, activationShapes, constantsValue);
     activation->get_rt_info() = getCPUInfo();
-    function = std::make_shared<ov::Model>(ov::NodeVector{activation}, ov::ParameterVector{params}, "Activation");
+    function = std::make_shared<ov::Model>(ov::OutputVector{activation}, ov::ParameterVector{params}, "Activation");
 #if defined(OPENVINO_ARCH_ARM) || defined(OPENVINO_ARCH_ARM64)
     if (netPrecision == ov::element::f32 && outPrecision == ov::element::f32) {
         abs_threshold = 8e-4;
@@ -154,11 +210,34 @@ std::string ActivationLayerCPUTest::getPrimitiveType(const utils::ActivationType
 #if defined(OPENVINO_ARCH_ARM64)
     if ((element_type == ov::element::f32) &&
         ((activation_type == utils::ActivationTypes::Clamp) ||
+        (activation_type == utils::ActivationTypes::Elu) ||
+        (activation_type == utils::ActivationTypes::Erf) ||
         (activation_type == utils::ActivationTypes::Exp) ||
+        (activation_type == utils::ActivationTypes::Floor) ||
+        (activation_type == utils::ActivationTypes::Ceiling) ||
+        (activation_type == utils::ActivationTypes::Negative) ||
+        (activation_type == utils::ActivationTypes::HSwish) ||
+        (activation_type == utils::ActivationTypes::IsInf) ||
+        (activation_type == utils::ActivationTypes::HSigmoid) ||
+        (activation_type == utils::ActivationTypes::HardSigmoid) ||
+        (activation_type == utils::ActivationTypes::IsFinite) ||
+        (activation_type == utils::ActivationTypes::IsNaN) ||
+        (activation_type == utils::ActivationTypes::Mish) ||
+        (activation_type == utils::ActivationTypes::GeluErf) ||
+        (activation_type == utils::ActivationTypes::GeluTanh) ||
         (activation_type == utils::ActivationTypes::Relu) ||
         (activation_type == utils::ActivationTypes::Sigmoid) ||
+        (activation_type == utils::ActivationTypes::SoftSign) ||
+        (activation_type == utils::ActivationTypes::Sqrt) ||
         (activation_type == utils::ActivationTypes::Swish) ||
-        (activation_type == utils::ActivationTypes::Tanh))) {
+        (activation_type == utils::ActivationTypes::LogicalNot) ||
+        (activation_type == utils::ActivationTypes::Tanh) ||
+        (activation_type == utils::ActivationTypes::RoundHalfAwayFromZero) ||
+        (activation_type == utils::ActivationTypes::RoundHalfToEven) ||
+        (activation_type == utils::ActivationTypes::LeakyRelu) ||
+        (activation_type == utils::ActivationTypes::PReLu) ||
+        (activation_type == utils::ActivationTypes::ErfInv) ||
+        (activation_type == utils::ActivationTypes::SoftPlus))) {
         return "jit";
     }
 
@@ -167,14 +246,63 @@ std::string ActivationLayerCPUTest::getPrimitiveType(const utils::ActivationType
         return "";
     }
 #endif
+    if ((activation_type == utils::ActivationTypes::Erf) ||
+       (activation_type == utils::ActivationTypes::ErfInv) ||
+       (activation_type == utils::ActivationTypes::Floor) ||
+       (activation_type == utils::ActivationTypes::Ceiling) ||
+       (activation_type == utils::ActivationTypes::Negative) ||
+       (activation_type == utils::ActivationTypes::IsNaN) ||
+       (activation_type == utils::ActivationTypes::IsInf) ||
+       (activation_type == utils::ActivationTypes::IsFinite) ||
+       (activation_type == utils::ActivationTypes::RoundHalfAwayFromZero) ||
+       (activation_type == utils::ActivationTypes::RoundHalfToEven)) {
+        return "ref";
+    }
     return "acl";
-#else
-    return CPUTestsBase::getPrimitiveType();
 #endif
+#if defined(OPENVINO_ARCH_RISCV64)
+    if (ov::intel_cpu::riscv64::mayiuse(ov::intel_cpu::riscv64::gv)) {
+        if ((activation_type == utils::ActivationTypes::Abs) ||
+            (activation_type == utils::ActivationTypes::Ceiling) ||
+            (activation_type == utils::ActivationTypes::Clamp) ||
+            (activation_type == utils::ActivationTypes::Elu) ||
+            (activation_type == utils::ActivationTypes::Erf) ||
+            (activation_type == utils::ActivationTypes::Exp) ||
+            (activation_type == utils::ActivationTypes::Floor) ||
+            (activation_type == utils::ActivationTypes::GeluErf) ||
+            (activation_type == utils::ActivationTypes::GeluTanh) ||
+            (activation_type == utils::ActivationTypes::HSigmoid) ||
+            (activation_type == utils::ActivationTypes::HSwish) ||
+            (activation_type == utils::ActivationTypes::Mish) ||
+            (activation_type == utils::ActivationTypes::IsFinite) ||
+            (activation_type == utils::ActivationTypes::IsInf) ||
+            (activation_type == utils::ActivationTypes::IsNaN) ||
+            (activation_type == utils::ActivationTypes::Negative) ||
+            (activation_type == utils::ActivationTypes::LeakyRelu) ||
+            (activation_type == utils::ActivationTypes::Relu) ||
+            (activation_type == utils::ActivationTypes::RoundHalfAwayFromZero) ||
+            (activation_type == utils::ActivationTypes::RoundHalfToEven) ||
+            (activation_type == utils::ActivationTypes::PReLu) ||
+            (activation_type == utils::ActivationTypes::Sigmoid) ||
+            (activation_type == utils::ActivationTypes::SoftSign) ||
+            (activation_type == utils::ActivationTypes::Sqrt) ||
+            (activation_type == utils::ActivationTypes::Swish) ||
+            (activation_type == utils::ActivationTypes::Tanh) ||
+            (activation_type == utils::ActivationTypes::ErfInv))
+            return "jit";
+    }
+#endif
+    return CPUTestsBase::getPrimitiveType();
 }
 
 TEST_P(ActivationLayerCPUTest, CompareWithRefs) {
     run();
+#if defined(OPENVINO_ARCH_X86_64) || defined(OPENVINO_ARCH_ARM64) || defined(OPENVINO_ARCH_RISCV64)
+    const auto enforceSnippets = std::get<7>(this->GetParam());
+    if (enforceSnippets) {
+        CheckNumberOfNodesWithType(compiledModel, "Subgraph", 1);
+    }
+#endif
     CheckPluginRelatedResults(compiledModel, "Eltwise");
 }
 
@@ -190,16 +318,67 @@ const std::map<utils::ActivationTypes, std::vector<std::vector<float>>>& activat
         {Sigmoid,     {{}}},
         {Tanh,        {{}}},
         {Relu,        {{}}},
+        {Erf,         {{}}},
         {Exp,         {{}}},
         {Clamp,       {{-2.0f, 2.0f}}},
         {Elu,         {{0.1f}}},
+        {Floor,       {{}}},
+        {Ceiling,     {{}}},
+        {Negative,    {{}}},
         {Swish,       {{0.1f}}},
+// On arm32 Mish is decomposed
+#if !defined(OPENVINO_ARCH_ARM)
+        {Mish,        {{}}},
+#endif
+// On other platforms HSigmoid is decomposed
+#if defined(OPENVINO_ARCH_X86_64) || defined(OPENVINO_ARCH_ARM64) || defined(OPENVINO_ARCH_RISCV64)
+        {HSigmoid,    {{}}},
+#endif
         {HSwish,      {{}}},
         {PReLu,       {{-0.01f}}},
+        {LeakyRelu,   {{-0.01f}}},
         {GeluErf,     {{}}},
         {GeluTanh,    {{}}},
         {SoftSign,    {{}}},
         {SoftPlus,    {{}}},
+        {IsFinite,    {{}}},
+        {IsInf,       {{false, false}, {false, true}, {true, false}, {true, true}}},
+        {IsNaN,       {{}}},
+        {RoundHalfToEven,       {{}}},
+        {RoundHalfAwayFromZero, {{}}},
+        {ErfInv,                {{}}},
+    };
+
+    return activationTypes;
+}
+
+const std::map<utils::ActivationTypes, std::vector<std::vector<float>>>& activationTypesSnippets() {
+    static const std::map<utils::ActivationTypes, std::vector<std::vector<float>>> activationTypes {
+        {Abs,                   {{}}},
+        {Exp,                   {{}}},
+        {Ceiling,               {{}}},
+        {Clamp,                 {{-2.0f, 2.0f}}},
+        {Elu,                   {{0.1f}}},
+        {Erf,                   {{}}},
+        {Floor,                 {{}}},
+        {GeluErf,               {{}}},
+        {GeluTanh,              {{}}},
+        {Negative,              {{}}},
+        {Relu,                  {{}}},
+        {HSwish,                {{}}},
+        {PReLu,                 {{-0.01f}}},
+        {Sqrt,                  {{}}},
+        {RoundHalfToEven,       {{}}},
+        {RoundHalfAwayFromZero, {{}}},
+        {IsFinite,              {{}}},
+        {IsInf,                 {{false, false}, {false, true}, {true, false}, {true, true}}},
+        {IsNaN,                 {{}}},
+#if defined(OPENVINO_ARCH_ARM64) || defined(OPENVINO_ARCH_RISCV64)
+        {Mish,                  {{}}},
+#endif
+        {Sigmoid,               {{}}},
+        {Swish,                 {{0.1f}}},
+        {Tanh,                  {{}}},
     };
 
     return activationTypes;

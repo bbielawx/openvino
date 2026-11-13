@@ -1,103 +1,145 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "openvino/runtime/threading/cpu_streams_executor.hpp"
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <vector>
+
 #include "cache/multi_cache.h"
 #include "config.h"
+#include "cpu_parallel.hpp"
 #include "dnnl_scratch_pad.h"
+#include "memory_control.hpp"
+#include "openvino/runtime/threading/cpu_streams_executor.hpp"
+#include "openvino/runtime/threading/istreams_executor.hpp"
+#include "sub_memory_manager.hpp"
 #include "weights_cache.hpp"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
+
+namespace node {
+class MemoryStatesRegister;
+}  // namespace node
+
+class MemoryControl;
+class NetworkMemoryControl;
 
 class GraphContext {
 public:
-    typedef std::shared_ptr<GraphContext> Ptr;
-    typedef std::shared_ptr<const GraphContext> CPtr;
+    using Ptr = std::shared_ptr<GraphContext>;
+    using CPtr = std::shared_ptr<const GraphContext>;
 
-    GraphContext(const Config& config,
+    GraphContext(Config config,
                  WeightsSharing::Ptr w_cache,
                  bool isGraphQuantized,
-                 ov::threading::IStreamsExecutor::Ptr streamExecutor = nullptr)
-        : config(config),
-          weightsCache(std::move(w_cache)),
-          isGraphQuantizedFlag(isGraphQuantized),
-          streamExecutor(streamExecutor) {
-        rtParamsCache = std::make_shared<MultiCache>(config.rtCacheCapacity);
-        // primitive/executors can be shared across sub-stream
-        // but scratch pad cannot be shared.
-        numNumaNodes = 1;
-        if (streamExecutor) {
-            cpuStreamExecutor = std::dynamic_pointer_cast<ov::threading::CPUStreamsExecutor>(streamExecutor);
-            auto nNumaNodes = get_num_numa_nodes();
-            if (numNumaNodes < nNumaNodes)
-                numNumaNodes = nNumaNodes;
-        }
-        for (int i = 0; i < numNumaNodes; i++) {
-            rtScratchPads.push_back(std::make_shared<DnnlScratchPad>(getEngine(), i));
-        }
+                 ov::threading::IStreamsExecutor::Ptr streamExecutor = nullptr,
+                 std::shared_ptr<CpuParallel> cpuParallel = nullptr,
+                 std::shared_ptr<SubMemoryManager> sub_memory_manager = nullptr);
+
+    [[nodiscard]] const Config& getConfig() const {
+        return m_config;
     }
 
-    const Config& getConfig() const {
-        return config;
+    [[nodiscard]] WeightsSharing::Ptr getWeightsCache() const {
+        return m_weightsCache;
     }
 
-    WeightsSharing::Ptr getWeightsCache() const {
-        return weightsCache;
+    [[nodiscard]] MultiCachePtr getParamsCache() const {
+        return m_rtParamsCache;
     }
 
-
-    MultiCachePtr getParamsCache() const {
-        return rtParamsCache;
+    [[nodiscard]] MultiCachePtr getSnippetsParamsCache() const {
+        return m_snippetsParamsCache;
     }
 
-    DnnlScratchPadPtr getScratchPad(int subStreamID = 0) const {
-        if (subStreamID < 0)
-            subStreamID = 0;
-        if (subStreamID >= numNumaNodes - 1)
-            subStreamID = numNumaNodes - 1;
-        return rtScratchPads[subStreamID];
+    [[nodiscard]] DnnlScratchPadPtr getScratchPad() const {
+        return m_rtScratchPads[m_numaNodeId];
     }
 
-    const std::vector<DnnlScratchPadPtr>& getScratchPads() const {
-        return rtScratchPads;
+    [[nodiscard]] const std::vector<DnnlScratchPadPtr>& getScratchPads() const {
+        return m_rtScratchPads;
     }
 
     static const dnnl::engine& getEngine();
 
-    bool isGraphQuantized() const {
-        return isGraphQuantizedFlag;
+    [[nodiscard]] bool isGraphQuantized() const {
+        return m_isGraphQuantizedFlag;
     }
 
-    ov::threading::CPUStreamsExecutor::Ptr getCPUStreamExecutor() const {
-        return cpuStreamExecutor;
+    [[nodiscard]] ov::threading::CPUStreamsExecutor::Ptr getCPUStreamExecutor() const {
+        return m_cpuStreamExecutor;
     }
 
-    int getNumNumaNodes() const {
-        return numNumaNodes;
+    [[nodiscard]] std::shared_ptr<CpuParallel> getCpuParallel() const {
+        return m_cpuParallel;
+    }
+
+    [[nodiscard]] std::shared_ptr<SubMemoryManager> getSubMemory() const {
+        return m_subMemoryManager;
+    }
+
+    [[nodiscard]] int getNumNumaNodes() const {
+        return m_numNumaNodes;
+    }
+
+    [[nodiscard]] const std::shared_ptr<node::MemoryStatesRegister>& getMemoryStatesRegister() const {
+        return m_memoryStatesRegister;
+    }
+
+    [[nodiscard]] const std::shared_ptr<MemoryControl>& getMemoryControl() const {
+        return m_memoryControl;
+    }
+
+    [[nodiscard]] const std::shared_ptr<NetworkMemoryControl>& getAuxiliaryNetworkMemoryControl() const {
+        return m_auxiliaryNetworkMemoryControl;
+    }
+
+    void releaseMemory() const {
+        m_auxiliaryNetworkMemoryControl->releaseMemory();
+    }
+
+    void allocateMemory() const {
+        for (const auto& controlUnit : m_auxiliaryNetworkMemoryControl->controlUnits()) {
+            if (!controlUnit->allocated()) {
+                controlUnit->allocateMemory();
+            }
+        }
     }
 
 private:
-    Config config;  // network-level config
+    // model-level config
+    Config m_config;
+    // per NUMA node caches for sharing weights data
+    WeightsSharing::Ptr m_weightsCache;
+    // primitive cache
+    MultiCachePtr m_rtParamsCache;
+    MultiCachePtr m_snippetsParamsCache;
+    // global scratch pad
+    DnnlScratchPadPtr m_rtScratchPad;
 
-    WeightsSharing::Ptr weightsCache;         // per NUMA node caches for sharing weights data
+    bool m_isGraphQuantizedFlag = false;
+    // scratch pad per sub-stream
+    std::vector<DnnlScratchPadPtr> m_rtScratchPads;
+    // stream executor for current graph
+    ov::threading::IStreamsExecutor::Ptr m_streamExecutor;
+    // cpu stream executor for current graph
+    ov::threading::CPUStreamsExecutor::Ptr m_cpuStreamExecutor;
+    std::shared_ptr<CpuParallel> m_cpuParallel = nullptr;
+    // numa submemory manager
+    std::shared_ptr<SubMemoryManager> m_subMemoryManager;
 
-    MultiCachePtr rtParamsCache;     // primitive cache
-    DnnlScratchPadPtr rtScratchPad;  // scratch pad
+    int m_numNumaNodes = 1;
+    int m_numaNodeId = 0;
 
-    bool isGraphQuantizedFlag = false;
-
-    std::vector<DnnlScratchPadPtr> rtScratchPads;  // scratch pad (each sub-stream has its own copy)
-
-    ov::threading::IStreamsExecutor::Ptr streamExecutor;   // stream executor for current graph
-
-    ov::threading::CPUStreamsExecutor::Ptr cpuStreamExecutor;   // cpu stream executor for current graph
-
-    int numNumaNodes = 1;
+    std::shared_ptr<node::MemoryStatesRegister> m_memoryStatesRegister;
+    // auxiliary object to allow creating additional memory control objects if the main one cannot be used
+    // i.e. fallback graph for dynamic in-place
+    std::shared_ptr<NetworkMemoryControl> m_auxiliaryNetworkMemoryControl;
+    // main memory control object, which is supposed to be globally reused
+    MemoryControl::Ptr m_memoryControl;
 };
 
-}  // namespace intel_cpu
-}  // namespace ov
+}  // namespace ov::intel_cpu

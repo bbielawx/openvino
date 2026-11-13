@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,21 +10,18 @@
 #include "openvino/op/shape_of.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
 OutputVector translate_roll(const NodeContext& context) {
     num_inputs_check(context, 2, 3);
     const auto data = context.get_input(0);
-    const auto shifts = context.get_input(1);
+    const auto shifts = get_input_concat_if_list(context, 1);
     Output<Node> axes;
     bool on_flattened = context.input_is_none(2);
     if (!on_flattened) {
-        axes = context.get_input(2);
+        axes = get_input_concat_if_list(context, 2);
         const auto& shifts_pshape = shifts.get_partial_shape();
         const auto& axes_pshape = axes.get_partial_shape();
         on_flattened = !axes_pshape.compatible(shifts_pshape);
@@ -42,7 +39,4 @@ OutputVector translate_roll(const NodeContext& context) {
     return {context.mark_node(std::make_shared<v7::Roll>(data, shifts, axes))};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

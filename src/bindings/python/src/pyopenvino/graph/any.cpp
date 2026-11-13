@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -22,7 +22,7 @@ bool check_key(py::object key, py::object obj) {
 void regclass_graph_Any(py::module m) {
     py::class_<ov::Any, std::shared_ptr<ov::Any>> ov_any(m, "OVAny");
 
-    ov_any.doc() = "openvino.runtime.OVAny provides object wrapper for OpenVINO"
+    ov_any.doc() = "openvino.OVAny provides object wrapper for OpenVINO"
                    "ov::Any class. It allows to pass different types of objects"
                    "into C++ based core of the project.";
 
@@ -132,7 +132,7 @@ void regclass_graph_Any(py::module m) {
             :type dtype: Union[bool, int, str, float]
 
             :return: A runtime attribute as a list.
-            :rtype: Union[List[float], List[int], List[str], List[bool]]
+            :rtype: Union[list[float], list[int], list[str], list[bool]]
     )");
     ov_any.def(
         "get",

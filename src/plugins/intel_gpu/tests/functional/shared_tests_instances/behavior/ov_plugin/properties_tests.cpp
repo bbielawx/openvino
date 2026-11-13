@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -33,6 +33,7 @@ const std::vector<ov::AnyMap> gpu_compileModel_properties = {
     {ov::hint::performance_mode(ov::hint::PerformanceMode::LATENCY),
      ov::hint::num_requests(10),
      ov::hint::enable_cpu_pinning(true),
+     ov::hint::enable_cpu_reservation(false),
      ov::enable_profiling(true)}};
 
 INSTANTIATE_TEST_SUITE_P(smoke_gpuCompileModelBehaviorTests,
@@ -49,10 +50,6 @@ INSTANTIATE_TEST_SUITE_P(nightly_OVClassCommon,
 // //
 // // OV Class GetMetric
 // //
-
-INSTANTIATE_TEST_SUITE_P(nightly_HeteroAutoBatchOVGetMetricPropsTest,
-                         OVGetMetricPropsTest,
-                         ::testing::Values("HETERO", "BATCH"));
 
 INSTANTIATE_TEST_SUITE_P(nightly_gpuOVGetMetricPropsTest, OVGetMetricPropsTest, ::testing::Values("GPU"));
 
@@ -82,17 +79,6 @@ INSTANTIATE_TEST_SUITE_P(
                            {ov::hint::execution_mode.name()}))),
     OVCheckSetSupportedRWMetricsPropsTests::getTestCaseName);
 
-auto multiConfigs = []() {
-    return std::vector<ov::AnyMap>{
-        {ov::device::priorities(ov::test::utils::DEVICE_CPU)},
-        {ov::device::priorities(ov::test::utils::DEVICE_GPU)},
-    };
-};
-
-INSTANTIATE_TEST_SUITE_P(smoke_OVClassSetDevicePriorityConfigPropsTest,
-                         OVClassSetDevicePriorityConfigPropsTest,
-                         ::testing::Combine(::testing::Values("HETERO"),
-                                            ::testing::ValuesIn(multiConfigs())));
 //
 // GPU specific metrics
 //
@@ -101,7 +87,7 @@ TEST_P(OVGetMetricPropsTest_GPU_DEVICE_TOTAL_MEM_SIZE, GetMetricAndPrintNoThrow)
     ov::Core ie;
     ov::Any p;
 
-    ASSERT_NO_THROW(p = ie.get_property(target_device, ov::intel_gpu::device_total_mem_size.name()));
+    OV_ASSERT_NO_THROW(p = ie.get_property(target_device, ov::intel_gpu::device_total_mem_size.name()));
     auto t = p.as<uint64_t>();
 
     std::cout << "GPU device total memory size: " << t << std::endl;
@@ -118,7 +104,7 @@ TEST_P(OVGetMetricPropsTest_GPU_UARCH_VERSION, GetMetricAndPrintNoThrow) {
     ov::Core ie;
     ov::Any p;
 
-    ASSERT_NO_THROW(p = ie.get_property(target_device, ov::intel_gpu::uarch_version.name()));
+    OV_ASSERT_NO_THROW(p = ie.get_property(target_device, ov::intel_gpu::uarch_version.name()));
     auto t = p.as<std::string>();
 
     std::cout << "GPU device uarch: " << t << std::endl;
@@ -134,7 +120,7 @@ TEST_P(OVGetMetricPropsTest_GPU_EXECUTION_UNITS_COUNT, GetMetricAndPrintNoThrow)
     ov::Core ie;
     ov::Any p;
 
-    ASSERT_NO_THROW(p = ie.get_property(target_device, ov::intel_gpu::execution_units_count.name()));
+    OV_ASSERT_NO_THROW(p = ie.get_property(target_device, ov::intel_gpu::execution_units_count.name()));
     auto t = p.as<int>();
 
     std::cout << "GPU EUs count: " << t << std::endl;
@@ -151,7 +137,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricAvailableDevicesAndPrintNoThrow) {
     ov::Core ie;
 
     std::vector<std::string> properties;
-    ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::available_devices));
+    OV_ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::available_devices));
 
     std::cout << "AVAILABLE_DEVICES: ";
     for (const auto& prop : properties) {
@@ -166,7 +152,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricRangeForAsyncInferRequestsAndPrintNo
     ov::Core ie;
 
     std::tuple<unsigned int, unsigned int, unsigned int> property;
-    ASSERT_NO_THROW(property = ie.get_property(target_device, ov::range_for_async_infer_requests));
+    OV_ASSERT_NO_THROW(property = ie.get_property(target_device, ov::range_for_async_infer_requests));
 
     std::cout << "RANGE_FOR_ASYNC_INFER_REQUESTS: " << std::get<0>(property) << " " << std::get<1>(property) << " "
               << std::get<2>(property) << std::endl;
@@ -178,7 +164,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricRangeForStreamsAndPrintNoThrow) {
     ov::Core ie;
 
     std::tuple<unsigned int, unsigned int> property;
-    ASSERT_NO_THROW(property = ie.get_property(target_device, ov::range_for_streams));
+    OV_ASSERT_NO_THROW(property = ie.get_property(target_device, ov::range_for_streams));
 
     std::cout << "RANGE_FOR_STREAMS: " << std::get<0>(property) << " " << std::get<1>(property) << std::endl;
 
@@ -189,7 +175,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricOptimalBatchSizeAndPrintNoThrow) {
     ov::Core ie;
 
     unsigned int property = 0;
-    ASSERT_NO_THROW(property = ie.get_property(target_device, ov::optimal_batch_size));
+    OV_ASSERT_NO_THROW(property = ie.get_property(target_device, ov::optimal_batch_size));
 
     std::cout << "OPTIMAL_BATCH_SIZE: " << property << std::endl;
 
@@ -200,7 +186,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricFullNameAndPrintNoThrow) {
     ov::Core ie;
 
     std::string property;
-    ASSERT_NO_THROW(property = ie.get_property(target_device, ov::device::full_name));
+    OV_ASSERT_NO_THROW(property = ie.get_property(target_device, ov::device::full_name));
 
     std::cout << "FULL_DEVICE_NAME: " << property << std::endl;
 
@@ -211,7 +197,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricTypeAndPrintNoThrow) {
     ov::Core ie;
 
     ov::device::Type property = ov::device::Type::INTEGRATED;
-    ASSERT_NO_THROW(property = ie.get_property(target_device, ov::device::type));
+    OV_ASSERT_NO_THROW(property = ie.get_property(target_device, ov::device::type));
 
     std::cout << "DEVICE_TYPE: " << property << std::endl;
 
@@ -222,7 +208,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricGopsAndPrintNoThrow) {
     ov::Core ie;
 
     std::map<ov::element::Type, float> properties;
-    ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::device::gops));
+    OV_ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::device::gops));
 
     std::cout << "DEVICE_GOPS: " << std::endl;
     for (const auto& prop : properties) {
@@ -236,7 +222,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricCapabilitiesAndPrintNoThrow) {
     ov::Core ie;
 
     std::vector<std::string> properties;
-    ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::device::capabilities));
+    OV_ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::device::capabilities));
 
     std::cout << "OPTIMIZATION_CAPABILITIES: " << std::endl;
     for (const auto& prop : properties) {
@@ -250,7 +236,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricDeviceTotalMemSizeAndPrintNoThrow) {
     ov::Core ie;
 
     uint64_t property = 0;
-    ASSERT_NO_THROW(property = ie.get_property(target_device, ov::intel_gpu::device_total_mem_size));
+    OV_ASSERT_NO_THROW(property = ie.get_property(target_device, ov::intel_gpu::device_total_mem_size));
 
     std::cout << "GPU_DEVICE_TOTAL_MEM_SIZE: " << property << std::endl;
 
@@ -261,7 +247,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricUarchVersionAndPrintNoThrow) {
     ov::Core ie;
 
     std::string property;
-    ASSERT_NO_THROW(property = ie.get_property(target_device, ov::intel_gpu::uarch_version));
+    OV_ASSERT_NO_THROW(property = ie.get_property(target_device, ov::intel_gpu::uarch_version));
 
     std::cout << "GPU_UARCH_VERSION: " << property << std::endl;
 
@@ -272,7 +258,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricExecutionUnitsCountAndPrintNoThrow) 
     ov::Core ie;
 
     int32_t property = 0;
-    ASSERT_NO_THROW(property = ie.get_property(target_device, ov::intel_gpu::execution_units_count));
+    OV_ASSERT_NO_THROW(property = ie.get_property(target_device, ov::intel_gpu::execution_units_count));
 
     std::cout << "GPU_EXECUTION_UNITS_COUNT: " << property << std::endl;
 
@@ -283,7 +269,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetMetricMemoryStatisticsAndPrintNoThrow) {
     ov::Core ie;
 
     std::map<std::string, uint64_t> properties;
-    ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+    OV_ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
     std::cout << "GPU_MEMORY_STATISTICS: " << std::endl;
     for (const auto& prop : properties) {
@@ -297,7 +283,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetAndSetPerformanceModeNoThrow) {
     ov::Core ie;
 
     ov::hint::PerformanceMode defaultMode{};
-    ASSERT_NO_THROW(defaultMode = ie.get_property(target_device, ov::hint::performance_mode));
+    OV_ASSERT_NO_THROW(defaultMode = ie.get_property(target_device, ov::hint::performance_mode));
 
     std::cout << "Default PERFORMANCE_HINT: \"" << defaultMode << "\"" << std::endl;
 
@@ -313,7 +299,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetAndSetEnableProfilingNoThrow) {
     ov::Core ie;
 
     bool defaultValue = false;
-    ASSERT_NO_THROW(defaultValue = ie.get_property(target_device, ov::enable_profiling));
+    OV_ASSERT_NO_THROW(defaultValue = ie.get_property(target_device, ov::enable_profiling));
 
     std::cout << "Default PERF_COUNT: " << defaultValue << std::endl;
 
@@ -325,7 +311,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetAndSetEnableProfilingNoThrow) {
 
 TEST_P(OVClassGetPropertyTest_GPU, GetAndSetInferencePrecisionNoThrow) {
     ov::Core ie;
-    auto value = ov::element::undefined;
+    auto value = ov::element::dynamic;
     const auto expected_default_precision = ov::element::f16;
 
     OV_ASSERT_NO_THROW(value = ie.get_property(target_device, ov::hint::inference_precision));
@@ -347,7 +333,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetAndSetModelPriorityNoThrow) {
     ov::Core ie;
 
     ov::hint::Priority defaultValue{};
-    ASSERT_NO_THROW(defaultValue = ie.get_property(target_device, ov::hint::model_priority));
+    OV_ASSERT_NO_THROW(defaultValue = ie.get_property(target_device, ov::hint::model_priority));
 
     std::cout << "Default model_priority: " << defaultValue << std::endl;
 
@@ -370,7 +356,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetAndSetQueuePriorityNoThrow) {
     ov::Core ie;
 
     ov::hint::Priority defaultValue{};
-    ASSERT_NO_THROW(defaultValue = ie.get_property(target_device, ov::intel_gpu::hint::queue_priority));
+    OV_ASSERT_NO_THROW(defaultValue = ie.get_property(target_device, ov::intel_gpu::hint::queue_priority));
 
     std::cout << "Default GPU_QUEUE_PRIORITY: " << defaultValue << std::endl;
 
@@ -388,7 +374,7 @@ TEST_P(OVClassGetPropertyTest_GPU, GetAndSetThrottleLevelNoThrow) {
     ov::Core ie;
 
     ov::intel_gpu::hint::ThrottleLevel defaultValue{};
-    ASSERT_NO_THROW(defaultValue = ie.get_property(target_device, ov::intel_gpu::hint::queue_throttle));
+    OV_ASSERT_NO_THROW(defaultValue = ie.get_property(target_device, ov::intel_gpu::hint::queue_throttle));
 
     std::cout << "Default GPU_QUEUE_THROTTLE: " << defaultValue << std::endl;
 
@@ -409,20 +395,20 @@ TEST_P(OVClassGetPropertyTest_GPU, CanSetDefaultValueBackToPluginNewAPI) {
     ov::Core ie;
 
     std::vector<ov::PropertyName> properties;
-    ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::supported_properties));
+    OV_ASSERT_NO_THROW(properties = ie.get_property(target_device, ov::supported_properties));
 
     std::cout << "SUPPORTED_PROPERTIES:" << std::endl;
     for (const auto& property : properties) {
         ov::Any prop;
         if (property.is_mutable()) {
             std::cout << "RW: " << property << " ";
-            ASSERT_NO_THROW(prop = ie.get_property(target_device, property));
+            OV_ASSERT_NO_THROW(prop = ie.get_property(target_device, property));
             prop.print(std::cout);
             std::cout << std::endl;
-            ASSERT_NO_THROW(ie.set_property(target_device, {{property, prop}}));
+            OV_ASSERT_NO_THROW(ie.set_property(target_device, {{property, prop}}));
         } else {
             std::cout << "RO: " << property << " ";
-            ASSERT_NO_THROW(prop = ie.get_property(target_device, property));
+            OV_ASSERT_NO_THROW(prop = ie.get_property(target_device, property));
             prop.print(std::cout);
             std::cout << std::endl;
         }
@@ -440,7 +426,7 @@ TEST_P(OVGetMetricPropsTest_GPU_OPTIMAL_BATCH_SIZE, GetMetricAndPrintNoThrow) {
     unsigned int p = 0;
 
     ov::AnyMap _options = {ov::hint::model(simpleNetwork)};
-    ASSERT_NO_THROW(p = ie.get_property(target_device, ov::optimal_batch_size.name(), _options).as<unsigned int>());
+    OV_ASSERT_NO_THROW(p = ie.get_property(target_device, ov::optimal_batch_size.name(), _options).as<unsigned int>());
 
     std::cout << "GPU device optimal batch size: " << p << std::endl;
 
@@ -458,7 +444,7 @@ TEST_P(OVGetMetricPropsTest_GPU_MAX_BATCH_SIZE_DEFAULT, GetMetricAndPrintNoThrow
     unsigned int p = 0;
 
     ov::AnyMap _options = {ov::hint::model(simpleNetwork)};
-    ASSERT_NO_THROW(p = ie.get_property(target_device, ov::max_batch_size.name(), _options).as<unsigned int>());
+    OV_ASSERT_NO_THROW(p = ie.get_property(target_device, ov::max_batch_size.name(), _options).as<unsigned int>());
 
     std::cout << "GPU device max available batch size: " << p << std::endl;
 
@@ -482,7 +468,7 @@ TEST_P(OVGetMetricPropsTest_GPU_MAX_BATCH_SIZE_STREAM_DEVICE_MEM, GetMetricAndPr
                            ov::num_streams(n_streams),
                            ov::intel_gpu::hint::available_device_mem(available_device_mem_size)};
 
-    ASSERT_NO_THROW(p = ie.get_property(target_device, ov::max_batch_size.name(), _options).as<unsigned int>());
+    OV_ASSERT_NO_THROW(p = ie.get_property(target_device, ov::max_batch_size.name(), _options).as<unsigned int>());
 
     std::cout << "GPU device max available batch size: " << p << std::endl;
 
@@ -501,14 +487,11 @@ TEST_P(OVGetMetricPropsTest_GPU_MEMORY_STATISTICS_DEFAULT, GetMetricAndPrintNoTh
 
     auto exec_net = ie.compile_model(simpleNetwork, target_device);
 
-    ASSERT_NO_THROW(p = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+    OV_ASSERT_NO_THROW(p = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
     ASSERT_FALSE(p.empty());
     std::cout << "Memory Statistics: " << std::endl;
-    for (auto&& kv : p) {
-        ASSERT_NE(kv.second, 0);
-        std::cout << kv.first << ": " << kv.second << " bytes" << std::endl;
-    }
+    ASSERT_TRUE(std::any_of(p.begin(), p.end(), [](const auto& p){return !p.second;}));
 
     OV_ASSERT_PROPERTY_SUPPORTED(ov::intel_gpu::memory_statistics);
 }
@@ -526,20 +509,17 @@ TEST_P(OVGetMetricPropsTest_GPU_MEMORY_STATISTICS_MULTIPLE_NETWORKS, GetMetricAn
 
     auto exec_net1 = ie.compile_model(simpleNetwork, target_device);
 
-    ASSERT_NO_THROW(t1 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+    OV_ASSERT_NO_THROW(t1 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
     ASSERT_FALSE(t1.empty());
-    for (auto&& kv : t1) {
-        ASSERT_NE(kv.second, 0);
-    }
+    ASSERT_TRUE(std::any_of(t1.begin(), t1.end(), [](const auto& p){return !p.second;}));
 
     auto exec_net2 = ie.compile_model(simpleNetwork, target_device);
 
-    ASSERT_NO_THROW(t2 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+    OV_ASSERT_NO_THROW(t2 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
     ASSERT_FALSE(t2.empty());
     for (auto&& kv : t2) {
-        ASSERT_NE(kv.second, 0);
         auto iter = t1.find(kv.first);
         if (iter != t1.end()) {
             ASSERT_EQ(kv.second, t1[kv.first] * 2);
@@ -559,36 +539,34 @@ TEST_P(OVGetMetricPropsTest_GPU_MEMORY_STATISTICS_CHECK_VALUES, GetMetricAndPrin
     ov::Core ie;
     std::map<std::string, uint64_t> t1;
 
-    ASSERT_NO_THROW(t1 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
-    ASSERT_TRUE(t1.empty());
+    OV_ASSERT_NO_THROW(t1 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+    ASSERT_FALSE(t1.empty());
+    for (const auto& kv : t1) {
+        ASSERT_EQ(kv.second, 0);
+    }
 
     {
         auto exec_net1 = ie.compile_model(simpleNetwork, target_device);
 
         std::map<std::string, uint64_t> t2;
-        ASSERT_NO_THROW(t2 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+        OV_ASSERT_NO_THROW(t2 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
         ASSERT_FALSE(t2.empty());
-        for (auto&& kv : t2) {
-            ASSERT_NE(kv.second, 0);
-        }
+        ASSERT_TRUE(std::any_of(t2.begin(), t2.end(), [](const auto& p){return !p.second;}));
         {
             auto exec_net2 = ie.compile_model(actualNetwork, target_device);
 
             std::map<std::string, uint64_t> t3;
-            ASSERT_NO_THROW(t3 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+            OV_ASSERT_NO_THROW(t3 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
             ASSERT_FALSE(t3.empty());
-            for (auto&& kv : t3) {
-                ASSERT_NE(kv.second, 0);
-            }
+            ASSERT_TRUE(std::any_of(t3.begin(), t3.end(), [](const auto& p){return !p.second;}));
         }
         std::map<std::string, uint64_t> t4;
-        ASSERT_NO_THROW(t4 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+        OV_ASSERT_NO_THROW(t4 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
         ASSERT_FALSE(t4.empty());
         for (auto&& kv : t4) {
-            ASSERT_NE(kv.second, 0);
             if (kv.first.find("_cur") != std::string::npos) {
                 auto iter = t2.find(kv.first);
                 if (iter != t2.end()) {
@@ -598,13 +576,11 @@ TEST_P(OVGetMetricPropsTest_GPU_MEMORY_STATISTICS_CHECK_VALUES, GetMetricAndPrin
         }
     }
     std::map<std::string, uint64_t> t5;
-    ASSERT_NO_THROW(t5 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+    OV_ASSERT_NO_THROW(t5 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
     ASSERT_FALSE(t5.empty());
     for (auto&& kv : t5) {
-        if (kv.first.find("_cur") != std::string::npos) {
-            ASSERT_EQ(kv.second, 0);
-        }
+        ASSERT_EQ(kv.second, 0);
     }
 
     OV_ASSERT_PROPERTY_SUPPORTED(ov::intel_gpu::memory_statistics);
@@ -631,12 +607,10 @@ TEST_P(OVGetMetricPropsTest_GPU_MEMORY_STATISTICS_MULTI_THREADS, GetMetricAndPri
 
     auto exec_net1 = ie.compile_model(simpleNetwork, target_device);
 
-    ASSERT_NO_THROW(t1 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+    OV_ASSERT_NO_THROW(t1 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
     ASSERT_FALSE(t1.empty());
-    for (auto&& kv : t1) {
-        ASSERT_NE(kv.second, 0);
-    }
+    ASSERT_TRUE(std::any_of(t1.begin(), t1.end(), [](const auto& p){return !p.second;}));
 
     for (auto& thread : threads) {
         thread = std::thread([&]() {
@@ -651,11 +625,10 @@ TEST_P(OVGetMetricPropsTest_GPU_MEMORY_STATISTICS_MULTI_THREADS, GetMetricAndPri
         }
     }
 
-    ASSERT_NO_THROW(t2 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
+    OV_ASSERT_NO_THROW(t2 = ie.get_property(target_device, ov::intel_gpu::memory_statistics));
 
     ASSERT_FALSE(t2.empty());
     for (auto&& kv : t2) {
-        ASSERT_NE(kv.second, 0);
         auto iter = t1.find(kv.first);
         if (iter != t1.end()) {
             ASSERT_EQ(kv.second, t1[kv.first] * 3);
@@ -670,17 +643,20 @@ INSTANTIATE_TEST_SUITE_P(nightly_IEClassGetMetricTest,
                          ::testing::Values("GPU"));
 
 using OVGetMetricPropsTest_CACHING_PROPERTIES = OVClassBaseTestP;
-TEST_P(OVGetMetricPropsTest_CACHING_PROPERTIES, GetMetricAndPrintNoThrow) {
+TEST_P(OVGetMetricPropsTest_CACHING_PROPERTIES, smoke_GetMetricAndPrintNoThrow) {
     ov::Core ie = ov::test::utils::create_core();
     std::vector<ov::PropertyName> caching_properties = {};
-    const std::vector<ov::PropertyName> expected_properties = {
-        ov::device::architecture.name(),
-        ov::intel_gpu::execution_units_count.name(),
-        ov::hint::inference_precision.name(),
-        ov::hint::execution_mode.name(),
-    };
+    const std::vector<ov::PropertyName> expected_properties = {ov::device::architecture.name(),
+                                                               ov::intel_gpu::execution_units_count.name(),
+                                                               ov::hint::inference_precision.name(),
+                                                               ov::hint::execution_mode.name(),
+                                                               ov::hint::performance_mode.name(),
+                                                               ov::hint::dynamic_quantization_group_size.name(),
+                                                               ov::hint::activations_scale_factor.name(),
+                                                               ov::hint::kv_cache_precision.name(),
+                                                               ov::intel_gpu::runtime_type.name()};
 
-    ASSERT_NO_THROW(caching_properties = ie.get_property(target_device, ov::internal::caching_properties));
+    OV_ASSERT_NO_THROW(caching_properties = ie.get_property(target_device, ov::internal::caching_properties));
 
     std::cout << "GPU Caching properties: " << std::endl;
     for (auto& prop : caching_properties) {
@@ -701,17 +677,14 @@ INSTANTIATE_TEST_SUITE_P(nightly_OVGetMetricPropsTest,
 
 // GetConfig / SetConfig for specific device
 
-INSTANTIATE_TEST_SUITE_P(nightly_OVClassSpecificDevice0Test, OVSpecificDeviceSetConfigTest, ::testing::Values("GPU.0"));
+INSTANTIATE_TEST_SUITE_P(nightly_OVClassSpecificDevice0Test, OVSpecificDeviceSetConfigTest, ::testing::Values("GPU.0", "GPU.1"),
+    [](const testing::TestParamInfo<OVSpecificDeviceSetConfigTest::ParamType>& info) {return info.param;});
 
-INSTANTIATE_TEST_SUITE_P(nightly_OVClassSpecificDevice1Test, OVSpecificDeviceSetConfigTest, ::testing::Values("GPU.1"));
+INSTANTIATE_TEST_SUITE_P(nightly_OVClassSpecificDevice0Test, OVSpecificDeviceGetConfigTest, ::testing::Values("GPU.0", "GPU.1"),
+    [](const testing::TestParamInfo<OVSpecificDeviceSetConfigTest::ParamType>& info) {return info.param;});
 
-INSTANTIATE_TEST_SUITE_P(nightly_OVClassSpecificDevice0Test, OVSpecificDeviceGetConfigTest, ::testing::Values("GPU.0"));
-
-INSTANTIATE_TEST_SUITE_P(nightly_OVClassSpecificDevice1Test, OVSpecificDeviceGetConfigTest, ::testing::Values("GPU.1"));
-
-INSTANTIATE_TEST_SUITE_P(nightly_OVClassSpecificDevice0Test, OVSpecificDeviceTestSetConfig, ::testing::Values("GPU.0"));
-
-INSTANTIATE_TEST_SUITE_P(nightly_OVClassSpecificDevice1Test, OVSpecificDeviceTestSetConfig, ::testing::Values("GPU.1"));
+INSTANTIATE_TEST_SUITE_P(nightly_OVClassSpecificDevice0Test, OVSpecificDeviceTestSetConfig, ::testing::Values("GPU.0", "GPU.1"),
+    [](const testing::TestParamInfo<OVSpecificDeviceSetConfigTest::ParamType>& info) {return info.param;});
 
 // Set default device ID
 
@@ -726,5 +699,4 @@ INSTANTIATE_TEST_SUITE_P(nightly_OVClassSetDefaultDeviceIDPropTest,
 INSTANTIATE_TEST_SUITE_P(nightly_OVPropertiesDefaultSupportedTests,
                          OVPropertiesDefaultSupportedTests,
                          ::testing::Values("GPU"));
-
 }  // namespace

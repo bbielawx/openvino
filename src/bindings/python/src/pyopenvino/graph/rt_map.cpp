@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -60,7 +60,7 @@ public:
 
 void regclass_graph_PyRTMap(py::module m) {
     auto py_map = py::class_<PyRTMap>(m, "RTMap");
-    py_map.doc() = "openvino.runtime.RTMap makes bindings for std::map<std::string, "
+    py_map.doc() = "openvino.RTMap makes bindings for std::map<std::string, "
                    "ov::Any>, which can later be used as ov::Node::RTMap";
 
     py::class_<PyRTMapIterator>(m, "Iterator")
@@ -70,10 +70,24 @@ void regclass_graph_PyRTMap(py::module m) {
              })
         .def("__next__", &PyRTMapIterator::next);
 
-    py_map.def("__setitem__", [](PyRTMap& m, const std::string& k, const std::string v) {
+    py_map.def(py::init([]() {
+        return PyRTMap();
+    }));
+
+    auto warn_if_precise = [](const std::string& key) {
+        if (key == "precise_0") {
+            Common::utils::deprecation_warning(
+                "Setting 'precise_0' on node rt_info",
+                "2027.0",
+                "This relies on a deprecated internal C++ API attribute (DisableFP16Compression).");
+        }
+    };
+    py_map.def("__setitem__", [warn_if_precise](PyRTMap& m, const std::string& k, const std::string v) {
+        warn_if_precise(k);
         m[k] = v;
     });
-    py_map.def("__setitem__", [](PyRTMap& m, const std::string& k, const int64_t v) {
+    py_map.def("__setitem__", [warn_if_precise](PyRTMap& m, const std::string& k, const int64_t v) {
+        warn_if_precise(k);
         m[k] = v;
     });
     py_map.def("__getitem__", [](PyRTMap& m, const std::string& k) -> py::object {

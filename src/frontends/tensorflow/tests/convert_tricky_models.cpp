@@ -1,7 +1,10 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include <functional>
+
+#include "common_test_utils/test_assertions.hpp"
 #include "common_test_utils/test_common.hpp"
 #include "conversion_with_reference.hpp"
 #include "gtest/gtest.h"
@@ -38,6 +41,8 @@
 #include "openvino/op/transpose.hpp"
 #include "openvino/op/unique.hpp"
 #include "openvino/op/unsqueeze.hpp"
+#include "openvino/op/util/framework_node.hpp"
+#include "openvino/op/util/multi_subgraph_base.hpp"
 #include "tf_utils.hpp"
 #include "transformations/common_optimizations/moc_transformations.hpp"
 #include "utils.hpp"
@@ -110,7 +115,7 @@ TEST(FrontEndConvertTrickyModels, simple_wide_and_deep) {
 
     int num_emb_segment_sum = 0;
     for (auto& node : model->get_ordered_ops()) {
-        if (std::dynamic_pointer_cast<v3::EmbeddingSegmentsSum>(node)) {
+        if (ov::as_type_ptr<v3::EmbeddingSegmentsSum>(node)) {
             ++num_emb_segment_sum;
         }
     }
@@ -420,20 +425,10 @@ TEST_F(FrontEndConversionWithReferenceTestsF, ModelWithEmptyTensorListAndPushBac
     { model = convert_model("empty_tensor_list/empty_tensor_list.pb"); }
     {
         auto x = make_shared<v0::Parameter>(f32, Shape{2, 3, 5});
-        auto minus_one_const = make_shared<v0::Constant>(i32, Shape{1}, -1);
-        auto x_flatten = make_shared<v1::Reshape>(x, minus_one_const, false);
-        auto zero_const = make_shared<v0::Constant>(i32, Shape{1}, 0);
-        auto x_unsqueeze_flatten = make_shared<v0::Unsqueeze>(x_flatten, zero_const);
-        auto list_push_back = make_shared<v0::Concat>(OutputVector{x_unsqueeze_flatten}, 0);
-        auto list_push_back_shape = make_shared<v3::ShapeOf>(list_push_back, element::i32);
-        auto start = make_shared<v0::Constant>(i32, Shape{1}, 0);
-        auto stop = make_shared<v0::Constant>(i32, Shape{1}, 1);
-        auto step = make_shared<v0::Constant>(i32, Shape{1}, 1);
-        auto batch = make_shared<v8::Slice>(list_push_back_shape, start, stop, step);
-        auto shape_without_batch = make_shared<v0::Constant>(i32, Shape{3}, vector<int32_t>{2, 3, 5});
-        auto recover_item_shape = make_shared<v0::Concat>(OutputVector{batch, shape_without_batch}, 0);
-        auto recover_item = make_shared<v1::Reshape>(list_push_back, recover_item_shape, false);
-        model_ref = make_shared<Model>(OutputVector{recover_item}, ParameterVector{x});
+        auto axes = make_shared<v0::Constant>(i32, Shape{1}, 0);
+        auto x_unsqueeze = make_shared<v0::Unsqueeze>(x, axes);
+        auto list_push_back = make_shared<v0::Concat>(OutputVector{x_unsqueeze}, 0);
+        model_ref = make_shared<Model>(OutputVector{list_push_back}, ParameterVector{x});
     }
     comparator.disable(FunctionsComparator::CmpValues::ATTRIBUTES);
 }
@@ -586,6 +581,20 @@ TEST_F(FrontEndConversionWithReferenceTestsF, MetaGraphCutIdentity) {
 TEST_F(FrontEndConversionWithReferenceTestsF, MetaGraphMMAPCompare) {
     { model = convert_model("metagraph_variables/graph.meta"); }
     { model_ref = convert_model("metagraph_variables/graph.meta", nullptr, {}, {}, {}, {}, {}, true); }
+}
+
+TEST(TensorFlowMetaGraphTest, MetaGraphWithoutVariablesIndex) {
+    // Regression test: loading a MetaGraph (*.meta) that contains RestoreV2 -> AssignVariableOp
+    // nodes but has no variables index (*.index) file next to it must not crash (previously the
+    // variables index was dereferenced while null during load).
+    FrontEndManager fem;
+    auto front_end = fem.load_by_framework(TF_FE);
+    ASSERT_NE(front_end, nullptr);
+    auto model_filename = FrontEndTestUtils::make_model_path(std::string(TEST_TENSORFLOW_MODELS_DIRNAME) +
+                                                             "metagraph_no_index/graph.meta");
+    ov::frontend::InputModel::Ptr input_model;
+    OV_ASSERT_NO_THROW(input_model = front_end->load(model_filename));
+    ASSERT_NE(input_model, nullptr);
 }
 
 TEST_F(FrontEndConversionWithReferenceTestsF, SplitInFunction) {
@@ -851,4 +860,87 @@ TEST_F(FrontEndConversionWithReferenceTestsF, UnitializedVariableV2AsInput) {
         auto mul = make_shared<v1::Multiply>(x, var);
         model_ref = make_shared<Model>(OutputVector{mul}, ParameterVector{x, var});
     }
+}
+
+TEST(FrontEndConvertTrickyModels, dynpart_zero_num_partitions) {
+    shared_ptr<Model> model = nullptr;
+    try {
+        model = convert_model("dynpart_zero_partitions/dynpart_zero_partitions.pbtxt");
+        FAIL() << "DynamicPartition with num_partitions=0 must throw OpConversionFailure.";
+    } catch (const OpConversionFailure& error) {
+        std::string error_message = error.what();
+        ASSERT_TRUE(error_message.find("num_partitions") != std::string::npos);
+        ASSERT_EQ(model, nullptr);
+    } catch (...) {
+        FAIL() << "DynamicPartition with num_partitions=0 failed with unexpected exception type.";
+    }
+}
+
+TEST(FrontEndConvertTrickyModels, dynpart_negative_num_partitions) {
+    shared_ptr<Model> model = nullptr;
+    try {
+        model = convert_model("dynpart_negative_partitions/dynpart_negative_partitions.pbtxt");
+        FAIL() << "DynamicPartition with num_partitions=-1 must throw OpConversionFailure.";
+    } catch (const OpConversionFailure& error) {
+        std::string error_message = error.what();
+        ASSERT_TRUE(error_message.find("num_partitions") != std::string::npos);
+        ASSERT_EQ(model, nullptr);
+    } catch (...) {
+        FAIL() << "DynamicPartition with num_partitions=-1 failed with unexpected exception type.";
+    }
+}
+
+TEST(FrontEndConvertTrickyModels, dynpart_overflow_num_partitions) {
+    shared_ptr<Model> model = nullptr;
+    try {
+        model = convert_model("dynpart_overflow_partitions/dynpart_overflow_partitions.pbtxt");
+        FAIL() << "DynamicPartition with num_partitions exceeding int32 range must throw OpConversionFailure.";
+    } catch (const OpConversionFailure& error) {
+        std::string error_message = error.what();
+        ASSERT_TRUE(error_message.find("num_partitions") != std::string::npos);
+        ASSERT_EQ(model, nullptr);
+    } catch (...) {
+        FAIL() << "DynamicPartition with overflowing num_partitions failed with unexpected exception type.";
+    }
+}
+
+namespace {
+// Recursively walk all operations of a model and its sub-graphs (If/Loop bodies).
+void for_each_op_recursive(const std::shared_ptr<Model>& model,
+                           const std::function<void(const shared_ptr<Node>&)>& fn) {
+    for (const auto& op : model->get_ordered_ops()) {
+        fn(op);
+        if (auto multisubgraph_op = as_type_ptr<ov::op::util::MultiSubGraphOp>(op)) {
+            for (size_t i = 0; i < multisubgraph_op->get_internal_subgraphs_size(); ++i) {
+                for_each_op_recursive(multisubgraph_op->get_function(static_cast<int>(i)), fn);
+            }
+        }
+    }
+}
+}  // namespace
+
+// A TF1 While loop must fuse fully into a Loop, leaving no control-flow helper op (Switch/Merge/
+// Enter/Exit/NextIteration/LoopCond, all FrameworkNode subclasses); a surviving helper pins the TF
+// GraphDef alive (the memory leak). Checks helper-op absence, not marker absence - weak_ptr markers
+// may legitimately remain in rt_info without owning anything.
+TEST(FrontEndConvertTrickyModels, ModelTF1WhileNoLeftoverControlFlow) {
+    shared_ptr<Model> model = nullptr;
+    ASSERT_NO_THROW(model = convert_model("model_tf1_while/model_tf1_while.pbtxt"));
+    ASSERT_NE(model, nullptr);
+
+    for_each_op_recursive(model, [](const shared_ptr<Node>& op) {
+        EXPECT_FALSE(ov::as_type_ptr<ov::op::util::FrameworkNode>(op))
+            << "unconverted framework/helper node survived: '" << op->get_friendly_name()
+            << "' type=" << op->get_type_name();
+    });
+}
+
+// A Switch consumed only through control dependencies is pruned and freed before Switch/Merge
+// resolution, so its weak_ptr in a Merge conditional-flow marker legitimately expires. Conversion
+// must skip such expired entries, not fail. Guards against re-introducing a fail-fast that aborts.
+TEST(FrontEndConvertTrickyModels, ModelSwitchMergeSeveralCondFlows) {
+    shared_ptr<Model> model = nullptr;
+    ASSERT_NO_THROW(
+        model = convert_model("model_switch_merge_several_cond_flows/model_switch_merge_several_cond_flows.pbtxt"));
+    ASSERT_NE(model, nullptr);
 }

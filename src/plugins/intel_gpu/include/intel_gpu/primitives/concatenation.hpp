@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -42,9 +42,8 @@ struct concatenation : public primitive_base<concatenation> {
     concatenation(
         const primitive_id& id,
         const std::vector<input_info>& input,
-        const int64_t axis,
-        const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}), axis(axis) {}
+        const int64_t axis)
+        : primitive_base(id, {input}), axis(axis) {}
 
     /// @li Constructs concatenation primitive.
     /// @param id This primitive id.
@@ -55,9 +54,8 @@ struct concatenation : public primitive_base<concatenation> {
         const primitive_id& id,
         const std::vector<input_info>& input,
         const int64_t axis,
-        const data_types output_dt,
-        const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}, {optional_data_type{output_dt}}), axis(axis) {}
+        const data_types output_dt)
+        : primitive_base(id, {input}, 1, {optional_data_type{output_dt}}), axis(axis) {}
 
     /// @brief Dimension along which concatenation should take place
     int64_t axis = 0;
@@ -69,8 +67,9 @@ struct concatenation : public primitive_base<concatenation> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const concatenation>(rhs);
 

@@ -1,20 +1,18 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/split.hpp"
-
-#include "openvino/op/constant.hpp"
-#include "openvino/op/variadic_split.hpp"
 #include "utils/split.hpp"
 
+#include "core/null_node.hpp"
+#include "core/operator_set.hpp"
+#include "exceptions.hpp"
+#include "openvino/op/constant.hpp"
+#include "openvino/op/variadic_split.hpp"
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx {
+namespace opset_1 {
 ov::OutputVector split(const ov::frontend::onnx::Node& node) {
     const auto input = node.get_ov_inputs().at(0);
     const auto axis = node.get_attribute_value<int64_t>("axis", 0);
@@ -28,14 +26,15 @@ ov::OutputVector split(const ov::frontend::onnx::Node& node) {
     }
 }
 
-}  // namespace set_1
+ONNX_OP("Split", OPSET_RANGE(1, 12), ai_onnx::opset_1::split);
+}  // namespace opset_1
 
-namespace set_13 {
+namespace opset_13 {
 ov::OutputVector split(const ov::frontend::onnx::Node& node) {
     const auto inputs = node.get_ov_inputs();
     const auto axis = node.get_attribute_value<int64_t>("axis", 0);
 
-    if (inputs.size() < 2) {
+    if (inputs.size() < 2 || ov::op::util::is_null(inputs.at(1))) {
         const auto outputs_number = node.get_output_names().size();
         return ov::op::util::make_split(inputs.at(0), outputs_number, axis);
     } else {
@@ -44,8 +43,21 @@ ov::OutputVector split(const ov::frontend::onnx::Node& node) {
     }
 }
 
-}  // namespace set_13
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("Split", OPSET_RANGE(13, 18), ai_onnx::opset_13::split);
+}  // namespace opset_13
+
+namespace opset_18 {
+ov::OutputVector split(const ov::frontend::onnx::Node& node) {
+    if (node.has_attribute("num_outputs")) {
+        const auto inputs = node.get_ov_inputs();
+        const auto outputs_number = node.get_attribute_value<int64_t>("num_outputs", 0);
+        CHECK_VALID_NODE(node, outputs_number > 0, "'num_outputs' must be greater than zero, got: ", outputs_number);
+        const auto axis = node.get_attribute_value<int64_t>("axis", 0);
+        return ov::op::util::make_split(inputs.at(0), outputs_number, axis);
+    }
+    return ai_onnx::opset_13::split(node);
+}
+
+ONNX_OP("Split", OPSET_SINCE(18), ai_onnx::opset_18::split);
+}  // namespace opset_18
+}  // namespace ov::frontend::onnx::ai_onnx

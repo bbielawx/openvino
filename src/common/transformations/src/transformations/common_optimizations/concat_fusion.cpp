@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,21 +8,24 @@
 #include <vector>
 
 #include "itt.hpp"
+#include "openvino/core/graph_util.hpp"
 #include "openvino/core/rt_info.hpp"
 #include "openvino/op/concat.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "transformations/utils/utils.hpp"
 
-using namespace ov::op;
+namespace v0 = ov::op::v0;
 
-ov::pass::ConcatFusion::ConcatFusion() {
+namespace ov::pass {
+
+ConcatFusion::ConcatFusion() {
     MATCHER_SCOPE(ConcatFusion);
     auto has_same_axis_concat_input = [](const Output<Node>& output) {
-        const auto& concat = std::dynamic_pointer_cast<v0::Concat>(output.get_node_shared_ptr());
+        const auto& concat = ov::as_type_ptr<v0::Concat>(output.get_node_shared_ptr());
         const auto axis = concat->get_axis();
         auto is_aplicable = false;
         for (auto input : concat->input_values()) {
-            const auto inp_concat = std::dynamic_pointer_cast<v0::Concat>(input.get_node_shared_ptr());
+            const auto inp_concat = ov::as_type_ptr<v0::Concat>(input.get_node_shared_ptr());
             if (inp_concat && inp_concat->get_axis() == axis && inp_concat->output(0).get_target_inputs().size() == 1) {
                 is_aplicable = true;
             }
@@ -34,12 +37,12 @@ ov::pass::ConcatFusion::ConcatFusion() {
     ov::matcher_pass_callback callback = [=](pattern::Matcher& m) {
         const auto& pattern_map = m.get_pattern_map();
 
-        const auto& concat = std::dynamic_pointer_cast<v0::Concat>(pattern_map.at(concat_pattern));
+        const auto& concat = ov::as_type_ptr<v0::Concat>(pattern_map.at(concat_pattern));
         const auto axis = concat->get_axis();
 
         OutputVector new_inputs;
         for (auto input : concat->input_values()) {
-            const auto inp_concat = std::dynamic_pointer_cast<v0::Concat>(input.get_node_shared_ptr());
+            const auto inp_concat = ov::as_type_ptr<v0::Concat>(input.get_node_shared_ptr());
             if (inp_concat && inp_concat->get_axis() == axis && inp_concat->output(0).get_target_inputs().size() == 1) {
                 const auto inp_concat_inps = inp_concat->input_values();
                 new_inputs.insert(new_inputs.end(), inp_concat_inps.begin(), inp_concat_inps.end());
@@ -55,6 +58,8 @@ ov::pass::ConcatFusion::ConcatFusion() {
         return true;
     };
 
-    auto m = std::make_shared<ov::pass::pattern::Matcher>(concat_pattern, matcher_name);
+    auto m = std::make_shared<pattern::Matcher>(concat_pattern, matcher_name);
     this->register_matcher(m, callback);
 }
+
+}  // namespace ov::pass

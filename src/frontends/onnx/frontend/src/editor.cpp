@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,6 +8,7 @@
 #include <onnx/shape_inference/implementation.h>
 
 #include <fstream>
+#include <stack>
 
 #include "detail/subgraph_extraction.hpp"
 #include "edge_mapper.hpp"
@@ -156,8 +157,9 @@ void modify_initializer(TensorProto& initializer,
         initializer.add_dims(dim);
     }
 
-    const auto data_size_in_bytes = shape_size(values->get_shape()) * get_onnx_data_size(initializer.data_type());
-    initializer.set_raw_data(values->get_data_ptr(), data_size_in_bytes);
+    // Constant::get_byte_size() accounts for sub-byte (nibble) types, which are stored packed,
+    // unlike shape_size() * get_onnx_data_size(), which would over-read the constant buffer.
+    initializer.set_raw_data(values->get_data_ptr(), values->get_byte_size());
 
     // update input with type and shape of initializer
     if (input) {
@@ -215,7 +217,12 @@ void graph_topological_sort(GraphProto* graph) {
                 output_name_to_node.emplace(output_name, graph->mutable_node(i));
             }
         }
+        // Documentation says empty input/output names should be interpreted as unspecified
+        // inputs/outputs: https://github.com/onnx/onnx/blob/main/docs/IR.md#static-optional
         auto get_node_by_out_name = [&output_name_to_node](const std::string& out_name) -> const NodeProto* {
+            if (out_name.empty()) {
+                return nullptr;
+            }
             const auto& idx_iter = output_name_to_node.find(out_name);
             if (idx_iter != std::end(output_name_to_node)) {
                 return idx_iter->second;
@@ -223,13 +230,22 @@ void graph_topological_sort(GraphProto* graph) {
             return nullptr;
         };
         for (const auto& output : graph->output()) {
-            nodes_to_process.push(get_node_by_out_name(output.name()));
+            if (const auto* node = get_node_by_out_name(output.name())) {
+                nodes_to_process.push(node);
+            }
         }
 
         while (nodes_to_process.size() > 0) {
             auto* node = nodes_to_process.top();
+            if (node == nullptr) {
+                nodes_to_process.pop();
+                continue;
+            }
             bool can_add = true;
             for (const auto& in_name : node->input()) {
+                if (in_name.empty()) {
+                    continue;
+                }
                 const auto* in_node = get_node_by_out_name(in_name);
                 if (in_node == nullptr) {  // can be an initializer or an model's input
                     continue;
@@ -298,56 +314,47 @@ struct ONNXModelEditor::Impl {
         graph_topological_sort(m_model_proto->mutable_graph());
     }
 
-    Impl(const std::string& model_path) : Impl(std::make_shared<ModelProto>(parse_from_file(model_path))) {}
+    Impl(const std::filesystem::path& model_path) : Impl(std::make_shared<ModelProto>(parse_from_file(model_path))) {}
 
     Impl(std::istream& model_stream) : Impl(std::make_shared<ModelProto>(parse_from_istream(model_stream))) {}
-
-#if defined(OPENVINO_ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
-    Impl(const std::wstring& model_path) : Impl(std::make_shared<ModelProto>(parse_from_file(model_path))) {}
-#endif
 };
 
-ONNXModelEditor::ONNXModelEditor(const std::string& model_path,
+ONNXModelEditor::ONNXModelEditor(const std::filesystem::path& model_path,
                                  const bool enable_mmap,
                                  frontend::ExtensionHolder extensions)
     : m_model_path{model_path},
-      m_mmap_cache{enable_mmap ? std::make_shared<std::map<std::string, std::shared_ptr<ov::MappedMemory>>>()
+      m_mmap_cache{enable_mmap ? std::make_shared<std::map<std::filesystem::path, std::shared_ptr<ov::MappedMemory>>>()
                                : nullptr},
       m_extensions{std::move(extensions)},
       m_pimpl{new ONNXModelEditor::Impl{model_path}, [](Impl* impl) {
                   delete impl;
               }} {}
 
-#if defined(OPENVINO_ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
-ONNXModelEditor::ONNXModelEditor(const std::wstring& model_path,
-                                 const bool enable_mmap,
-                                 frontend::ExtensionHolder extensions)
-    : m_extensions{std::move(extensions)},
-      m_model_path{ov::util::wstring_to_string(model_path)},
-      m_mmap_cache{enable_mmap ? std::make_shared<std::map<std::string, std::shared_ptr<ov::MappedMemory>>>()
-                               : nullptr},
-      m_pimpl{new ONNXModelEditor::Impl{model_path}, [](Impl* impl) {
-                  delete impl;
-              }} {}
-#endif
-
 ONNXModelEditor::ONNXModelEditor(std::istream& model_stream,
-                                 const std::string& model_path,
+                                 const std::filesystem::path& model_path,
                                  const bool enable_mmap,
                                  frontend::ExtensionHolder extensions)
     : m_model_path{model_path},
-      m_mmap_cache{enable_mmap ? std::make_shared<std::map<std::string, std::shared_ptr<ov::MappedMemory>>>()
+      m_mmap_cache{enable_mmap ? std::make_shared<std::map<std::filesystem::path, std::shared_ptr<ov::MappedMemory>>>()
                                : nullptr},
       m_extensions{std::move(extensions)},
       m_pimpl{new ONNXModelEditor::Impl{model_stream}, [](Impl* impl) {
                   delete impl;
               }} {}
 
-const std::string& ONNXModelEditor::model_path() const {
+ONNXModelEditor::ONNXModelEditor(std::shared_ptr<ModelProto> model_proto, frontend::ExtensionHolder extensions)
+    : m_model_path{""},
+      m_mmap_cache{nullptr},
+      m_extensions{std::move(extensions)},
+      m_pimpl{new ONNXModelEditor::Impl{model_proto}, [](Impl* impl) {
+                  delete impl;
+              }} {}
+
+const std::filesystem::path& ONNXModelEditor::model_path() const {
     return m_model_path;
 }
 
-void ONNXModelEditor::serialize(const std::string& out_file_path) const {
+void ONNXModelEditor::serialize(const std::filesystem::path& out_file_path) const {
     std::ofstream out_file{out_file_path, std::ios::out | std::ios::binary};
 
     OPENVINO_ASSERT(out_file.is_open(), "Could not open the file: ", out_file_path);
@@ -415,7 +422,7 @@ PartialShape ONNXModelEditor::get_tensor_shape(const std::string& tensor_name) c
     } else {
         auto shape_infer_applied = onnx_shapes.infer_shapes();
         if (!shape_infer_applied) {
-            OPENVINO_WARN << "Cannot replace existing shapes during get_tensor_shape";
+            OPENVINO_WARN("Cannot replace existing shapes during get_tensor_shape");
             return PartialShape::dynamic();
         }
         auto node_it = std::find_if(std::begin(onnx_graph->value_info()),
@@ -543,8 +550,11 @@ void ONNXModelEditor::set_input_values(
         auto onnx_initializer = find_graph_initializer(*onnx_graph, name);
 
         if (!onnx_initializer && !onnx_input) {
-            OPENVINO_INFO << "There is no input nor initializer named '" << name << "' in original model '"
-                          << m_model_path << "'.";
+            OPENVINO_INFO("There is no input nor initializer named '",
+                          name,
+                          "' in original model '",
+                          m_model_path,
+                          "'.");
         }
 
         if (!onnx_initializer) {

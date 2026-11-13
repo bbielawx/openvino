@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,10 +7,7 @@
 #include "openvino/util/common_util.hpp"
 
 std::ostream& ov::operator<<(std::ostream& s, const ov::Strides& strides) {
-    s << "Strides{";
-    s << ov::util::join(strides);
-    s << "}";
-    return s;
+    return s << "Strides{" << ov::util::join<std::ostream>(strides) << "}";
 }
 
 ov::Strides::Strides() : std::vector<size_t>() {}
@@ -29,6 +26,8 @@ ov::Strides& ov::Strides::operator=(const Strides& v) {
 }
 
 ov::Strides& ov::Strides::operator=(Strides&& v) noexcept {
-    static_cast<std::vector<size_t>*>(this)->operator=(v);
+    static_cast<std::vector<size_t>*>(this)->operator=(std::move(v));
     return *this;
 }
+
+ov::AttributeAdapter<ov::Strides>::~AttributeAdapter() = default;

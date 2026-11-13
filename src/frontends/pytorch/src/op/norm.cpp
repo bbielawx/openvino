@@ -1,7 +1,8 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "openvino/decompositions/rms_norm.hpp"
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/op/abs.hpp"
 #include "openvino/op/add.hpp"
@@ -18,6 +19,7 @@
 #include "openvino/op/reduce_l1.hpp"
 #include "openvino/op/reduce_l2.hpp"
 #include "openvino/op/reduce_max.hpp"
+#include "openvino/op/reduce_mean.hpp"
 #include "openvino/op/reduce_min.hpp"
 #include "openvino/op/reduce_sum.hpp"
 #include "openvino/op/reshape.hpp"
@@ -27,10 +29,7 @@
 #include "pt_framework_node.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -52,9 +51,6 @@ Output<Node> norm_vector(const NodeContext& context,
         auto abs = context.mark_node(std::make_shared<v0::Abs>(input_tensor));
         res = context.mark_node(std::make_shared<v1::ReduceMin>(abs, dim, keep_dim));
     } else if (p == 0) {
-        auto input_rank = input_tensor.get_partial_shape().rank();
-        PYTORCH_OP_CONVERSION_CHECK(input_rank.is_dynamic() || input_rank.get_length() == 1,
-                                    "ord=0 supported only for vector norm");
         auto zero = context.mark_node(v0::Constant::create(element::f32, Shape{}, {0}));
         zero = context.mark_node(std::make_shared<v1::ConvertLike>(zero, input_tensor));
         auto cond = context.mark_node(std::make_shared<v1::NotEqual>(input_tensor, zero));
@@ -125,7 +121,7 @@ OutputVector translate_norm(const NodeContext& context) {
     if (context.input_is_none(2)) {
         dim = get_node_axes_range(context, input_tensor);
     } else {
-        dim = context.get_input(2);
+        dim = concat_list_construct(context.get_input(2));
     }
     if (!context.input_is_none(3)) {
         keep_dim = context.const_input<bool>(3);
@@ -181,24 +177,25 @@ OutputVector translate_linalg_vector_norm(const NodeContext& context) {
     // dtype=None) -> Tensor
     // aten::linalg_vector_norm.out(Tensor self, Scalar ord=2, int[1]? dim=None, bool
     // keepdim=False, *, ScalarType? dtype=None, Tensor(a!) out) -> Tensor(a!):
-    num_inputs_check(context, 4, 6);
+    num_inputs_check(context, 3, 6);
     auto x = context.get_input(0);
     // ord defines the vector norm that is computed.
     auto ord = context.const_input<float>(1);
-    bool keep_dim = context.const_input<bool>(3);
+    bool keep_dim = false;
+    if (!context.input_is_none(3)) {
+        keep_dim = context.const_input<bool>(3);
+    }
     Output<Node> dim;
     Output<Node> result;
     // If dim= None, x will be flattened before the norm is computed.
     if (context.input_is_none(2)) {
         dim = get_node_axes_range(context, x);
     } else {
-        dim = context.get_input(2);
+        dim = concat_list_construct(context.get_input(2));
     }
     // dtype may be used to perform the computation in a more precise dtype. It is semantically equivalent to calling
     // linalg.vector_norm(x.to(dtype))
-    if (!context.input_is_none(4)) {
-        x = apply_dtype(context, 4, x);
-    }
+    x = apply_optional_dtype(context, 4, x);
     result = norm_vector(context, x, dim, ord, keep_dim);
     // output tensor
     if (!context.input_is_none(5)) {
@@ -212,19 +209,17 @@ OutputVector translate_linalg_matrix_norm(const NodeContext& context) {
     // dtype=None, Tensor(a!) out) -> Tensor(a!) aten::linalg_matrix_norm(Tensor self, Scalar ord, int[] dim=[-2, -1],
     // bool keepdim=False, *, ScalarType? dtype=None) aten::linalg_matrix_norm.str_ord(Tensor self, str ord="fro", int[]
     // dim=[-2, -1], bool keepdim=False, *, ScalarType? dtype=None)
-    num_inputs_check(context, 5, 6);
+    num_inputs_check(context, 4, 6);
     auto x = context.get_input(0);
     // ord defines the vector norm that is computed can be string or number
     auto ord_type = context.get_input_type(1);
-    auto dim = context.get_input(2);
+    auto dim = concat_list_construct(context.get_input(2));
     bool keep_dim = context.const_input<bool>(3);
     Output<Node> result;
 
     // dtype may be used to perform the computation in a more precise dtype. It is semantically equivalent to calling
-    // linalg.mtrix_norm(x.to(dtype))
-    if (!context.input_is_none(4)) {
-        x = apply_dtype(context, 4, x);
-    }
+    // linalg.matrix_norm(x.to(dtype))
+    x = apply_optional_dtype(context, 4, x);
     if (ord_type.is<type::Str>()) {
         auto p_str = context.const_input<std::string>(1);
         if (p_str == "fro") {
@@ -248,32 +243,24 @@ OutputVector translate_linalg_norm(const NodeContext& context) {
     // aten::linalg_norm.ord_str(Tensor self, str ord, int[1]? dim=None, bool keepdim=False, *, ScalarType? dtype=None)
     // aten::linalg_norm.ord_str_out(Tensor self, str ord, int[1]? dim=None, bool keepdim=False, *, ScalarType?
     // dtype=None, Tensor(a!) out) -> Tensor(a!)
-    num_inputs_check(context, 5, 6);
+    num_inputs_check(context, 4, 6);
     auto x = context.get_input(0);
     bool keep_dim = context.const_input<bool>(3);
     Output<Node> result;
     Output<Node> dim;
     // dtype may be used to perform the computation in a more precise dtype. It is semantically equivalent to calling
     // linalg.norm(x.to(dtype))
-    if (!context.input_is_none(4)) {
-        x = apply_dtype(context, 4, x);
-    }
+    x = apply_optional_dtype(context, 4, x);
     // If dim=None apply for all dimensions
     if (context.input_is_none(2)) {
         dim = get_node_axes_range(context, x);
     } else {
-        dim = context.get_input(2);
+        dim = concat_list_construct(context.get_input(2));
     }
-    // default norm for matrix is frobenius norm, for vector - L2, for other ranks are not determined
+    // ord=None: Frobenius and vector L2 are both sqrt(sum(x^2)) over `dim` for the real inputs here,
+    // so a single L2 reduction is correct and rank-agnostic -- no static rank or foldable `dim` needed.
     if (context.input_is_none(1)) {
-        auto input_rank = x.get_partial_shape().rank();
-        if (input_rank.is_static() && input_rank.get_length() == 2) {
-            result = frobenius_norm(context, x, dim, keep_dim);
-        } else if (input_rank.is_dynamic() || input_rank.get_length() == 1) {
-            result = norm_vector(context, x, dim, 2, keep_dim);
-        } else {
-            PYTORCH_OP_CONVERSION_CHECK(false, "linalg norm for tensor rank > 2 without ord specification unsupported");
-        }
+        result = norm_vector(context, x, dim, 2, keep_dim);
     } else {
         // ord defines the  norm that is computed can be string or number
         auto ord_type = context.get_input_type(1);
@@ -317,7 +304,7 @@ OutputVector translate_frobenius_norm(const NodeContext& context) {
         dim = get_axes_range(context, 0);
 
     } else {
-        dim = context.get_input(1);
+        dim = concat_list_construct(context.get_input(1));
     }
     auto result = frobenius_norm(context, x, dim, keep_dim);
     if (!context.input_is_none(3)) {
@@ -326,7 +313,54 @@ OutputVector translate_frobenius_norm(const NodeContext& context) {
     return {result};
 }
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+OutputVector translate_rms_norm(const NodeContext& context) {
+    // Tensor = aten::rms_norm(%input_data.1, %2, %4, %3)
+    num_inputs_check(context, 2, 4);
+    auto x = context.get_input(0);
+    auto normalized_shape = context.get_input(1);
+    Output<Node> eps;
+    if (!context.input_is_none(3)) {
+        eps = context.get_input(3);
+        if (eps.get_element_type().is_dynamic() || eps.get_element_type() != x.get_element_type())
+            eps = std::make_shared<v1::ConvertLike>(eps, x);
+    } else {
+        switch (x.get_element_type()) {
+        case element::bf16:
+            eps = v0::Constant::create(ov::element::bf16, {}, {std::numeric_limits<bfloat16>::epsilon()});
+            break;
+        case element::f16:
+            eps = v0::Constant::create(ov::element::f16, {}, {std::numeric_limits<float16>::epsilon()});
+            break;
+        case element::f64:
+            eps = v0::Constant::create(ov::element::f64, {}, {std::numeric_limits<double>::epsilon()});
+            break;
+        case element::f32:
+            eps = v0::Constant::create(ov::element::f32, {}, {std::numeric_limits<float>::epsilon()});
+            break;
+        default:
+            eps = v0::Constant::create(ov::element::f32, {}, {std::numeric_limits<float>::epsilon()});
+            eps = std::make_shared<v1::ConvertLike>(eps, x);
+        }
+    }
+    context.mark_output(eps);
+
+    // normalized shape represent D last dimensions to be normalized
+    auto num_axes = context.mark_node(std::make_shared<v3::ShapeOf>(normalized_shape, element::i32));
+    auto zero = context.mark_node(v0::Constant::create(element::i32, Shape{}, {0}));
+    num_axes = context.mark_node(std::make_shared<v0::Squeeze>(num_axes, zero));
+    auto minus_one = context.mark_node(v0::Constant::create(element::i32, Shape{}, {-1}));
+    auto axes_range = context.mark_node(std::make_shared<v4::Range>(num_axes, zero, minus_one, element::i32));
+    auto axes = context.mark_node(std::make_shared<v1::Multiply>(axes_range, minus_one));
+
+    // Build the RMSNorm decomposition via the shared helper.
+    ov::Output<ov::Node> scale;
+    if (!context.input_is_none(2)) {
+        scale = context.get_input(2);
+    }
+    ov::pass::NodeRegistry reg;
+    auto result = ov::decomposition::rms_norm(reg, x, axes, eps, scale);
+    context.mark_nodes(reg.get());
+    return {result};
+}
+
+}  // namespace ov::frontend::pytorch::op

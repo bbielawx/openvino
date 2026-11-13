@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -27,7 +27,7 @@ class TRANSFORMATIONS_API TSSplitForward;
  */
 class ov::pass::transpose_sinking::TSSplitForward : public ov::pass::transpose_sinking::TSForwardBase {
 public:
-    OPENVINO_RTTI("ov::pass::TSSplitForward", "0");
+    OPENVINO_RTTI("ov::pass::TSSplitForward", "0", ov::pass::transpose_sinking::TSForwardBase);
     TSSplitForward();
 };
 
@@ -38,6 +38,6 @@ public:
  */
 class ov::pass::transpose_sinking::TSSplitBackward : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("ov::pass::TSSplitBackward", "0");
+    OPENVINO_MATCHER_PASS_RTTI("ov::pass::TSSplitBackward");
     TSSplitBackward();
 };

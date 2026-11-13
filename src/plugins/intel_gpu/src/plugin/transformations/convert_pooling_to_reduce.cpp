@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -13,12 +13,13 @@
 #include "openvino/op/constant.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "openvino/core/rt_info.hpp"
+#include "openvino/core/graph_util.hpp"
 
 ov::intel_gpu::ConvertAvgPoolingToReduce::ConvertAvgPoolingToReduce() {
     // Check all AvgPool nodes
     auto m = std::make_shared<ov::pass::pattern::Matcher>(ov::pass::pattern::wrap_type<ov::op::v1::AvgPool>(), "ConvertAvgPoolingToReduce");
     register_matcher(m, [&](ov::pass::pattern::Matcher& m) {
-        auto pool = std::dynamic_pointer_cast<ov::op::v1::AvgPool>(m.get_match_root());
+        auto pool = ov::as_type_ptr<ov::op::v1::AvgPool>(m.get_match_root());
         if (!pool || transformation_callback(pool)) {
             return false;
         }
@@ -49,7 +50,7 @@ ov::intel_gpu::ConvertAvgPoolingToReduce::ConvertAvgPoolingToReduce() {
 
         auto reduce = std::make_shared<ov::op::v1::ReduceMean>(
             pool->input_value(0),
-            ov::op::v0::Constant::create(ov::element::i64, ov::Shape{axes_shape.size()}, axes_shape),
+            ov::op::v0::Constant::create(ov::element::i32, ov::Shape{axes_shape.size()}, axes_shape),
             true);
 
         reduce->set_friendly_name(pool->get_friendly_name());

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -50,9 +50,8 @@ struct space_to_batch : public primitive_base<space_to_batch> {
                    const tensor& block_shape,
                    const tensor& pads_begin,
                    const tensor& pads_end,
-                   const tensor& out_size,
-                   const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}),
+                   const tensor& out_size)
+        : primitive_base(id, {input}),
           block_shape(block_shape),
           pads_begin(pads_begin),
           pads_end(pads_end),
@@ -61,12 +60,8 @@ struct space_to_batch : public primitive_base<space_to_batch> {
 
     space_to_batch(const primitive_id& id,
                    const std::vector<input_info>& inputs,
-                   const tensor& out_size,
-                   const padding& output_padding = padding())
-        : primitive_base(id, inputs, {output_padding}),
-          block_shape(tensor()),
-          pads_begin(tensor()),
-          pads_end(tensor()),
+                   const tensor& out_size)
+        : primitive_base(id, inputs),
           out_size(out_size),
           shape_constant(0) {}
 
@@ -86,8 +81,9 @@ struct space_to_batch : public primitive_base<space_to_batch> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const space_to_batch>(rhs);
 

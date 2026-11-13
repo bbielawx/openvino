@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,24 +7,24 @@
 #include <cstddef>
 #include <list>
 #include <unordered_map>
+#include <utility>
 
 /**
  * @brief This is yet another implementation of a preemptive cache with LRU eviction policy.
- * @tparam Key is a key type that must define hash() const method with return type convertible to size_t and define comparison operator.
+ * @tparam Key is a key type that must define hash() const method with return type convertible to size_t and define
+ * comparison operator.
  * @tparam Value is a type that must meet all the requirements to the std::unordered_map mapped type
  *
  * @attention This cache implementation IS NOT THREAD SAFE!
  */
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
-template<typename Key, typename Value>
+template <typename Key, typename Value>
 class LruCache {
 public:
     using value_type = std::pair<Key, Value>;
 
-public:
     explicit LruCache(size_t capacity) : _capacity(capacity) {}
 
     /**
@@ -33,7 +33,7 @@ public:
      * @param value
      */
 
-    void put(const Key &key, const Value &val) {
+    void put(const Key& key, const Value& val) {
         if (0 == _capacity) {
             return;
         }
@@ -56,7 +56,7 @@ public:
      * @return Value associated with the key or default constructed instance of the Value type.
      */
 
-    Value get(const Key &key) {
+    Value get(const Key& key) {
         auto itr = _cacheMapper.find(key);
         if (itr == _cacheMapper.end()) {
             return Value();
@@ -82,13 +82,13 @@ public:
      * @brief Returns the current capacity value
      * @return the current capacity value
      */
-     size_t getCapacity() const noexcept {
-         return _capacity;
-     }
+    [[nodiscard]] size_t getCapacity() const noexcept {
+        return _capacity;
+    }
 
 private:
     struct key_hasher {
-        std::size_t operator()(const Key &k) const {
+        std::size_t operator()(const Key& k) const {
             return k.hash();
         }
     };
@@ -105,5 +105,4 @@ private:
     size_t _capacity;
 };
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

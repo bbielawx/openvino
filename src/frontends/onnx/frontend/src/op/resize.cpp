@@ -1,20 +1,15 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/resize.hpp"
-
 #include "core/null_node.hpp"
+#include "core/operator_set.hpp"
 #include "exceptions.hpp"
 #include "openvino/op/interpolate.hpp"
 #include "utils/common.hpp"
-
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
+namespace ov::frontend::onnx::ai_onnx {
 namespace {
 static const std::unordered_set<std::string> supported_modes = {"nearest", "linear", "cubic"};
 
@@ -102,7 +97,7 @@ InterpolateAttrs get_resize_attrs(const ov::frontend::onnx::Node& node) {
     attrs.mode = static_cast<InterpolateMode>(mode_as_int(interp_mode_map, mode));
     attrs.coordinate_transformation_mode = static_cast<Transform_mode>(mode_as_int(transform_mode_map, transform_mode));
     attrs.nearest_mode = static_cast<Nearest_mode>(mode_as_int(nearest_mode_map, nearest_mode));
-    attrs.antialias = false;
+    attrs.antialias = (node.get_attribute_value<int64_t>("antialias", 0) == 1);
     attrs.cube_coeff = node.get_attribute_value<float>("cubic_coeff_a", -0.75);
     attrs.pads_begin = {0};
     attrs.pads_end = {0};
@@ -111,7 +106,7 @@ InterpolateAttrs get_resize_attrs(const ov::frontend::onnx::Node& node) {
 }
 }  // namespace
 
-namespace set_11 {
+namespace opset_11 {
 ov::OutputVector resize(const ov::frontend::onnx::Node& node) {
     // roi input (inputs.at(2)) is ignored because it is used only
     // in "tf_crop_and_resize" which is not handled now
@@ -120,19 +115,31 @@ ov::OutputVector resize(const ov::frontend::onnx::Node& node) {
 
     auto attrs = get_resize_attrs(node);
 
+    ov::Output<ov::Node> scale_or_sizes;
     if (inputs.size() == 4 && !ov::op::util::is_null(inputs[3])) {
         attrs.shape_calculation_mode = v11::Interpolate::ShapeCalcMode::SIZES;
-        const auto& sizes = inputs.at(3);
-        return {std::make_shared<v11::Interpolate>(data, sizes, attrs)};
+        scale_or_sizes = inputs.at(3);
     } else {
         attrs.shape_calculation_mode = v11::Interpolate::ShapeCalcMode::SCALES;
-        const auto& scales = inputs.at(2);
-        return {std::make_shared<v11::Interpolate>(data, scales, attrs)};
+        scale_or_sizes = inputs.at(2);
     }
-}
-}  // namespace set_11
+    auto axes_attr = node.get_attribute_value<std::vector<int64_t>>("axes", {});
+    if (axes_attr.empty()) {
+        return {std::make_shared<v11::Interpolate>(data, scale_or_sizes, attrs)};
+    }
 
-namespace set_1 {
+    const auto data_rank = data.get_partial_shape().rank();
+    for (auto& axis : axes_attr) {
+        axis = common::normalize_axis(node.get_description(), axis, data_rank);
+    }
+
+    auto axes = std::make_shared<v0::Constant>(ov::element::i64, ov::Shape{axes_attr.size()}, axes_attr);
+    return {std::make_shared<v11::Interpolate>(data, scale_or_sizes, axes, attrs)};
+}
+ONNX_OP("Resize", OPSET_SINCE(11), ai_onnx::opset_11::resize);
+}  // namespace opset_11
+
+namespace opset_1 {
 ov::OutputVector resize(const ov::frontend::onnx::Node& node) {
     const auto inputs = node.get_ov_inputs();
     const auto& data = inputs.at(0);
@@ -150,8 +157,6 @@ ov::OutputVector resize(const ov::frontend::onnx::Node& node) {
     return {std::make_shared<v11::Interpolate>(data, scales, attrs)};
 }
 
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("Resize", OPSET_RANGE(1, 10), ai_onnx::opset_1::resize);
+}  // namespace opset_1
+}  // namespace ov::frontend::onnx::ai_onnx

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,9 +15,7 @@
 
 #include "framework.pb.h"
 
-namespace ov {
-namespace frontend {
-namespace paddle {
+namespace ov::frontend::paddle {
 
 using namespace ::paddle::framework;
 
@@ -70,6 +68,37 @@ ov::Any DecoderProto::get_attribute(const std::string& name) const {
         return attrs[0].block_idx();
     case proto::AttrType::BLOCKS:
         return std::vector<std::int32_t>(attrs[0].blocks_idx().begin(), attrs[0].blocks_idx().end());
+    case proto::AttrType::SCALARS: {
+        auto scalars_size = attrs[0].scalars_size();
+        if (scalars_size >= 1) {
+            if (Scalar_Type_Name(attrs[0].scalars(0).type()) == "LONG") {
+                std::vector<int64_t> res;
+                res.reserve(scalars_size);
+                for (int i = 0; i < scalars_size; ++i) {
+                    res.push_back(attrs[0].scalars(i).i());
+                }
+                return res;
+            } else if (Scalar_Type_Name(attrs[0].scalars(0).type()) == "FLOAT64") {
+                std::vector<double> res;
+                res.reserve(scalars_size);
+                for (int i = 0; i < scalars_size; ++i) {
+                    res.push_back(attrs[0].scalars(i).r());
+                }
+                return res;
+            } else if (Scalar_Type_Name(attrs[0].scalars(0).type()) == "BOOLEAN") {
+                std::vector<bool> res;
+                res.reserve(scalars_size);
+                for (int i = 0; i < scalars_size; ++i) {
+                    res.push_back(attrs[0].scalars(i).b());
+                }
+                return res;
+            }
+        } else {
+            FRONT_END_GENERAL_CHECK(false,
+                                    "Conversion from PaddlePaddle to OpenVINO  is not supported 0 dims in SCALARS.");
+            break;
+        }
+    }
     default:
         FRONT_END_GENERAL_CHECK(false, "Conversion from PaddlePaddle to OpenVINO data type is not supported.");
     }
@@ -219,6 +248,4 @@ std::map<std::string, OutputVector> DecoderProto::map_for_each_output(
     return map_for_each_input_impl(get_place()->get_desc().outputs(), func);
 }
 
-}  // namespace paddle
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::paddle

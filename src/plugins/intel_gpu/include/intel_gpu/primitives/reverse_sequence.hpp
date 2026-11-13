@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -25,28 +25,32 @@ struct reverse_sequence : public primitive_base<reverse_sequence> {
                      const input_info& input,
                      const input_info& seq_lengths,
                      const int32_t seq_axis,
-                     const int32_t batch_axis = 0,
-                     const padding& output_padding = padding())
-        : primitive_base(id, {input, seq_lengths}, {output_padding}), seq_axis(seq_axis), batch_axis(batch_axis) {
-        const int32_t number_of_dims = 4;
+                     const int32_t batch_axis = 0)
+        : primitive_base(id, {input, seq_lengths}), seq_axis(seq_axis), batch_axis(batch_axis) {
+        const int32_t number_of_dims = 5;
 
         int32_t batch_a = batch_axis;
         int32_t seq_a = seq_axis;
 
-        if (batch_a < 0)
+        if (batch_a < 0) {
             batch_a += number_of_dims;
+        }
 
-        if (seq_a < 0)
+        if (seq_a < 0) {
             seq_a += number_of_dims;
+        }
 
-        if (batch_a == seq_a)
+        if (batch_a == seq_a) {
             throw std::runtime_error("Batch axis and sequence axis should not be equal\n");
+        }
 
-        if (batch_a < 0 || batch_a >= number_of_dims)
+        if (batch_a < 0 || batch_a >= number_of_dims) {
             throw std::runtime_error("Incorrect batch axis value! Actual axis is" + std::to_string(batch_a));
+        }
 
-        if (seq_a < 0 || seq_a >= number_of_dims)
+        if (seq_a < 0 || seq_a >= number_of_dims) {
             throw std::runtime_error("Incorrect sequence axis value! Actual axis is" + std::to_string(seq_a));
+        }
     }
 
     /// @brief The axis which is partially reversed.
@@ -62,8 +66,9 @@ struct reverse_sequence : public primitive_base<reverse_sequence> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const reverse_sequence>(rhs);
 

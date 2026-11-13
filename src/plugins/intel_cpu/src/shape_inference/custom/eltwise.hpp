@@ -1,14 +1,20 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include <node.h>
+#include <cstddef>
+#include <functional>
+#include <memory>
+#include <unordered_map>
+#include <vector>
+
+#include "cpu_memory.h"
+#include "cpu_types.h"
 #include "shape_inference/shape_inference_cpu.hpp"
 
 #pragma once
-namespace ov {
-namespace intel_cpu {
-namespace node {
+
+namespace ov::intel_cpu::node {
 using Result = IShapeInfer::Result;
 
 /**
@@ -18,21 +24,17 @@ using Result = IShapeInfer::Result;
  */
 class EltwiseShapeInfer : public ShapeInferEmptyPads {
 public:
-    Result infer(
-        const std::vector<std::reference_wrapper<const VectorDims>>& input_shapes,
-        const std::unordered_map<size_t, MemoryPtr>& data_dependency) override;
-    port_mask_t get_port_mask() const override {
+    Result infer(const std::vector<std::reference_wrapper<const VectorDims>>& input_shapes,
+                 const std::unordered_map<size_t, MemoryPtr>& data_dependency) override;
+    [[nodiscard]] port_mask_t get_port_mask() const override {
         return EMPTY_PORT_MASK;
     }
 };
 
 class EltwiseShapeInferFactory : public ShapeInferFactory {
 public:
-    ShapeInferPtr makeShapeInfer() const override {
+    [[nodiscard]] ShapeInferPtr makeShapeInfer() const override {
         return std::make_shared<EltwiseShapeInfer>();
     }
 };
-} // namespace node
-} // namespace intel_cpu
-} // namespace ov
-
+}  // namespace ov::intel_cpu::node

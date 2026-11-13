@@ -1,31 +1,45 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include <node.h>
+#include <cstddef>
+#include <functional>
+#include <map>
+#include <memory>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "cpu_memory.h"
+#include "cpu_types.h"
+#include "openvino/core/except.hpp"
+#include "openvino/core/node.hpp"
+#include "openvino/core/type.hpp"
 #include "shape_inference/shape_inference_cpu.hpp"
+#include "shape_inference/shape_inference_status.hpp"
+#include "snippets/op/subgraph.hpp"
+#include "snippets/shape_inference/shape_inference.hpp"
 
 #pragma once
-namespace ov {
-namespace intel_cpu {
-namespace node {
+
+namespace ov::intel_cpu::node {
 using Result = IShapeInfer::Result;
 
 class SnippetShapeInfer : public ShapeInferEmptyPads {
 public:
-    explicit SnippetShapeInfer(const std::shared_ptr<snippets::op::Subgraph>& s) : m_subgraph(s) {
+    explicit SnippetShapeInfer(std::shared_ptr<snippets::op::Subgraph> s) : m_subgraph(std::move(s)) {
         m_status_map[snippets::ShapeInferStatus::success] = ov::intel_cpu::ShapeInferStatus::success;
         m_status_map[snippets::ShapeInferStatus::skip] = ov::intel_cpu::ShapeInferStatus::skip;
     }
-    Result infer(
-            const std::vector<std::reference_wrapper<const VectorDims>>& input_shapes,
-            const std::unordered_map<size_t, MemoryPtr>& data_dependency) override {
+    Result infer(const std::vector<std::reference_wrapper<const VectorDims>>& input_shapes,
+                 [[maybe_unused]] const std::unordered_map<size_t, MemoryPtr>& data_dependency) override {
         const auto& snippets_result = m_subgraph->shape_infer(input_shapes);
-        OPENVINO_ASSERT(m_status_map.count(snippets_result.status) != 0, "Failed to map snippets shapeInfer status to the plugin one");
+        OPENVINO_ASSERT(m_status_map.count(snippets_result.status) != 0,
+                        "Failed to map snippets shapeInfer status to the plugin one");
         return {snippets_result.dims, m_status_map.at(snippets_result.status)};
     }
 
-    port_mask_t get_port_mask() const override {
+    [[nodiscard]] port_mask_t get_port_mask() const override {
         return EMPTY_PORT_MASK;
     }
 
@@ -40,14 +54,11 @@ public:
         m_subgraph = ov::as_type_ptr<snippets::op::Subgraph>(op);
         OPENVINO_ASSERT(m_subgraph, "Invalid node type detected in SnippetShapeInferFactory");
     }
-    ShapeInferPtr makeShapeInfer() const override {
+    [[nodiscard]] ShapeInferPtr makeShapeInfer() const override {
         return std::make_shared<SnippetShapeInfer>(m_subgraph);
     }
 
 private:
     std::shared_ptr<snippets::op::Subgraph> m_subgraph = nullptr;
 };
-} // namespace node
-} // namespace intel_cpu
-} // namespace ov
-
+}  // namespace ov::intel_cpu::node

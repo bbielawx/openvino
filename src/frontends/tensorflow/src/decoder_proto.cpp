@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,9 +11,7 @@
 #include "ov_tensorflow/types.pb.h"
 #include "tf_utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
+namespace ov::frontend::tensorflow {
 
 ov::Any DecoderProto::get_attribute(const std::string& name) const {
     auto attrs = decode_attribute_helper(name);
@@ -150,7 +148,7 @@ void parse_producer_name(const std::string& producer_port_name,
                                 "Port id is not specified or not a number. Value: ",
                                 port_id);
         producer_output_port_index = std::stoi(port_id);
-        producer_output_port_name = port_name;
+        producer_output_port_name = std::move(port_name);
         return;
     } else if (first_colon != std::string::npos) {
         // just one colon case
@@ -186,11 +184,9 @@ std::vector<::tensorflow::AttrValue> DecoderProto::decode_attribute_helper(const
     auto attr_map = m_node_def->attr();
     if (attr_map.contains(name)) {
         auto value = m_node_def->attr().at(name);
-        return {value};
+        return {std::move(value)};
     } else {
         return {};
     }
 }
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow

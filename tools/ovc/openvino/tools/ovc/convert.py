@@ -1,10 +1,10 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import pathlib
 from typing import Any
 
-from openvino.runtime import Model  # pylint: disable=no-name-in-module,import-error
+from openvino import Model  # pylint: disable=no-name-in-module,import-error
 from openvino.tools.ovc.cli_parser import get_all_cli_parser
 from openvino.tools.ovc.convert_impl import _convert
 from openvino.tools.ovc.logger import get_logger_state, restore_logger_state
@@ -21,13 +21,14 @@ def convert_model(
         extension: [str, pathlib.Path, list, Any] = None,
         verbose: bool = False,
         share_weights: bool = True,
+        dynamo: bool = False,
 ) -> Model:
     """
     Converts the model from original framework to OpenVino Model.
 
     Framework-agnostic parameters:
         :param input_model:
-            Model object in original framework (PyTorch, Tensorflow) or path to model file.
+            Model object in original framework (PyTorch, TensorFlow) or path to model file.
 
             Supported formats of input model:
 
@@ -35,6 +36,7 @@ def convert_model(
             torch.nn.Module
             torch.jit.ScriptModule
             torch.jit.ScriptFunction
+            torch.export.ExportedProgram
 
             TF
             tf.compat.v1.Graph
@@ -84,15 +86,28 @@ def convert_model(
             list of paths, objects derived from BaseExtension class or lists of
             objects.
         :param verbose:
-            Print detailed information about conversion.
+            Print detailed information about conversion. The detailed information is logged via standard logging library.
+            The log level can be changed by setting the log level using logging library.
+            Example:
+                import logging
+                logging.getLogger().setLevel(logging.DEBUG)
         :param share_weights:
             Reuse weights allocated in the original model. If input model is in file,
             then mmap is used to allocate weights directly from file. If input model is
             runtime object, then original memory regions allocated in the original model
             are reused for weights in the converted model.
+        :param dynamo:
+            Export a PyTorch torch.nn.Module using torch.export instead of
+            torch.jit.trace. Requires example_input and PyTorch >= 2.6.
+            Default is False.
+            The resulting model uses static shapes derived from example_input by default.
+            To enable dynamic dimensions, combine with the input parameter:
+            dimensions set to -1 or Dimension(-1) become fully dynamic
+            (torch.export.Dim.AUTO), and bounded dimensions such as Dimension(1, 10)
+            are exported with explicit min/max constraints.
 
     Returns:
-        openvino.runtime.Model
+        openvino.Model
     """
     params = locals()
     logger_state = get_logger_state()

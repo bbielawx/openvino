@@ -1,24 +1,17 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/constant_of_shape.hpp"
-
 #include "core/null_node.hpp"
+#include "core/operator_set.hpp"
 #include "core/tensor.hpp"
-#include "op/constant.hpp"
 #include "openvino/op/broadcast.hpp"
 #include "openvino/op/constant.hpp"
 #include "utils/common.hpp"
 #include "utils/reshape.hpp"
-
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 ov::OutputVector constant_of_shape(const ov::frontend::onnx::Node& node) {
     ov::Output<ov::Node> constant_value;
     if (node.has_attribute("value")) {
@@ -36,8 +29,5 @@ ov::OutputVector constant_of_shape(const ov::frontend::onnx::Node& node) {
     return {std::make_shared<v3::Broadcast>(constant_value, inputs[0])};
 }
 
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("ConstantOfShape", OPSET_SINCE(1), ai_onnx::opset_1::constant_of_shape);
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

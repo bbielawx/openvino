@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -19,9 +19,9 @@ typedef std::tuple<
 > EdgeReplaceParams;
 
 class EdgeReplace : public testing::WithParamInterface<ov::test::snippets::EdgeReplaceParams>,
-                    virtual public ov::test::SnippetsTestsCommon {
+                    virtual public SnippetsTestsCommon {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ov::test::snippets::EdgeReplaceParams> obj);
+    static std::string getTestCaseName(const testing::TestParamInfo<ov::test::snippets::EdgeReplaceParams>& obj);
 
 protected:
     void SetUp() override;

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,24 +20,27 @@ kernel_selector::cum_sum_axis convert_axis(int64_t axis, size_t rank) {
         case 0: return kernel_selector::cum_sum_axis::BATCH;
         case 1: return kernel_selector::cum_sum_axis::FEATURE;
         case 2:
-            if (rank == 6)
+            if (rank == 6) {
                 return kernel_selector::cum_sum_axis::W;
-            else if (rank == 5)
+            } else if (rank == 5) {
                 return kernel_selector::cum_sum_axis::Z;
-            else
+            } else {
                 return kernel_selector::cum_sum_axis::Y;
+            }
         case 3:
-            if (rank == 6)
+            if (rank == 6) {
                 return kernel_selector::cum_sum_axis::Z;
-            else if (rank == 5)
+            } else if (rank == 5) {
                 return kernel_selector::cum_sum_axis::Y;
-            else
+            } else {
                 return kernel_selector::cum_sum_axis::X;
+            }
         case 4:
-            if (rank == 6)
+            if (rank == 6) {
                 return kernel_selector::cum_sum_axis::Y;
-            else
+            } else {
                 return kernel_selector::cum_sum_axis::X;
+            }
         case 5: return kernel_selector::cum_sum_axis::X;
         default: return kernel_selector::cum_sum_axis::BATCH;
     }
@@ -53,12 +56,12 @@ struct cum_sum_impl : typed_primitive_impl_ocl<cum_sum> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::cum_sum_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<cum_sum_impl>(*this);
+        return make_deep_copy<cum_sum_impl, kernel_params_t>(*this);
     }
 
     void load(BinaryInputBuffer& ib) override {
         parent::load(ib);
-        if (is_dynamic()) {
+        if (is_dynamic() && !_kernel_data.kernelName.empty()) {
             auto& kernel_selector = kernel_selector_t::Instance();
             auto kernel_impl = kernel_selector.GetImplementation(_kernel_data.kernelName);
             kernel_impl->GetUpdateDispatchDataFunc(_kernel_data);
@@ -78,8 +81,13 @@ public:
     }
 
     void update_dispatch_data(const kernel_impl_params& impl_param) override {
-        auto kernel_params = get_kernel_params(impl_param, true);
-        (_kernel_data.update_dispatch_data_func)(kernel_params, _kernel_data);
+        // If model loaded from cache, params are not initialized, so we create a new object and reuse it in the future
+        if (_kernel_data.params == nullptr) {
+            _kernel_data.params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true));
+        }
+
+        update_shapes(*_kernel_data.params, impl_param);
+        (_kernel_data.update_dispatch_data_func)(*_kernel_data.params, _kernel_data);
     }
 };
 
@@ -87,6 +95,9 @@ namespace detail {
 
 attach_cum_sum_impl::attach_cum_sum_impl() {
     implementation_map<cum_sum>::add(impl_types::ocl, shape_types::any, typed_primitive_impl_ocl<cum_sum>::create<cum_sum_impl>, {
+        std::make_tuple(data_types::u8, format::bfyx),
+        std::make_tuple(data_types::u8, format::bfzyx),
+        std::make_tuple(data_types::u8, format::bfwzyx),
         std::make_tuple(data_types::i32, format::bfyx),
         std::make_tuple(data_types::i32, format::bfzyx),
         std::make_tuple(data_types::i32, format::bfwzyx),

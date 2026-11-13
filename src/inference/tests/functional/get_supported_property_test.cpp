@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,6 +7,7 @@
 #include <string>
 
 #include "common_test_utils/file_utils.hpp"
+#include "common_test_utils/test_assertions.hpp"
 #include "openvino/openvino.hpp"
 #include "openvino/runtime/internal_properties.hpp"
 #include "openvino/runtime/iplugin.hpp"
@@ -26,9 +27,10 @@ public:
     }
 
     void reg_plugin(ov::Core& core, std::shared_ptr<ov::IPlugin>& plugin) {
-        std::string libraryPath = ov::test::utils::get_mock_engine_path();
-        if (!m_so)
-            m_so = ov::util::load_shared_object(libraryPath.c_str());
+        if (!m_so) {
+            const auto libraryPath = ov::test::utils::get_mock_engine_path();
+            m_so = ov::util::load_shared_object(libraryPath);
+        }
         std::function<void(ov::IPlugin*)> injectProxyEngine =
             ov::test::utils::make_std_function<void(ov::IPlugin*)>(m_so, "InjectPlugin");
 
@@ -119,20 +121,30 @@ TEST(PropertyTest, SetCacheDirPropertyCoreNoThrow) {
 
     // Cache_dir property test
     ov::Any value;
-    ASSERT_NO_THROW(core.set_property(ov::cache_dir("./tmp_cache_dir")));
-    ASSERT_NO_THROW(value = core.get_property(ov::cache_dir.name()));
+    OV_ASSERT_NO_THROW(core.set_property(ov::cache_dir("./tmp_cache_dir")));
+    OV_ASSERT_NO_THROW(value = core.get_property(ov::cache_dir.name()));
     EXPECT_EQ(value.as<std::string>(), std::string("./tmp_cache_dir"));
+}
+
+TEST(PropertyTest, SetCachePathPropertyCoreNoThrow) {
+    ov::Core core;
+
+    // ov::cache_path property test
+    ov::Any value;
+    OV_ASSERT_NO_THROW(core.set_property(ov::cache_path("./tmp_cache_dir")));
+    OV_ASSERT_NO_THROW(value = core.get_property(ov::cache_path.name()));
+    EXPECT_EQ(value.as<std::filesystem::path>(), std::filesystem::path("./tmp_cache_dir"));
 }
 
 TEST(PropertyTest, SetTBBForceTerminatePropertyCoreNoThrow) {
     ov::Core core;
 
     bool value = true;
-    ASSERT_NO_THROW(core.set_property(ov::force_tbb_terminate(false)));
-    ASSERT_NO_THROW(value = core.get_property(ov::force_tbb_terminate.name()).as<bool>());
+    OV_ASSERT_NO_THROW(core.set_property(ov::force_tbb_terminate(false)));
+    OV_ASSERT_NO_THROW(value = core.get_property(ov::force_tbb_terminate.name()).as<bool>());
     EXPECT_FALSE(value);
-    ASSERT_NO_THROW(core.set_property(ov::force_tbb_terminate(true)));
-    ASSERT_NO_THROW(value = core.get_property(ov::force_tbb_terminate.name()).as<bool>());
+    OV_ASSERT_NO_THROW(core.set_property(ov::force_tbb_terminate(true)));
+    OV_ASSERT_NO_THROW(value = core.get_property(ov::force_tbb_terminate.name()).as<bool>());
     EXPECT_TRUE(value);
 }
 

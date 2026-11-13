@@ -1,13 +1,66 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "test_utils.h"
 #include "program_wrapper.h"
 #include "fully_connected_inst.h"
+#include "convolution_inst.h"
+#include "gru_seq_inst.h"
+#ifdef ENABLE_ONEDNN_FOR_GPU
+#include "graph/impls/onednn/utils.hpp"
+#endif
 
 using namespace cldnn;
 using namespace ::tests;
+
+TEST(post_optimize_weights, dynamic_gru_weights_are_permuted) {
+    auto& engine = get_test_engine();
+
+    auto hidden = engine.allocate_memory({ov::PartialShape{1, 1, 3}, data_types::f16, format::bfyx});
+    auto weights = engine.allocate_memory({ov::PartialShape{1, 9, 4}, data_types::f16, format::bfyx});
+    auto recurrent = engine.allocate_memory({ov::PartialShape{1, 9, 3}, data_types::f16, format::bfyx});
+    auto bias = engine.allocate_memory({ov::PartialShape{1, 12}, data_types::f16, format::bfyx});
+    auto sequence_lengths = engine.allocate_memory({ov::PartialShape{1}, data_types::i32, format::bfyx});
+
+    gru_seq gru("gru",
+                input_info("input"),
+                input_info("hidden"),
+                input_info(),
+                input_info("weights"),
+                input_info("recurrent"),
+                input_info("bias"),
+                input_info("sequence_lengths"),
+                0.f,
+                false,
+                {activation_func::logistic, activation_func::hyperbolic_tan},
+                {},
+                lstm_weights_order::iofz,
+                ov::op::RecurrentSequenceDirection::FORWARD,
+                2);
+    gru.linear_before_reset = true;
+
+    topology topology(input_layout("input", {ov::PartialShape{1, -1, 4}, data_types::f16, format::bfyx}),
+                      data("hidden", hidden),
+                      data("weights", weights),
+                      data("recurrent", recurrent),
+                      data("bias", bias),
+                      data("sequence_lengths", sequence_lengths),
+                      gru);
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    auto prog = program::build_program(engine, topology, config, false, true);
+
+    reorder_factory rf;
+    program_wrapper::apply_opt_pass<compile_graph>(*prog);
+    program_wrapper::apply_opt_pass<post_optimize_weights>(*prog, rf);
+
+    auto& gru_node = prog->get_node("gru");
+    EXPECT_EQ(gru_node.get_dependency(2).get_output_layout().get_shape(), ov::Shape({1, 4, 9}));
+    EXPECT_EQ(gru_node.get_dependency(3).get_output_layout().get_shape(), ov::Shape({1, 3, 9}));
+}
 
 TEST(post_optimize_weights, fuse_reorder_to_weights_reorder_test) {
     auto& engine = get_test_engine();
@@ -48,7 +101,7 @@ TEST(post_optimize_weights, fuse_reorder_to_weights_reorder_test_dynamic) {
         input_layout("input", in_layout),
         input_layout("weights", weights->get_layout()),
         reorder("reorder_dt", input_info("weights"), format::bfyx, data_types::f16),
-        fully_connected("fc", input_info("input"), { "reorder_dt" }, "", data_types::f16, {}, 3)
+        fully_connected("fc", input_info("input"), { "reorder_dt" }, "", data_types::f16, 3)
     );
 
     ExecutionConfig config = get_test_default_config(engine);
@@ -131,7 +184,7 @@ TEST(post_optimize_weights, weights_reorder_constant_folding_test_dynamic) {
     topology topology(
         input_layout("input", in_layout),
         data("weights", weights),
-        fully_connected("fc", input_info("input"), { "weights" }, "", data_types::f16, {}, 3)
+        fully_connected("fc", input_info("input"), { "weights" }, "", data_types::f16, 3)
     );
 
     ExecutionConfig config = get_test_default_config(engine);
@@ -195,4 +248,46 @@ TEST(post_optimize_weights, fuse_only_with_supported_weights_layout) {
     program_wrapper::apply_opt_pass<post_optimize_weights>(*prog, rf);
 
     ASSERT_TRUE(has_node(*prog, "reorder"));
+}
+
+TEST(post_optimize_weights, onednn_group_conv_weights_reorder_test) {
+    auto& engine = get_test_engine();
+    if (!engine.get_device_info().supports_immad)
+        return;
+
+    ov::Shape pshape = { 1, 512, 2, 332 };
+    ov::Shape weight_pshape = { 64, 1, 8, 5, 5 };
+    auto input = engine.allocate_memory({ pshape, data_types::f16, format::bfyx });
+    auto weights = engine.allocate_memory({ weight_pshape, data_types::f16, format::bfzyx });
+
+    std::vector<ov::float16> weights_data(weight_pshape[0] * weight_pshape[1] * weight_pshape[2] * weight_pshape[3] * weight_pshape[4]);
+    std::iota(weights_data.begin(), weights_data.end(), 0.f);
+    set_values(weights, weights_data);
+
+    topology topology(
+        input_layout("input", input->get_layout()),
+        data("weights", weights),
+        convolution("conv", input_info("input"), "weights", "", 64, {1, 1}, {1, 1}, {2, 2}, {2, 2}, true)
+    );
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+
+    if (engine.get_device_info().supports_immad) {
+        ov::intel_gpu::ImplementationDesc conv_impl = { format::b_fs_yx_fsv16, std::string(""), impl_types::onednn };
+        config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{ {"conv", conv_impl} }));
+    }
+
+    auto prog = program::build_program(engine, topology, config);
+
+    auto& conv_node = prog->get_node("conv");
+    auto weights_param = conv_node.as<convolution>().get_selected_impl()->get_weights_reorder_params();
+    ASSERT_TRUE(format::is_weights_format(prog->get_node("weights_weights_reorder_0").get_output_layout().format));
+
+#ifdef ENABLE_ONEDNN_FOR_GPU
+    // Check onednn_weights_params->_out_desc.get_size() with reorder output_layout bytes_count
+    auto onednn_weights_params = std::dynamic_pointer_cast<onednn::WeightsReorderParamsOneDNN>(weights_param);
+    ASSERT_TRUE(onednn_weights_params->_out_desc->get_size() == prog->get_node("weights_weights_reorder_0").get_output_layout().bytes_count());
+#endif
 }

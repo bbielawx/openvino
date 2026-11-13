@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,7 +15,7 @@ public:
     using Parent = ConvolutionKernelBase;
 
     ConvolutionKernel_b_fs_yx_fsv16_1x1();
-    virtual ~ConvolutionKernel_b_fs_yx_fsv16_1x1() {}
+    ~ConvolutionKernel_b_fs_yx_fsv16_1x1() override = default;
 
     KernelsData GetKernelsData(const Params& params) const override;
     KernelsPriority GetKernelsPriority(const Params& params) const override;
@@ -34,6 +34,7 @@ protected:
     bool Validate(const Params& p) const override;
     DispatchData SetDefault(const convolution_params& arg, int autoTuneIndex = -1) const override;
     JitConstants GetJitConstants(const convolution_params& params, const DispatchData& dispatchData) const override;
+    void GetUpdateDispatchDataFunc(KernelData& kd) const override;
 
     struct AutoTuneOption {
         size_t blockWidth;
@@ -48,7 +49,7 @@ protected:
     };
 
     std::vector<AutoTuneOption> autoTuneOptions;
-    AutoTuneOption GetAutoTuneOptions(const Params& arg, int autoTuneIndex) const;
+    AutoTuneOption GetAutoTuneOptions(const convolution_params& arg, int autoTuneIndex) const;
     ConvolutionTuningData GetTuningParams(const convolution_params& params) const;
     float EstimateOccupancy(const convolution_params& params, const ConvolutionTuningData& tuning_data) const;
 };

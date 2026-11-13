@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -23,9 +23,8 @@ struct reverse : public primitive_base<reverse> {
     reverse(const primitive_id& id,
             const input_info& input,
             const input_info& axes,
-            const reverse_mode mode,
-            const padding& output_padding = padding())
-        : primitive_base{id, {input, axes}, {output_padding}},
+            const reverse_mode mode)
+        : primitive_base{id, {input, axes}},
           mode{mode} {}
 
     reverse_mode mode{reverse_mode::index};
@@ -37,8 +36,9 @@ struct reverse : public primitive_base<reverse> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const reverse>(rhs);
 

@@ -1,4 +1,4 @@
-// Copyright (C) 2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,9 +11,9 @@
 #include "openvino/pass/pattern/op/or.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "transformations/utils/utils.hpp"
+#include "openvino/core/graph_util.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 FullyConnectedConvertFusion::FullyConnectedConvertFusion() {
     using namespace ov::pass::pattern;
@@ -22,14 +22,15 @@ FullyConnectedConvertFusion::FullyConnectedConvertFusion() {
     auto weights = any_input();
     auto bias = any_input();
     auto fully_connected = wrap_type<op::FullyConnected>({data, weights, bias}, consumers_count(1));
-    auto fully_connected_compressed = wrap_type<op::FullyConnectedCompressed>({data, weights, bias, any_input(), any_input()}, consumers_count(1));
+    auto fully_connected_compressed1 = wrap_type<op::FullyConnectedCompressed>({data, weights, bias, any_input()}, consumers_count(1));
+    auto fully_connected_compressed2 = wrap_type<op::FullyConnectedCompressed>({data, weights, bias, any_input(), any_input()}, consumers_count(1));
+    auto fully_connected_compressed = std::make_shared<ov::pass::pattern::op::Or>(OutputVector{fully_connected_compressed1, fully_connected_compressed2});
     auto fc = std::make_shared<ov::pass::pattern::op::Or>(OutputVector{fully_connected, fully_connected_compressed});
     auto convert = wrap_type<ov::op::v0::Convert>({fc}, type_matches(element::f32));
 
     ov::matcher_pass_callback callback = [=](Matcher& m) {
         const auto& pattern_map = m.get_pattern_value_map();
 
-        const auto& m_data = pattern_map.at(data).get_node_shared_ptr();
         const auto& m_weights = pattern_map.at(weights).get_node_shared_ptr();
         const auto& m_bias = pattern_map.at(bias).get_node_shared_ptr();
         const auto& m_convert = pattern_map.at(convert).get_node_shared_ptr();
@@ -40,15 +41,43 @@ FullyConnectedConvertFusion::FullyConnectedConvertFusion() {
         auto it = pattern_map.find(fully_connected);
         if (it != pattern_map.end()) {
             m_fc = it->second.get_node_shared_ptr();
-            new_fc = std::make_shared<op::FullyConnected>(m_data, m_weights, m_bias, output_type);
+            auto m_fc_typed = ov::as_type_ptr<op::FullyConnected>(m_fc);
+            OPENVINO_ASSERT(m_fc_typed);
+            new_fc = std::make_shared<op::FullyConnected>(m_fc->input_value(0),
+                                                          m_weights,
+                                                          m_bias,
+                                                          output_type,
+                                                          m_fc_typed->get_transpose_b(),
+                                                          m_fc_typed->get_weights_layout());
+
         } else {
             m_fc = pattern_map.at(fully_connected_compressed).get_node_shared_ptr();
-            new_fc = std::make_shared<op::FullyConnectedCompressed>(m_data,
-                                                                    m_weights,
-                                                                    m_bias,
-                                                                    m_fc->input_value(3),
-                                                                    m_fc->input_value(4),
-                                                                    output_type);
+            auto m_fc_typed = ov::as_type_ptr<op::FullyConnectedCompressed>(m_fc);
+            OPENVINO_ASSERT(m_fc_typed);
+
+
+            if (m_fc->input_values().size() == 4) {
+                new_fc = std::make_shared<op::FullyConnectedCompressed>(m_fc->input_value(0),
+                                                                        m_weights,
+                                                                        m_bias,
+                                                                        m_fc->input_value(3),
+                                                                        output_type,
+                                                                        m_fc_typed->get_transpose_b(),
+                                                                        m_fc_typed->get_transpose_b_scale(),
+                                                                        m_fc_typed->get_transpose_b_zp(),
+                                                                        m_fc_typed->get_weights_layout());
+            } else {
+                new_fc = std::make_shared<op::FullyConnectedCompressed>(m_fc->input_value(0),
+                                                                        m_weights,
+                                                                        m_bias,
+                                                                        m_fc->input_value(3),
+                                                                        m_fc->input_value(4),
+                                                                        output_type,
+                                                                        m_fc_typed->get_transpose_b(),
+                                                                        m_fc_typed->get_transpose_b_scale(),
+                                                                        m_fc_typed->get_transpose_b_zp(),
+                                                                        m_fc_typed->get_weights_layout());
+            }
         }
         new_fc->set_friendly_name(m_convert->get_friendly_name());
         copy_runtime_info(m.get_matched_nodes(), new_fc);
@@ -61,5 +90,4 @@ FullyConnectedConvertFusion::FullyConnectedConvertFusion() {
     this->register_matcher(m, callback);
 }
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

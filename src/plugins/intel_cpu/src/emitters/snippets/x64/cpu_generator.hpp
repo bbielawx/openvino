@@ -4,47 +4,56 @@
 
 #pragma once
 
-#include "cpu/x64/jit_generator.hpp"
+#include <cpu/x64/cpu_isa_traits.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <vector>
 
-#include "snippets/target_machine.hpp"
+#include "cache/multi_cache.h"
+#include "cpu/x64/jit_generator.hpp"
+#include "emitters/snippets/common/compiled_snippet_cpu.hpp"
+#include "openvino/core/node.hpp"
+#include "openvino/core/node_output.hpp"
+#include "snippets/emitter.hpp"
 #include "snippets/generator.hpp"
+#include "snippets/target_machine.hpp"
 
 #ifdef SNIPPETS_DEBUG_CAPS
-#include "emitters/snippets/utils/debug_caps_config.hpp"
+#    include "emitters/snippets/utils/debug_caps_config.hpp"
 #endif
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
-class CompiledSnippetCPU : public snippets::CompiledSnippet {
-    const std::unique_ptr<const dnnl::impl::cpu::x64::jit_generator> h_compiled;
-public:
-    const uint8_t* get_code() const override;
-    size_t get_code_size() const override;
-    bool empty() const override;
-    explicit CompiledSnippetCPU(std::unique_ptr<dnnl::impl::cpu::x64::jit_generator> h);
-};
+using CompiledSnippetCPU = ov::intel_cpu::CompiledSnippetCPUCommon<dnnl::impl::cpu::x64::jit_generator_t>;
 
 class CPUTargetMachine : public snippets::TargetMachine {
 public:
-    explicit CPUTargetMachine(dnnl::impl::cpu::x64::cpu_isa_t host_isa);
-
-    bool is_supported() const override;
+    explicit CPUTargetMachine(dnnl::impl::cpu::x64::cpu_isa_t host_isa, ov::intel_cpu::MultiCacheWeakPtr cache);
+    [[nodiscard]] std::shared_ptr<snippets::TargetMachine> clone() const override;
+    [[nodiscard]] bool is_supported() const override;
     snippets::CompiledSnippetPtr get_snippet() override;
-    size_t get_lanes() const override;
-    dnnl::impl::cpu::x64::cpu_isa_t get_isa() const;
+    [[nodiscard]] size_t get_lanes() const override;
+
+    [[nodiscard]] std::vector<snippets::Reg> get_abi_arg_regs() const override;
+    [[nodiscard]] std::vector<snippets::Reg> get_gp_reg_pool() const override;
+    [[nodiscard]] std::vector<snippets::Reg> get_vec_reg_pool() const override;
+
+    [[nodiscard]] dnnl::impl::cpu::x64::cpu_isa_t get_isa() const;
 #ifdef SNIPPETS_DEBUG_CAPS
     SnippetsDebugCapsConfig debug_config;
 #endif
 
 private:
-    std::unique_ptr<dnnl::impl::cpu::x64::jit_generator> h;
+    std::unique_ptr<dnnl::impl::cpu::x64::jit_generator_t> h;
     dnnl::impl::cpu::x64::cpu_isa_t isa;
+    ov::intel_cpu::MultiCacheWeakPtr compiled_kernel_cache;
 };
 
 class CPUGenerator : public snippets::Generator {
 public:
-    CPUGenerator(dnnl::impl::cpu::x64::cpu_isa_t isa);
+    CPUGenerator(dnnl::impl::cpu::x64::cpu_isa_t isa, ov::intel_cpu::MultiCacheWeakPtr cache);
+    explicit CPUGenerator(const std::shared_ptr<CPUTargetMachine>& target);
     std::shared_ptr<Generator> clone() const override;
 
 protected:
@@ -52,5 +61,4 @@ protected:
     bool uses_precompiled_kernel(const std::shared_ptr<snippets::Emitter>& emitter) const override;
 };
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

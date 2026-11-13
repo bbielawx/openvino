@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -34,9 +34,32 @@ std::shared_ptr<ov::Model> ov::mock_auto_plugin::tests::BaseTest::create_model()
     return std::make_shared<ov::Model>(ov::ResultVector{result}, ov::ParameterVector{param});
 }
 
-ov::mock_auto_plugin::tests::BaseTest::BaseTest() {
+std::shared_ptr<ov::Model> ov::mock_auto_plugin::tests::BaseTest::create_dynamic_output_model() {
+    auto boxes = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::Shape{1, 2, 4});
+    boxes->set_friendly_name("param_1");
+    boxes->get_output_tensor(0).set_names({"input_tensor_1"});
+    auto scores = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::Shape{1, 1, 2});
+    scores->set_friendly_name("param_2");
+    scores->get_output_tensor(0).set_names({"input_tensor_2"});
+    auto max_output_boxes_per_class = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {10});
+    auto iou_threshold = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{}, {0.75});
+    auto score_threshold = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{}, {0.7});
+    auto nms = std::make_shared<ov::op::v9::NonMaxSuppression>(boxes,
+                                                               scores,
+                                                               max_output_boxes_per_class,
+                                                               iou_threshold,
+                                                               score_threshold);
+    auto res = std::make_shared<ov::op::v0::Result>(nms);
+    res->set_friendly_name("output_dynamic");
+    return std::make_shared<ov::Model>(ov::OutputVector{nms}, ov::ParameterVector{boxes, scores});
+}
+
+ov::mock_auto_plugin::tests::BaseTest::BaseTest(const MODELTYPE modelType) {
     set_log_level("LOG_NONE");
-    model = create_model();
+    if (modelType == MODELTYPE::DYNAMIC)
+        model = create_dynamic_output_model();
+    else
+        model = create_model();
     // construct mock auto plugin
     NiceMock<MockAutoPlugin>* mock_auto = new NiceMock<MockAutoPlugin>();
     plugin.reset(mock_auto);
@@ -55,13 +78,17 @@ ov::mock_auto_plugin::tests::BaseTest::BaseTest() {
     ON_CALL(*mockIExeNetActual.get(), outputs()).WillByDefault(ReturnRefOfCopy(model->outputs()));
     inferReqInternal = std::make_shared<ov::mock_auto_plugin::MockISyncInferRequest>(mockIExeNet);
 
-    ON_CALL(*mockIExeNet.get(), create_sync_infer_request()).WillByDefault(Return(inferReqInternal));
+    ON_CALL(*mockIExeNet.get(), create_sync_infer_request()).WillByDefault([this]() {
+        return inferReqInternal;
+    });
     optimalNum = (uint32_t)1;
     ON_CALL(*mockIExeNet.get(), get_property(StrEq(ov::optimal_number_of_infer_requests.name())))
         .WillByDefault(Return(optimalNum));
     inferReqInternalActual = std::make_shared<ov::mock_auto_plugin::MockISyncInferRequest>(mockIExeNetActual);
 
-    ON_CALL(*mockIExeNetActual.get(), create_sync_infer_request()).WillByDefault(Return(inferReqInternalActual));
+    ON_CALL(*mockIExeNetActual.get(), create_sync_infer_request()).WillByDefault([this]() {
+        return inferReqInternalActual;
+    });
     ON_CALL(*mockIExeNetActual.get(), get_property(StrEq(ov::optimal_number_of_infer_requests.name())))
         .WillByDefault(Return(optimalNum));
     ON_CALL(*mockIExeNet.get(), create_infer_request()).WillByDefault([this]() {
@@ -79,9 +106,13 @@ ov::mock_auto_plugin::tests::BaseTest::BaseTest() {
     ON_CALL(*mockIExeNet.get(), get_property(StrEq(ov::hint::num_requests.name()))).WillByDefault(Return(ov::Any(num)));
     ON_CALL(*mockIExeNetActual.get(), get_property(StrEq(ov::hint::num_requests.name())))
         .WillByDefault(Return(ov::Any(num)));
-    ON_CALL(*plugin, get_device_list).WillByDefault([this](const ov::AnyMap& config) {
-        return plugin->Plugin::get_device_list(config);
-    });
+    ON_CALL(*plugin, get_device_list)
+        .WillByDefault([this](ov::AnyMap& config,
+                              const std::shared_ptr<const ov::Model>& model,
+                              const std::filesystem::path& model_path) {
+            return plugin->Plugin::get_device_list(config, model, {});
+        });
+    ON_CALL(*plugin, is_telemetry_available).WillByDefault(Return(true));
     ON_CALL(*plugin, parse_meta_devices)
         .WillByDefault([this](const std::string& priorityDevices, const ov::AnyMap& config) {
             return plugin->Plugin::parse_meta_devices(priorityDevices, config);
@@ -90,8 +121,21 @@ ov::mock_auto_plugin::tests::BaseTest::BaseTest() {
     ON_CALL(*plugin, select_device)
         .WillByDefault([this](const std::vector<DeviceInformation>& metaDevices,
                               const std::string& netPrecision,
-                              unsigned int priority) {
-            return plugin->Plugin::select_device(metaDevices, netPrecision, priority);
+                              unsigned int priority,
+                              const ov::auto_plugin::DeviceSelectionPolicy& selection_policy,
+                              const std::optional<DeviceInformation>& low_power_device) {
+            return plugin->Plugin::select_device(metaDevices, netPrecision, priority, selection_policy, low_power_device);
+        });
+
+    ON_CALL(*plugin, sort_device_by_perf_curve)
+        .WillByDefault([this](const std::unordered_map<std::string, float>& deviceUtilizations,
+                              const std::list<DeviceInformation>& validDevices,
+                              const ov::intel_auto::PerfCurveTable& perfCurveTable,
+                              size_t* out_scored_count) {
+            return plugin->Plugin::sort_device_by_perf_curve(deviceUtilizations,
+                                                             validDevices,
+                                                             perfCurveTable,
+                                                             out_scored_count);
         });
 
     ON_CALL(*plugin, get_valid_device)
@@ -99,6 +143,13 @@ ov::mock_auto_plugin::tests::BaseTest::BaseTest() {
             std::list<DeviceInformation> devices(metaDevices.begin(), metaDevices.end());
             return devices;
         });
+
+    ON_CALL(*plugin, get_property).WillByDefault([this](const std::string& name, const ov::AnyMap& arguments) {
+        return plugin->Plugin::get_property(name, arguments);
+    });
+
+    ON_CALL(*plugin, get_device_utilizations)
+        .WillByDefault(Return(std::unordered_map<std::string, float>{}));
 }
 
 ov::mock_auto_plugin::tests::BaseTest::~BaseTest() {
@@ -115,10 +166,11 @@ ov::mock_auto_plugin::tests::BaseTest::~BaseTest() {
     inferReqInternalActual.reset();
     mock_plugin_cpu.reset();
     mock_plugin_gpu.reset();
+    plugin->get_executor_manager()->clear();
     plugin.reset();
 }
 
-ov::mock_auto_plugin::tests::AutoTest::AutoTest() {
+ov::mock_auto_plugin::tests::AutoTest::AutoTest(const MODELTYPE modelType) : BaseTest(modelType) {
     // prepare mockicore and cnnNetwork for loading
     core = std::make_shared<NiceMock<MockICore>>();
     // replace core with mock Icore
@@ -164,6 +216,9 @@ ov::mock_auto_plugin::tests::AutoTest::AutoTest() {
         .WillByDefault(RETURN_MOCK_VALUE(dgpuFullDeviceName));
     const std::vector<std::string> availableDevs = {"CPU", "GPU.0", "GPU.1"};
     ON_CALL(*core, get_available_devices()).WillByDefault(Return(availableDevs));
+    std::vector<std::string> deviceIDs = {"0", "1"};
+    ON_CALL(*core, get_property(StrEq("GPU"), StrEq(ov::available_devices.name()), _))
+        .WillByDefault(RETURN_MOCK_VALUE(deviceIDs));
     ON_CALL(*core, get_supported_property).WillByDefault([](const std::string& device, const ov::AnyMap& fullConfigs, const bool keep_core_property = true) {
         auto item = fullConfigs.find(ov::device::properties.name());
         ov::AnyMap deviceConfigs;

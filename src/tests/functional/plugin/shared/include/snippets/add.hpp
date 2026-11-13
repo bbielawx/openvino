@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -37,18 +37,18 @@ typedef std::tuple<
 > AddParamsPair;
 
 class Add : public testing::WithParamInterface<ov::test::snippets::AddParams>,
-            virtual public ov::test::SnippetsTestsCommon {
+            virtual public SnippetsTestsCommon {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ov::test::snippets::AddParams> obj);
+    static std::string getTestCaseName(const testing::TestParamInfo<ov::test::snippets::AddParams>& obj);
 
 protected:
     void SetUp() override;
 };
 
 class AddConst : public testing::WithParamInterface<ov::test::snippets::AddConstParams>,
-                 virtual public ov::test::SnippetsTestsCommon {
+                 virtual public SnippetsTestsCommon {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ov::test::snippets::AddConstParams> obj);
+    static std::string getTestCaseName(const testing::TestParamInfo<ov::test::snippets::AddConstParams>& obj);
 protected:
     void SetUp() override;
 };
@@ -59,9 +59,9 @@ protected:
 };
 
 class AddPair : public testing::WithParamInterface<ov::test::snippets::AddParamsPair>,
-                virtual public ov::test::SnippetsTestsCommon {
+                virtual public SnippetsTestsCommon {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ov::test::snippets::AddParamsPair> obj);
+    static std::string getTestCaseName(const testing::TestParamInfo<ov::test::snippets::AddParamsPair>& obj);
 protected:
     void SetUp() override;
 };

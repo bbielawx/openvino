@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,6 +6,8 @@
 
 #include "evaluate_node.hpp"
 #include "openvino/core/type/element_type.hpp"
+#include "openvino/core/type/element_type_traits.hpp"
+#include "openvino/op/equal.hpp"
 
 template <ov::element::Type_t T>
 bool evaluate(const std::shared_ptr<ov::op::v1::Equal>& op, ov::TensorVector& outputs, const ov::TensorVector& inputs) {
@@ -14,8 +16,8 @@ bool evaluate(const std::shared_ptr<ov::op::v1::Equal>& op, ov::TensorVector& ou
     const auto in0_data_ptr = inputs[0].data<ET>();
     const auto in1_data_ptr = inputs[1].data<ET>();
     const auto out_data_ptr = outputs[0].data<BT>();
-    const auto in0_shape = inputs[0].get_shape();
-    const auto in1_shape = inputs[1].get_shape();
+    const auto& in0_shape = inputs[0].get_shape();
+    const auto& in1_shape = inputs[1].get_shape();
     const auto broadcast_spec = op->get_autob();
     ov::reference::equal<ET, BT>(in0_data_ptr, in1_data_ptr, out_data_ptr, in0_shape, in1_shape, broadcast_spec);
     return true;

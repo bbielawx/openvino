@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,8 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 /**
  * @brief  Computes the length in bytes for the packed matrix B buffer(SGEMM).
  *
@@ -16,7 +15,7 @@ namespace intel_cpu {
  * @param K       Supplies the number of rows of matrix B.
  * @return        bytes of the packing buffer
  */
-size_t mlas_sgemm_pack_get_size(const int64_t N, const int64_t K);
+size_t mlas_sgemm_pack_get_size(int64_t N, int64_t K);
 
 /**
  * @brief  Packs the contents of matrix B
@@ -29,12 +28,7 @@ size_t mlas_sgemm_pack_get_size(const int64_t N, const int64_t K);
  * @param src     Supplies the address of matrix B
  * @param dst     Supplies pointer to prePacked B buffer
  */
-void mlas_sgemm_pack(const char* transb,
-                     const int64_t N,
-                     const int64_t K,
-                     const int64_t ldb,
-                     const float* src,
-                     float* dst);
+void mlas_sgemm_pack(const char* transb, int64_t N, int64_t K, int64_t ldb, const float* src, float* dst);
 
 /**
  * @brief  SGEMM with planar B matrix
@@ -57,18 +51,18 @@ void mlas_sgemm_pack(const char* transb,
  */
 void mlas_sgemm(const char* transa,
                 const char* transb,
-                const int64_t M,
-                const int64_t N,
-                const int64_t K,
-                const float alpha,
+                int64_t M,
+                int64_t N,
+                int64_t K,
+                float alpha,
                 const float* A,
-                const int64_t lda,
+                int64_t lda,
                 const float* B,
-                const int64_t ldb,
-                const float beta,
+                int64_t ldb,
+                float beta,
                 float* C,
-                const int64_t ldc,
-                size_t thread_num = 0);
+                int64_t ldc,
+                int thread_num = 0);
 
 /**
  * @brief SGEMM with B matrix prepacked
@@ -92,18 +86,17 @@ void mlas_sgemm(const char* transa,
  */
 void mlas_sgemm_compute(const char* transa,
                         const char* transb,
-                        const int64_t M,
-                        const int64_t N,
-                        const int64_t K,
-                        const float alpha,
+                        int64_t M,
+                        int64_t N,
+                        int64_t K,
+                        float alpha,
                         const float* A,
-                        const int64_t lda,
+                        int64_t lda,
                         const float* B,
-                        const int64_t ldb,
-                        const float beta,
+                        int64_t ldb,
+                        float beta,
                         float* C,
-                        const int64_t ldc,
+                        int64_t ldc,
                         const float* bias = nullptr,
-                        size_t thread_num = 0);
-}  // namespace intel_cpu
-}  // namespace ov
+                        int thread_num = 0);
+}  // namespace ov::intel_cpu

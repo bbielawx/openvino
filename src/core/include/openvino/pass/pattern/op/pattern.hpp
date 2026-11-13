@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,11 +6,11 @@
 
 #include <functional>
 
+#include "openvino/core/deprecated.hpp"
 #include "openvino/core/node.hpp"
+#include "openvino/pass/pattern/op/predicate.hpp"
 
-namespace ov {
-namespace pass {
-namespace pattern {
+namespace ov::pass::pattern {
 namespace op {
 class Label;
 }
@@ -23,88 +23,78 @@ using PatternValueMap = std::map<std::shared_ptr<Node>, Output<Node>>;
 using PatternValueMaps = std::vector<PatternValueMap>;
 
 using PatternMap = std::map<std::shared_ptr<Node>, std::shared_ptr<Node>>;
+using Attributes = std::unordered_map<std::string, ov::Any>;
 
 PatternMap as_pattern_map(const PatternValueMap& pattern_value_map);
 PatternValueMap as_pattern_value_map(const PatternMap& pattern_map);
 
 template <typename T>
-std::function<bool(std::shared_ptr<Node>)> has_class() {
-    auto pred = [](std::shared_ptr<Node> node) -> bool {
-        return ov::is_type<T>(node);
+op::Predicate has_class() {
+    // GCC treats an empty lambda (without captures / internal state) differently in different ABI versions
+    bool gcc_abi_compatibility = true;
+    auto pred = [gcc_abi_compatibility](std::shared_ptr<Node> node) -> bool {
+        return gcc_abi_compatibility && ov::is_type<T>(std::move(node));
     };
-
-    return pred;
+    return op::Predicate(pred, "has_class<" + std::string(typeid(T).name()) + ">()");
 }
 template <typename T>
-std::function<bool(std::shared_ptr<Node>)> class_other_than() {
-    auto pred = [](std::shared_ptr<Node> node) -> bool {
-        return !ov::is_type<T>(node);
+op::Predicate class_other_than() {
+    // GCC treats an empty lambda (without captures / internal state) differently in different ABI versions
+    bool gcc_abi_compatibility = true;
+    auto pred = [gcc_abi_compatibility](std::shared_ptr<Node> node) -> bool {
+        return gcc_abi_compatibility && !ov::is_type<T>(std::move(node));
     };
-
-    return pred;
+    return op::Predicate(pred, "class_other_than<" + std::string(typeid(T).name()) + ">()");
 }
 
-OPENVINO_API
-std::function<bool(Output<Node>)> consumers_count(size_t n);
+OPENVINO_API op::Predicate consumers_count(size_t n);
+OPENVINO_API op::Predicate consumers_more_than(size_t n);
 
-OPENVINO_API
-std::function<bool(Output<Node>)> consumers_more_than(size_t n);
+OPENVINO_API op::Predicate has_static_dim(size_t pos);
+OPENVINO_API op::Predicate has_static_dims(const std::vector<size_t>& dims);
 
-OPENVINO_API
-std::function<bool(Output<Node>)> has_static_dim(size_t pos);
+OPENVINO_API op::Predicate has_static_shape();
+OPENVINO_API op::Predicate has_static_rank();
+OPENVINO_API op::Predicate rank_equals(const Dimension& expected_rank);
+OPENVINO_API op::Predicate rank_more_than(const Dimension& expected_rank);
 
-OPENVINO_API
-std::function<bool(Output<Node>)> has_static_dims(const std::vector<size_t>& dims);
+OPENVINO_API op::Predicate type_matches(const element::Type& type);
+OPENVINO_API op::Predicate type_matches_any(const std::vector<element::Type>& types);
 
-OPENVINO_API
-std::function<bool(Output<Node>)> has_static_shape();
+OPENVINO_API op::Predicate all_of(const std::vector<std::function<bool(Output<Node>)>>& predicates);
 
-OPENVINO_API
-std::function<bool(Output<Node>)> has_static_rank();
+OPENVINO_API op::Predicate attrs_match(const Attributes& expected_attrs);
 
-OPENVINO_API
-std::function<bool(Output<Node>)> rank_equals(const Dimension& expected_rank);
+OPENVINO_API op::Predicate shape_matches(const std::string& shape_notation);
+OPENVINO_API op::Predicate value_matches(const std::string& value_notation);
 
-OPENVINO_API
-std::function<bool(Output<Node>)> type_matches(const element::Type& type);
-
-OPENVINO_API
-std::function<bool(Output<Node>)> type_matches_any(const std::vector<element::Type>& types);
-
-OPENVINO_API
-std::function<bool(Output<Node>)> all_of(const std::vector<std::function<bool(Output<Node>)>>& predicates);
+OPENVINO_DEPRECATED("Use wrap_type_strict_index<T>() and reference the output directly, e.g. node->output(0). "
+                    "`output_index_matches()` will be removed in 2028.0 release.")
+OPENVINO_API op::Predicate output_index_matches(size_t expected_index);
+OPENVINO_DEPRECATED("Use wrap_type_strict_index<T>() and reference the output directly, e.g. node->output(0). "
+                    "`output_index_matches()` will be removed in 2028.0 release.")
+OPENVINO_API op::Predicate output_index_matches(const std::vector<size_t>& expected_indices);
 
 namespace op {
-using NodePredicate = std::function<bool(std::shared_ptr<Node>)>;
-using ValuePredicate = std::function<bool(const Output<Node>& value)>;
-
-OPENVINO_API
-ValuePredicate as_value_predicate(NodePredicate pred);
 
 class OPENVINO_API Pattern : public Node {
 public:
-    /// \brief \p a base class for \sa Skip and \sa Label
-    ///
-    Pattern(const OutputVector& patterns, ValuePredicate pred) : Node(patterns), m_predicate(pred) {
-        if (!m_predicate) {
-            m_predicate = [](const Output<Node>&) {
-                return true;
-            };
-        }
-    }
-
-    Pattern(const OutputVector& patterns) : Pattern(patterns, nullptr) {}
+    Pattern();
+    explicit Pattern(const OutputVector& patterns);
+    explicit Pattern(const NodeVector& patterns);
+    /// \brief A base class for all the utility operators used to describe a pattern to match
+    Pattern(const OutputVector& patterns, const Predicate& pred);
+    Pattern(const NodeVector& patterns, const Predicate& pred);
 
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& /* new_args */) const override {
         OPENVINO_THROW("Uncopyable");
     }
 
-    ValuePredicate get_predicate() const;
+    std::ostream& write_description(std::ostream& out, uint32_t depth) const override;
+    virtual std::ostream& write_type_description(std::ostream& out) const;
 
 protected:
-    ValuePredicate m_predicate;
+    Predicate m_predicate;
 };
 }  // namespace op
-}  // namespace pattern
-}  // namespace pass
-}  // namespace ov
+}  // namespace ov::pass::pattern

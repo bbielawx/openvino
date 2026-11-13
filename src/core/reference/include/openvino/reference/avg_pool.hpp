@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -50,6 +50,7 @@ void avg_pool_3d(const Values_t* data,
                  const Shape& out_shape,
                  const Shape& kernel,
                  const Strides& kernel_strides,
+                 const Strides& kernel_dilations,
                  const Shape& pads_begin,
                  const Shape& pads_end,
                  const bool pads_in_avg) {
@@ -72,7 +73,9 @@ void avg_pool_3d(const Values_t* data,
                     for (size_t kernel_row = 0; kernel_row < kernel[kernel_H]; ++kernel_row) {
                         for (size_t kernel_col = 0; kernel_col < kernel[kernel_W]; ++kernel_col) {
                             // offset from the top-left corner of the kernel for a given row and col
-                            const Coordinate kernel_offset{kernel_channel, kernel_row, kernel_col};
+                            const Coordinate kernel_offset{kernel_channel * kernel_dilations[kernel_D],
+                                                           kernel_row * kernel_dilations[kernel_H],
+                                                           kernel_col * kernel_dilations[kernel_W]};
 
                             const auto in_padding = elem_in_padding_area(kernel_position, kernel_offset, data_shape);
                             // ignore the elements in the padding area
@@ -117,6 +120,7 @@ void avg_pool(const T* const arg,
               const Shape& out_shape,
               const Shape& window_shape,
               const Strides& window_movement_strides,
+              const Strides& dilations,
               const Shape& padding_below,
               const Shape& padding_above,
               const bool include_padding_in_avg_computation) {
@@ -131,19 +135,21 @@ void avg_pool(const T* const arg,
         include_padding_in_avg_computation && (std::any_of(padding_below.begin(), padding_below.end(), not_zero) ||
                                                std::any_of(padding_above.begin(), padding_above.end(), not_zero));
 
-    Shape arg_shape_3D{arg_shape};
-    Shape out_shape_3D{out_shape};
+    Shape arg_shape_5D{arg_shape};
+    Shape out_shape_5D{out_shape};
     Shape window_shape_3D{window_shape};
     Strides window_movement_strides_3D{window_movement_strides};
+    Strides kernel_dilations{dilations};
     Shape padding_below_3D{padding_below};
     Shape padding_above_3D{padding_above};
 
     if (window_shape.size() < 3) {
         const size_t dim_diff = 3 - window_shape.size();
-        arg_shape_3D.insert(std::next(arg_shape_3D.begin(), 2), dim_diff, 1);
-        out_shape_3D.insert(std::next(out_shape_3D.begin(), 2), dim_diff, 1);
+        arg_shape_5D.insert(std::next(arg_shape_5D.begin(), 2), dim_diff, 1);
+        out_shape_5D.insert(std::next(out_shape_5D.begin(), 2), dim_diff, 1);
         window_shape_3D.insert(window_shape_3D.begin(), dim_diff, 1);
         window_movement_strides_3D.insert(window_movement_strides_3D.begin(), dim_diff, 1);
+        kernel_dilations.insert(kernel_dilations.begin(), dim_diff, 1);
         padding_below_3D.insert(padding_below_3D.begin(), dim_diff, 0);
         padding_above_3D.insert(padding_above_3D.begin(), dim_diff, 0);
     }
@@ -160,10 +166,11 @@ void avg_pool(const T* const arg,
             T* out_channel_first_elem = out + b * out_batch_elems + c * out_channel_elems;
             kernel::avg_pool_3d(data_channel_first_elem,
                                 out_channel_first_elem,
-                                arg_shape_3D,
-                                out_shape_3D,
+                                arg_shape_5D,
+                                out_shape_5D,
                                 window_shape_3D,
                                 window_movement_strides_3D,
+                                kernel_dilations,
                                 padding_below_3D,
                                 padding_above_3D,
                                 pads_in_avg);

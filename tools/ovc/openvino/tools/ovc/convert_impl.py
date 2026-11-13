@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
@@ -10,7 +10,7 @@ import traceback
 import tracemalloc
 from collections import OrderedDict
 from pathlib import Path
-from typing import Iterable, Callable
+from collections.abc import Callable, Iterable
 
 try:
     import openvino_telemetry as tm
@@ -21,25 +21,31 @@ except ImportError:
 from openvino.tools.ovc.moc_frontend.check_config import any_extensions_used
 from openvino.tools.ovc.moc_frontend.pipeline import moc_pipeline
 from openvino.tools.ovc.moc_frontend.moc_emit_ir import moc_emit_ir
-from openvino.tools.ovc.convert_data_type import destination_type_to_np_data_type
+from openvino.tools.ovc.moc_frontend.type_utils import to_ov_type
 from openvino.tools.ovc.cli_parser import get_available_front_ends, get_common_cli_options, depersonalize, \
     get_mo_convert_params, input_to_input_cut_info, parse_inputs
 from openvino.tools.ovc.help import get_convert_model_help_specifics
 
 from openvino.tools.ovc.error import Error, FrameworkError
-from openvino.tools.ovc.get_ov_update_message import get_ov_update_message, get_compression_message
+from openvino.tools.ovc.get_ov_update_message import get_compression_message
 from openvino.tools.ovc.version import VersionChecker
 from openvino.tools.ovc.utils import check_values_equal
 from openvino.tools.ovc.logger import init_logger
 from openvino.tools.ovc.telemetry_utils import send_params_info, send_conversion_result, \
-    init_mo_telemetry
-from openvino.tools.ovc.moc_frontend.pytorch_frontend_utils import get_pytorch_decoder, extract_input_info_from_example
+    init_ovc_telemetry
+from openvino.tools.ovc.moc_frontend.pytorch_frontend_utils import get_pytorch_decoder, \
+    extract_input_info_from_example, get_pytorch_decoder_for_model_on_disk
 from openvino.tools.ovc.moc_frontend.paddle_frontend_utils import paddle_frontend_converter
+
+try:
+    from openvino.tools.ovc.moc_frontend.jax_frontend_utils import get_jax_decoder
+except:
+    get_jax_decoder = None
 
 # pylint: disable=no-name-in-module,import-error
 from openvino.frontend import FrontEndManager, OpConversionFailure, TelemetryExtension
-from openvino.runtime import get_version as get_rt_version
-from openvino.runtime import Type, PartialShape
+from openvino import get_version as get_rt_version
+from openvino import PartialShape
 
 try:
     from openvino.frontend.tensorflow.utils import create_tf_graph_iterator, type_supported_by_tf_fe, \
@@ -202,7 +208,8 @@ def check_model_object(argv):
             return "tf"
     if 'torch' in sys.modules:
         import torch
-        if isinstance(model, (torch.nn.Module, torch.jit.ScriptFunction)) or (hasattr(torch, "export") and isinstance(model, (torch.export.ExportedProgram))):
+        if isinstance(model, (torch.nn.Module, torch.jit.ScriptFunction)) or (
+                hasattr(torch, "export") and isinstance(model, (torch.export.ExportedProgram))):
             return "pytorch"
         try:
             from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
@@ -228,12 +235,21 @@ def check_model_object(argv):
             model, paddle.fluid.executor.Executor):
             return "paddle"
 
+    if 'jax' in sys.modules:
+        import jax
+        from packaging import version
+        if version.parse(jax.__version__) < version.parse("0.6.0"):
+            import jax as jex
+            import jax.core
+        else:
+            import jax.extend as jex
+        if isinstance(model, (jex.core.Jaxpr, jex.core.ClosedJaxpr)):
+            return "jax"
+
     raise Error('Unknown model type: {}'.format(type(model)))
 
 
 def driver(argv: argparse.Namespace, non_default_params: dict):
-    init_logger('ERROR', argv.verbose)
-
     # Log dictionary with non-default cli parameters where complex classes are excluded.
     log.debug(str(non_default_params))
 
@@ -314,10 +330,11 @@ def normalize_inputs(argv: argparse.Namespace):
     argv.placeholder_data_types - dictionary where key is node name, value is node np.type,
     or list of np.types if node names were not set.
 
-    :param argv: MO arguments
+    :param argv: OVC arguments
     """
     # Parse input to list of InputCutInfo
     inputs = input_to_input_cut_info(argv.input)
+    argv.input = inputs
 
     # Make list of input names
     input_names_list = []
@@ -328,8 +345,6 @@ def normalize_inputs(argv: argparse.Namespace):
         assert len(input_names_list) == len(inputs), "\"input\" parameter has unnamed inputs and named inputs. " \
                                                      "Please either set names for all inputs, " \
                                                      "or do not set names for all inputs."
-    argv.inputs_list = input_names_list
-    argv.input = ','.join(input_names_list)
 
     if len(input_names_list) > 0:
         # Named inputs case
@@ -342,13 +357,8 @@ def normalize_inputs(argv: argparse.Namespace):
             else:
                 shape_dict[inp.name] = None
             if inp.type is not None:
-                # Convert type to numpy type for uniformity of stored values
-                if isinstance(inp.type, str):
-                    data_type_dict[inp.name] = destination_type_to_np_data_type(inp.type)
-                elif isinstance(inp.type, Type):
-                    data_type_dict[inp.name] = inp.type.to_dtype().type
-                else:
-                    data_type_dict[inp.name] = inp.type
+                # Convert type to ov.Type for uniformity of stored values
+                data_type_dict[inp.name] = to_ov_type(inp.type)
         argv.placeholder_shapes = shape_dict if shape_dict else None
         argv.placeholder_data_types = data_type_dict if data_type_dict else {}
     else:
@@ -360,13 +370,8 @@ def normalize_inputs(argv: argparse.Namespace):
                 # Wrap shape to PartialShape for uniformity of stored values
                 shape_list.append(PartialShape(inp.shape))
             if inp.type is not None:
-                # Convert type to numpy type for uniformity of stored values
-                if isinstance(inp.type, str):
-                    data_type_list.append(destination_type_to_np_data_type(inp.type))
-                elif isinstance(inp.type, Type):
-                    data_type_list.append(inp.type.to_dtype().type)
-                else:
-                    data_type_list.append(inp.type)
+                # Convert type to ov.Type for uniformity of stored values
+                data_type_list.append(to_ov_type(inp.type))
         argv.placeholder_shapes = shape_list if shape_list else None
         argv.placeholder_data_types = data_type_list if data_type_list else {}
     if hasattr(argv, "framework") and argv.framework == "pytorch" and getattr(argv, "example_input", None) is not None:
@@ -428,12 +433,16 @@ def _convert(cli_parser: argparse.ArgumentParser, args, python_api_used):
         tracemalloc.start()
 
     simplified_ie_version = VersionChecker().get_ie_simplified_version()
-    telemetry = init_mo_telemetry()
+    telemetry = init_ovc_telemetry()
     telemetry.start_session('ovc')
     telemetry.send_event('ovc', 'version', simplified_ie_version)
     # Initialize logger with 'ERROR' as default level to be able to form nice messages
     # before arg parser deliver log_level requested by user
-    init_logger('ERROR', False)
+    verbose = False
+    if "verbose" in args and args["verbose"] or "--verbose" in sys.argv:
+        verbose = True
+
+    init_logger('ERROR', verbose, python_api_used)
     argv = None
     # Minimize modifications among other places in case if multiple pieces are passed as input_model
     if python_api_used:
@@ -445,8 +454,17 @@ def _convert(cli_parser: argparse.ArgumentParser, args, python_api_used):
         model_framework = None
         inp_model_is_object = input_model_is_object(args['input_model']) if python_api_used else False
 
+        if not inp_model_is_object and args.get("dynamo", False):
+            log.warning("dynamo=True is only supported for PyTorch nn.Module objects, "
+                        "but the provided model is a file path. "
+                        "The dynamo parameter will be ignored.")
+
         if inp_model_is_object:
             model_framework = check_model_object(args)
+            if args.get("dynamo", False) and model_framework != "pytorch":
+                log.warning("dynamo=True is only supported for PyTorch models, "
+                            "but the provided model is detected as '{}'. "
+                            "The dynamo parameter will be ignored.".format(model_framework))
             if model_framework == "pytorch":
                 example_inputs = None
                 if 'example_input' in args and args['example_input'] is not None:
@@ -471,28 +489,54 @@ def _convert(cli_parser: argparse.ArgumentParser, args, python_api_used):
                                                                      outputs)
                 pdmodel = paddle_runtime_converter.convert_paddle_to_pdmodel()
                 args['input_model'] = pdmodel
+            if model_framework == "jax":
+                if get_jax_decoder is not None:
+                    get_jax_decoder(args['input_model'], args)
+                else:
+                    raise Error("JAX Frontend is not available.")
+            if model_framework == "tf" and "nncf" in sys.modules:
+                try:
+                    from nncf.tensorflow.strip import strip as nncf_tf_strip
+                    args['input_model'] = nncf_tf_strip(args['input_model'])
+                except:
+                    pass
 
         argv = pack_params_to_args_namespace(args, cli_parser, python_api_used)
+
         argv.framework = model_framework
         argv.is_python_object = inp_model_is_object
 
         argv.feManager = FrontEndManager()
 
-        # send telemetry with params info
-        send_params_info(argv, cli_parser)
-
         non_default_params = get_non_default_params(argv, cli_parser)
         argv.is_python_api_used = python_api_used
 
+        # send telemetry with params info
+        send_params_info(non_default_params)
+
         argv.framework = model_framework
 
+        orig_input_model = argv.input_model
+        pytorch_model_on_disk = False
+        if argv.framework is None and get_pytorch_decoder_for_model_on_disk(argv, args):
+            # try to load a model from disk as TorchScript or ExportedProgram
+            # TorchScriptPythonDecoder or TorchFXPythonDecoder object will be assigned to argv.input_model
+            # saved TorchScript and ExportedModel model can be passed to both ovc tool and Python convert_model
+            pytorch_model_on_disk = True
+
         ov_model = driver(argv, {"conversion_parameters": non_default_params})
+
+        if pytorch_model_on_disk:
+            # release memory allocated for temporal object
+            del argv.input_model
+            # restore original model name in arguments for tool reporting
+            argv.input_model = orig_input_model
 
         if inp_model_is_object and model_framework == "paddle":
             if paddle_runtime_converter:
                 paddle_runtime_converter.destroy()
 
-        # add MO meta data to model
+        # add OVC meta data to model
         ov_model.set_rt_info(get_rt_version(), "Runtime_version")
         for key, value in non_default_params.items():
             ov_model.set_rt_info(str(value), ["conversion_parameters", str(key)])
@@ -500,10 +544,6 @@ def _convert(cli_parser: argparse.ArgumentParser, args, python_api_used):
         if is_verbose(argv) or not python_api_used:
             if 'compress_to_fp16' in argv and argv.compress_to_fp16:
                 print(get_compression_message())
-
-            ov_update_message = get_ov_update_message()
-            if ov_update_message is not None:
-                print(ov_update_message)
 
         send_conversion_result('success')
 

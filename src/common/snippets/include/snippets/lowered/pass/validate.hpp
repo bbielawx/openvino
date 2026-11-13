@@ -1,15 +1,19 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "pass.hpp"
+#include <functional>
+#include <unordered_map>
 
-namespace ov {
-namespace snippets {
-namespace lowered {
-namespace pass {
+#include "openvino/core/rtti.hpp"
+#include "openvino/core/type.hpp"
+#include "pass.hpp"
+#include "snippets/lowered/expression.hpp"
+#include "snippets/lowered/linear_ir.hpp"
+
+namespace ov::snippets::lowered::pass {
 
 /**
  * @interface Validate
@@ -18,7 +22,7 @@ namespace pass {
  */
 class Validate : public RangedPass {
 public:
-    OPENVINO_RTTI("Validate", "Pass")
+    OPENVINO_RTTI("Validate", "", RangedPass)
     Validate();
     bool run(LinearIR& linear_ir, lowered::LinearIR::constExprIt begin, lowered::LinearIR::constExprIt end) override;
 
@@ -27,7 +31,4 @@ private:
     std::unordered_map<ov::DiscreteTypeInfo, Validator> m_validation_map;
 };
 
-} // namespace pass
-} // namespace lowered
-} // namespace snippets
-} // namespace ov
+}  // namespace ov::snippets::lowered::pass

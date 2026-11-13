@@ -1,51 +1,84 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "mvn.h"
 
 #include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <common/primitive_hashing.hpp>
+#include <common/utils.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <oneapi/dnnl/dnnl.hpp>
+#include <oneapi/dnnl/dnnl_common.hpp>
 #include <string>
 #include <vector>
-#include <memory>
 
-#include "fake_quantize.h"
-#include "eltwise.h"
+#include "cpu_parallel.hpp"
+#include "cpu_types.h"
 #include "dnnl_extension_utils.h"
-#include "utils/bfloat16.hpp"
-#include "openvino/core/parallel.hpp"
-#include "emitters/plugin/x64/jit_load_store_emitters.hpp"
-#include "emitters/plugin/x64/jit_bf16_emitters.hpp"
-
-#include "cpu/x64/jit_generator.hpp"
-#include "cpu/x64/jit_uni_eltwise.hpp"
-#include "cpu/x64/injectors/jit_uni_depthwise_injector.hpp"
-#include "cpu/x64/injectors/jit_uni_quantization_injector.hpp"
-#include "cpu/x64/injectors/jit_uni_eltwise_injector.hpp"
-
-#include <openvino/opsets/opset6.hpp>
+#include "eltwise.h"
+#include "fake_quantize.h"
+#include "graph_context.h"
+#include "memory_desc/cpu_memory_desc.h"
 #include "memory_desc/dnnl_blocked_memory_desc.h"
-#include "utils/cpu_utils.hpp"
+#include "node.h"
+#include "nodes/common/blocked_desc_creator.h"
+#include "nodes/executors/executor.hpp"
+#include "nodes/executors/mvn.hpp"
+#include "nodes/executors/mvn_list.hpp"
+#include "nodes/node_config.h"
+#include "onednn/iml_type_mapper.h"
+#include "openvino/core/except.hpp"
+#include "openvino/core/node.hpp"
+#include "openvino/core/parallel.hpp"
+#include "openvino/core/type.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/op/constant.hpp"
+#include "openvino/op/mvn.hpp"
+#include "openvino/runtime/system_conf.hpp"
+#include "shape_inference/shape_inference_cpu.hpp"
+#include "utils/general_utils.h"
+#include "utils/precision_support.h"
+
+#if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64)
+#    include <xbyak/xbyak.h>
+
+#    include <common/c_types_map.hpp>
+#    include <functional>
+
+#    include "cpu/x64/cpu_isa_traits.hpp"
+#    include "cpu/x64/injectors/jit_uni_depthwise_injector.hpp"
+#    include "cpu/x64/injectors/jit_uni_eltwise_injector.hpp"
+#    include "cpu/x64/injectors/jit_uni_quantization_injector.hpp"
+#    include "cpu/x64/jit_generator.hpp"
+#    include "emitters/plugin/x64/jit_load_store_emitters.hpp"
+#    include "utils/cpu_utils.hpp"
+#endif
 
 using namespace dnnl;
 
 using namespace dnnl::impl;
-using namespace dnnl::impl::cpu::x64;
 using namespace dnnl::impl::utils;
+#if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64)
+using namespace dnnl::impl::cpu::x64;
 using namespace Xbyak;
+#endif
 
 #define GET_OFF(field) offsetof(jit_mvn_call_args, field)
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+namespace ov::intel_cpu::node {
 namespace {
 
 struct MVNKey {
     MVNAttrs mvnAttrs;
     dnnl::primitive_attr attr;
 
-    size_t hash() const;
+    [[nodiscard]] size_t hash() const;
     bool operator==(const MVNKey& rhs) const;
 };
 
@@ -68,25 +101,22 @@ size_t MVNKey::hash() const {
 
 bool MVNKey::operator==(const MVNKey& rhs) const {
     bool retVal = true;
-    retVal = retVal &&
-             mvnAttrs.initAcrossChannels_ == rhs.mvnAttrs.initAcrossChannels_ &&
+    retVal = retVal && mvnAttrs.initAcrossChannels_ == rhs.mvnAttrs.initAcrossChannels_ &&
              mvnAttrs.execAcrossChannels_ == rhs.mvnAttrs.execAcrossChannels_ &&
              mvnAttrs.normalizeVariance_ == rhs.mvnAttrs.normalizeVariance_ &&
-             mvnAttrs.epsValue_ == rhs.mvnAttrs.epsValue_ &&
-             mvnAttrs.epsMode_ == rhs.mvnAttrs.epsMode_ &&
-             mvnAttrs.src_prc == rhs.mvnAttrs.src_prc &&
-             mvnAttrs.dst_prc == rhs.mvnAttrs.dst_prc &&
+             mvnAttrs.epsValue_ == rhs.mvnAttrs.epsValue_ && mvnAttrs.epsMode_ == rhs.mvnAttrs.epsMode_ &&
+             mvnAttrs.src_prc == rhs.mvnAttrs.src_prc && mvnAttrs.dst_prc == rhs.mvnAttrs.dst_prc &&
              mvnAttrs.layout == rhs.mvnAttrs.layout;
     retVal = retVal && *attr.get() == *rhs.attr.get();
     return retVal;
 }
-} // namespace
+}  // namespace
 
 #if defined(OPENVINO_ARCH_X86_64)
 
 // some utility functions
 static inline bool isFloatCompatible(ov::element::Type prc) {
-    return one_of(prc, ov::element::f32, ov::element::bf16, ov::element::f16);
+    return any_of(prc, ov::element::f32, ov::element::bf16, ov::element::f16);
 }
 
 // 8/4/2/1 tile
@@ -108,27 +138,38 @@ static inline int get_tile_vr_id(const int& step) {
 // normalize_variance = false : src->mean
 // normalize_variance = true : src+mean->variance:sqr(x-mean)
 template <cpu_isa_t isa>
-struct jit_uni_mvn_mean_variance_kernel_f32 : public jit_uni_mvn_mean_variance_kernel, public jit_generator {
+struct jit_uni_mvn_mean_variance_kernel_f32 : public jit_uni_mvn_mean_variance_kernel, public jit_generator_t {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_uni_mvn_mean_kernel_f32)
 
-    explicit jit_uni_mvn_mean_variance_kernel_f32(jit_mvn_config_params jcp) : jit_uni_mvn_mean_variance_kernel(jcp), jit_generator(jit_name()) {}
+    explicit jit_uni_mvn_mean_variance_kernel_f32(jit_mvn_config_params jcp)
+        : jit_uni_mvn_mean_variance_kernel(jcp),
+          jit_generator_t(jit_name()) {}
 
     void create_ker() override {
-        jit_generator::create_kernel();
-        ker_ = (decltype(ker_))jit_ker();
+        jit_generator_t::create_kernel();
+        ker_ = jit_kernel_cast<decltype(ker_)>(jit_ker());
     }
 
     void generate() override {
         ov::element::Type dst_prc = isFloatCompatible(jcp_.src_prc) ? ov::element::f32 : ov::element::i32;
-        load_emitter[VECTOR] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, vector_step));
-        load_emitter[TAIL8] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 8));
-        load_emitter[TAIL4] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 4));
-        load_emitter[TAIL2] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 2));
-        load_emitter[TAIL1] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 1));
-        load_emitter[TAIL8_FILL] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 8, ov::element::f32, true, "zero"));
-        load_emitter[TAIL4_FILL] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 4, ov::element::f32, true, "zero"));
-        load_emitter[TAIL2_FILL] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 2, ov::element::f32, true, "zero"));
-        load_emitter[TAIL1_FILL] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 1, ov::element::f32, true, "zero"));
+        load_emitter[VECTOR] =
+            std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, vector_step));
+        load_emitter[TAIL8] =
+            std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 8));
+        load_emitter[TAIL4] =
+            std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 4));
+        load_emitter[TAIL2] =
+            std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 2));
+        load_emitter[TAIL1] =
+            std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 1));
+        load_emitter[TAIL8_FILL] = std::unique_ptr<jit_load_emitter>(
+            new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 8, ov::element::f32, true, "zero"));
+        load_emitter[TAIL4_FILL] = std::unique_ptr<jit_load_emitter>(
+            new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 4, ov::element::f32, true, "zero"));
+        load_emitter[TAIL2_FILL] = std::unique_ptr<jit_load_emitter>(
+            new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 2, ov::element::f32, true, "zero"));
+        load_emitter[TAIL1_FILL] = std::unique_ptr<jit_load_emitter>(
+            new jit_load_emitter(this, isa, jcp_.src_prc, dst_prc, 1, ov::element::f32, true, "zero"));
 
         this->preamble();
         mov(reg_table, l_table);
@@ -152,10 +193,12 @@ struct jit_uni_mvn_mean_variance_kernel_f32 : public jit_uni_mvn_mean_variance_k
             }
         }
 
-        size_t data_step = (isa == cpu::x64::sse41 && jcp_.layout == MVNLayoutType::mvn_block) ? vector_step * 2 : vector_step;
+        size_t data_step =
+            (isa == cpu::x64::sse41 && jcp_.layout == MVNLayoutType::mvn_block) ? vector_step * 2 : vector_step;
         src_stride = data_step * jcp_.src_data_size;
 
-        load_pool_gpr_idxs = {static_cast<size_t>(reg_load_store_mask.getIdx()), static_cast<size_t>(reg_load_table.getIdx())};
+        load_pool_gpr_idxs = {static_cast<size_t>(reg_load_store_mask.getIdx()),
+                              static_cast<size_t>(reg_load_table.getIdx())};
 
         if (jcp_.layout == MVNLayoutType::mvn_planar) {
             worker_vector_unroll();
@@ -166,32 +209,35 @@ struct jit_uni_mvn_mean_variance_kernel_f32 : public jit_uni_mvn_mean_variance_k
             };
             worker_tails(reg_rt_shape, tails_func);
             // hsum+store
-            if (!jcp_.normalize_variance && !isFloatCompatible(jcp_.src_prc))
+            if (!jcp_.normalize_variance && !isFloatCompatible(jcp_.src_prc)) {
                 uni_vcvtdq2ps(vmm_sum, vmm_sum);
+            }
             Vmm vmm_dst = jcp_.normalize_variance ? vmm_variance : vmm_sum;
             reduce_sum_store_vmm(vmm_dst.getIdx());
         } else if (jcp_.layout == MVNLayoutType::mvn_by_channel) {
-            if (jcp_.across_channels)
+            if (jcp_.across_channels) {
                 nspc_ac_ker();
-            else
+            } else {
                 nspc_pc_ker();
+            }
         } else {
             block_ker();
         }
 
         this->postamble();
 
-        for (size_t i = 0; i < LOAD_EMITTERS_NUM; i++)
+        for (size_t i = 0; i < LOAD_EMITTERS_NUM; i++) {
             load_emitter[i]->emit_data();
+        }
 
         prepare_table();
     }
 
 private:
-    using Vmm = typename conditional3<isa == cpu::x64::sse41, Xbyak::Xmm, isa == cpu::x64::avx2,
-            Xbyak::Ymm, Xbyak::Zmm>::type;
+    using Vmm =
+        typename conditional3<isa == cpu::x64::sse41, Xbyak::Xmm, isa == cpu::x64::avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
 
-    const int vlen = cpu_isa_traits<isa>::vlen;
+    const int vlen = cpu_isa_traits_t<isa>::vlen;
     const int vector_step = vlen / sizeof(float);
 
     Xbyak::Reg64 reg_src = r8;
@@ -222,14 +268,25 @@ private:
 
     size_t src_stride = 0;
 
-    enum { VECTOR, TAIL8, TAIL4, TAIL2, TAIL1, TAIL8_FILL, TAIL4_FILL, TAIL2_FILL, TAIL1_FILL, LOAD_EMITTERS_NUM };
+    enum : uint8_t {
+        VECTOR,
+        TAIL8,
+        TAIL4,
+        TAIL2,
+        TAIL1,
+        TAIL8_FILL,
+        TAIL4_FILL,
+        TAIL2_FILL,
+        TAIL1_FILL,
+        LOAD_EMITTERS_NUM
+    };
     std::unique_ptr<jit_load_emitter> load_emitter[LOAD_EMITTERS_NUM];
     std::vector<size_t> load_pool_gpr_idxs;
 
     const int tile_size[kTileNum] = {8, 4, 2, 1};
 
     // nspc across channel
-    inline void nspc_ac_ker() {
+    void nspc_ac_ker() {
         Xbyak::Label loop_label;
         Xbyak::Label loop_end_label;
         L(loop_label);
@@ -251,14 +308,15 @@ private:
         };
         worker_tails(reg_work_amount, tails_func);
 
-        if (!jcp_.normalize_variance && !isFloatCompatible(jcp_.src_prc))
+        if (!jcp_.normalize_variance && !isFloatCompatible(jcp_.src_prc)) {
             uni_vcvtdq2ps(vmm_sum, vmm_sum);
+        }
         Vmm vmm_dst = jcp_.normalize_variance ? vmm_variance : vmm_sum;
         reduce_sum_store_vmm(vmm_dst.getIdx());
     }
 
     // nspc per channel with unroll
-    inline void nspc_pc_ker() {
+    void nspc_pc_ker() {
         // 4 unroll vector
         // r12, rax, rdx, rbp, r15, rcx and rdi is available
         // r13 is available as no fill need for this layout
@@ -273,7 +331,7 @@ private:
         mov(rax, reg_rt_shape);
         mov(reg_vector_num, vector_step);
         xor_(rdx, rdx);
-        div(reg_vector_num);    // reg_rt_shape / vector_step, rax is result, rdx is tails(remainder)
+        div(reg_vector_num);  // reg_rt_shape / vector_step, rax is result, rdx is tails(remainder)
         mov(reg_vector_num, rax);
         mov(reg_tail_num, rdx);
 
@@ -304,9 +362,7 @@ private:
         mov(last_unroll_size, rdx);
         jmp(label_reset_last_unroll_size_end);
         L(label_reset_last_unroll_size);
-        {
-            mov(last_unroll_size, reg_unroll_size);
-        }
+        { mov(last_unroll_size, reg_unroll_size); }
         L(label_reset_last_unroll_size_end);
 
         // size_t unroll_number = div_up(vec_num, unroll_size); --> (vec_num + unroll_size - 1) / unroll_size;
@@ -321,11 +377,15 @@ private:
         int ur_base = 4;
         auto init = [&](int vmm_id) {
             uni_vpxor(Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + 4 + vmm_id));
-            if (jcp_.normalize_variance)
+            if (jcp_.normalize_variance) {
                 uni_vmovups(Vmm(ur_base + 8 + vmm_id), ptr[reg_mean + vmm_id * vlen]);
+            }
         };
         auto load_src = [&](int vmm_id) {
-            load_emitter[VECTOR]->emit_code({static_cast<size_t>(reg_src_aux.getIdx())}, {static_cast<size_t>(ur_base + vmm_id)}, {}, {load_pool_gpr_idxs});
+            load_emitter[VECTOR]->emit_code({static_cast<size_t>(reg_src_aux.getIdx())},
+                                            {static_cast<size_t>(ur_base + vmm_id)},
+                                            {},
+                                            {load_pool_gpr_idxs});
             add(reg_src_aux, vector_step * jcp_.src_data_size);
         };
         auto mv = [&](int vmm_id) {
@@ -336,23 +396,25 @@ private:
                 uni_vsubps(Vmm(ur_base + vmm_id), Vmm(ur_base + vmm_id), Vmm(ur_base + 8 + vmm_id));
                 uni_vfmadd231ps(Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + vmm_id), Vmm(ur_base + vmm_id));
             } else {
-                if (!isFloatCompatible(jcp_.src_prc))
+                if (!isFloatCompatible(jcp_.src_prc)) {
                     uni_vpaddd(Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + vmm_id));
-                else
+                } else {
                     uni_vaddps(Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + vmm_id));
+                }
             }
         };
         auto store = [&](int vmm_id) {
             if (jcp_.normalize_variance) {
                 uni_vmovups(ptr[reg_variance + vmm_id * vector_step * sizeof(float)], Vmm(ur_base + 4 + vmm_id));
             } else {
-                if (!isFloatCompatible(jcp_.src_prc))
+                if (!isFloatCompatible(jcp_.src_prc)) {
                     uni_vcvtdq2ps(Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + 4 + vmm_id));
+                }
                 uni_vmovups(ptr[reg_sum + vmm_id * vector_step * sizeof(float)], Vmm(ur_base + 4 + vmm_id));
             }
         };
 
-        auto vector_worker = [&](std::function<void(int)> func) {
+        auto vector_worker = [&](const std::function<void(int)>& func) {
             Xbyak::Label label_end;
             func(0);
             cmp(reg_unroll_size, 1);
@@ -461,8 +523,10 @@ private:
             } else if (step == 2) {
                 emitter_id = 3;
             }
-            load_emitter[emitter_id]->emit_code({static_cast<size_t>(reg_src_aux.getIdx())}, {static_cast<size_t>(ur_base + vmm_id)},
-                                                {}, {load_pool_gpr_idxs});
+            load_emitter[emitter_id]->emit_code({static_cast<size_t>(reg_src_aux.getIdx())},
+                                                {static_cast<size_t>(ur_base + vmm_id)},
+                                                {},
+                                                {load_pool_gpr_idxs});
             add(reg_src_aux, step * jcp_.src_data_size);
         };
         auto mv_tails = [&](int step) {
@@ -474,10 +538,11 @@ private:
                 uni_vsubps(Vmm(ur_base + vmm_id), Vmm(ur_base + vmm_id), Vmm(ur_base + 8 + vmm_id));
                 uni_vfmadd231ps(Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + vmm_id), Vmm(ur_base + vmm_id));
             } else {
-                if (!isFloatCompatible(jcp_.src_prc))
+                if (!isFloatCompatible(jcp_.src_prc)) {
                     uni_vpaddd(Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + vmm_id));
-                else
+                } else {
                     uni_vaddps(Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + vmm_id));
+                }
             }
         };
         auto store_tails = [&](size_t step) {
@@ -486,8 +551,9 @@ private:
                 uni_vmovups(ptr[reg_variance], Vmm(ur_base + 4 + vmm_id));
                 add(reg_variance, step * sizeof(float));
             } else {
-                if (!isFloatCompatible(jcp_.src_prc))
+                if (!isFloatCompatible(jcp_.src_prc)) {
                     uni_vcvtdq2ps(Vmm(ur_base + 4 + vmm_id), Vmm(ur_base + 4 + vmm_id));
+                }
                 uni_vmovups(ptr[reg_sum], Vmm(ur_base + 4 + vmm_id));
                 add(reg_sum, step * sizeof(float));
             }
@@ -528,13 +594,14 @@ private:
         L(label_exit);
     }
 
-    inline void block_ker() {
+    void block_ker() {
         // safe to use abi reg now.
         Xbyak::Reg64 reg_src_bk = rcx;
         Xbyak::Reg64 reg_work_amount_bk = rdi;
         mov(reg_src_bk, reg_src);
         mov(reg_work_amount_bk, reg_work_amount);
-        int repeats = (isa == cpu::x64::sse41) ? 2 : 1; // block size is also 8 on cpu::x64::sse41 with two step process
+        int repeats =
+            (isa == cpu::x64::sse41) ? 2 : 1;  // block size is also 8 on cpu::x64::sse41 with two step process
 
         auto reset_with_offset = [&](int offset) {
             add(reg_src_bk, offset * jcp_.src_data_size);
@@ -566,8 +633,10 @@ private:
                 }
                 uni_vmovups(ptr[reg_variance], vmm_variance);
             } else {
-                if (!isFloatCompatible(jcp_.src_prc))  // add with int for int-family data type, other compute go with float
+                if (!isFloatCompatible(
+                        jcp_.src_prc)) {  // add with int for int-family data type, other compute go with float
                     uni_vcvtdq2ps(vmm_sum, vmm_sum);
+                }
 
                 if (!jcp_.across_channels) {
                     uni_vmovups(vmm_val, ptr[reg_sum]);
@@ -648,10 +717,10 @@ private:
         L(label_exit);
     }
 
-    inline void worker_vector_unroll() {
+    void worker_vector_unroll() {
         // if mean(sum) for continous data, then fast pass for major part
         if (!jcp_.normalize_variance && jcp_.layout == MVNLayoutType::mvn_planar) {
-            Vmm vmm_one = Vmm(15);
+            auto vmm_one = Vmm(15);
             // i8/u8 fast path
             if (mayiuse(avx512_core_vnni) && jcp_.src_data_size == 1) {
                 uni_vmovups(vmm_one, ptr[reg_table]);
@@ -714,28 +783,40 @@ private:
         L(loop_end_label);
     }
 
-    inline void worker_full_size() {
-        load_emitter[VECTOR]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                                       {}, {load_pool_gpr_idxs});
+    void worker_full_size() {
+        load_emitter[VECTOR]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                        {static_cast<size_t>(vmm_val.getIdx())},
+                                        {},
+                                        {load_pool_gpr_idxs});
 
         if (jcp_.normalize_variance) {
             // all with float
-            if (!isFloatCompatible(jcp_.src_prc))
+            if (!isFloatCompatible(jcp_.src_prc)) {
                 uni_vcvtdq2ps(vmm_val, vmm_val);
+            }
 
             uni_vsubps(vmm_val, vmm_val, vmm_mean);
             uni_vfmadd231ps(vmm_variance, vmm_val, vmm_val);
         } else {
             // for sum, int execute prc for int-family data type
-            if (!isFloatCompatible(jcp_.src_prc))
+            if (!isFloatCompatible(jcp_.src_prc)) {
                 uni_vpaddd(vmm_sum, vmm_sum, vmm_val);
-            else
+            } else {
                 uni_vaddps(vmm_sum, vmm_sum, vmm_val);
+            }
         }
     }
 
-    inline void worker_tails(Xbyak::Reg64& reg_tail_num, std::function<void(int)> func) {
-        int tile_start_idx = (isa == cpu::x64::avx512_core) ? 0 : ((isa == cpu::x64::avx2) ? 1 : 2);
+    void worker_tails(Xbyak::Reg64& reg_tail_num, const std::function<void(int)>& func) {
+        int tile_start_idx = [&]() {
+            if (isa == cpu::x64::avx512_core) {
+                return 0;
+            }
+            if (isa == cpu::x64::avx2) {
+                return 1;
+            }
+            return 2;
+        }();
         Label tile_exit[kTileNum];
         for (int i = tile_start_idx; i < kTileNum; i++) {
             cmp(reg_tail_num, tile_size[i]);
@@ -748,24 +829,32 @@ private:
         }
     }
 
-    inline void worker_block(int block_num, bool is_zero_pad) {
+    void worker_block(int block_num, bool is_zero_pad) {
         if (is_zero_pad) {
             switch (block_num) {
             case 8:
-                load_emitter[TAIL8_FILL]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                                           {}, {load_pool_gpr_idxs});
+                load_emitter[TAIL8_FILL]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                                    {static_cast<size_t>(vmm_val.getIdx())},
+                                                    {},
+                                                    {load_pool_gpr_idxs});
                 break;
             case 4:
-                load_emitter[TAIL4_FILL]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                                           {}, {load_pool_gpr_idxs});
+                load_emitter[TAIL4_FILL]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                                    {static_cast<size_t>(vmm_val.getIdx())},
+                                                    {},
+                                                    {load_pool_gpr_idxs});
                 break;
             case 2:
-                load_emitter[TAIL2_FILL]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                                           {}, {load_pool_gpr_idxs});
+                load_emitter[TAIL2_FILL]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                                    {static_cast<size_t>(vmm_val.getIdx())},
+                                                    {},
+                                                    {load_pool_gpr_idxs});
                 break;
             case 1:
-                load_emitter[TAIL1_FILL]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                                           {}, {load_pool_gpr_idxs});
+                load_emitter[TAIL1_FILL]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                                    {static_cast<size_t>(vmm_val.getIdx())},
+                                                    {},
+                                                    {load_pool_gpr_idxs});
                 break;
             default:
                 assert(!"MVN layer tails is processed only with 8/4/2/1 blocks.");
@@ -774,20 +863,28 @@ private:
         } else {
             switch (block_num) {
             case 8:
-                load_emitter[TAIL8]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                                           {}, {load_pool_gpr_idxs});
+                load_emitter[TAIL8]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                               {static_cast<size_t>(vmm_val.getIdx())},
+                                               {},
+                                               {load_pool_gpr_idxs});
                 break;
             case 4:
-                load_emitter[TAIL4]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                                           {}, {load_pool_gpr_idxs});
+                load_emitter[TAIL4]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                               {static_cast<size_t>(vmm_val.getIdx())},
+                                               {},
+                                               {load_pool_gpr_idxs});
                 break;
             case 2:
-                load_emitter[TAIL2]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                                           {}, {load_pool_gpr_idxs});
+                load_emitter[TAIL2]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                               {static_cast<size_t>(vmm_val.getIdx())},
+                                               {},
+                                               {load_pool_gpr_idxs});
                 break;
             case 1:
-                load_emitter[TAIL1]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                                           {}, {load_pool_gpr_idxs});
+                load_emitter[TAIL1]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                               {static_cast<size_t>(vmm_val.getIdx())},
+                                               {},
+                                               {load_pool_gpr_idxs});
                 break;
             default:
                 assert(!"MVN layer tails is processed only with 8/4/2/1 blocks.");
@@ -795,8 +892,9 @@ private:
             }
         }
         if (jcp_.normalize_variance) {
-            if (!isFloatCompatible(jcp_.src_prc))
+            if (!isFloatCompatible(jcp_.src_prc)) {
                 uni_vcvtdq2ps(vmm_val, vmm_val);
+            }
             uni_vsubps(vmm_val, vmm_val, vmm_mean);
             if (is_zero_pad) {
                 uni_vpxor(vmm_zero, vmm_zero, vmm_zero);
@@ -818,18 +916,19 @@ private:
             }
             uni_vfmadd231ps(vmm_variance, vmm_val, vmm_val);
         } else {
-            if (!isFloatCompatible(jcp_.src_prc))
+            if (!isFloatCompatible(jcp_.src_prc)) {
                 uni_vpaddd(vmm_sum, vmm_sum, vmm_val);
-            else
+            } else {
                 uni_vaddps(vmm_sum, vmm_sum, vmm_val);
+            }
         }
     }
 
-    inline void reduce_sum_store_xmm(Xbyak::Xmm xmm_sum) {
-        uni_vmovshdup(xmm_aux3, xmm_sum);            //  sum:1,2,3,4; aux3:2,2,4,4
-        uni_vaddps(xmm_sum, xmm_sum, xmm_aux3);      //  sum:1+2,2+2,3+4,4+4
-        uni_vmovhlps(xmm_aux3, xmm_aux3, xmm_sum);   //  aux3:3+4,4+4,4,4
-        uni_vaddps(xmm_sum, xmm_sum,  xmm_aux3);     //  sum:1+2+3+4,...
+    void reduce_sum_store_xmm(Xbyak::Xmm xmm_sum) {
+        uni_vmovshdup(xmm_aux3, xmm_sum);           //  sum:1,2,3,4; aux3:2,2,4,4
+        uni_vaddps(xmm_sum, xmm_sum, xmm_aux3);     //  sum:1+2,2+2,3+4,4+4
+        uni_vmovhlps(xmm_aux3, xmm_aux3, xmm_sum);  //  aux3:3+4,4+4,4,4
+        uni_vaddps(xmm_sum, xmm_sum, xmm_aux3);     //  sum:1+2+3+4,...
         if (jcp_.normalize_variance) {
             uni_vmovss(ptr[reg_variance], xmm_sum);
         } else {
@@ -837,17 +936,17 @@ private:
         }
     }
 
-    inline void reduce_sum_store_vmm(int vmm_idx) {
+    void reduce_sum_store_vmm(int vmm_idx) {
         if (isa == cpu::x64::sse41) {
             reduce_sum_store_xmm(Xmm(vmm_idx));
         } else if (isa == cpu::x64::avx2) {
-            Xbyak::Ymm ymm_sum = Xbyak::Ymm(vmm_idx);
+            auto ymm_sum = Xbyak::Ymm(vmm_idx);
             vextractf128(xmm_aux1, ymm_sum, 0);
             vextractf128(xmm_aux2, ymm_sum, 1);
             uni_vaddps(xmm_aux1, xmm_aux1, xmm_aux2);
             reduce_sum_store_xmm(xmm_aux1);
         } else {
-            Xbyak::Zmm zmm_sum = Xbyak::Zmm(vmm_idx);
+            auto zmm_sum = Xbyak::Zmm(vmm_idx);
             vextractf32x4(xmm_aux1, zmm_sum, 0);
             vextractf32x4(xmm_aux2, zmm_sum, 1);
             uni_vaddps(xmm_aux1, xmm_aux1, xmm_aux2);
@@ -884,19 +983,23 @@ private:
 
 // mean,variance->mvn
 template <cpu_isa_t isa>
-struct jit_uni_mvn_kernel_f32 : public jit_uni_mvn_kernel, public jit_generator {
+struct jit_uni_mvn_kernel_f32 : public jit_uni_mvn_kernel, public jit_generator_t {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_uni_mvn_kernel_f32)
 
-    explicit jit_uni_mvn_kernel_f32(jit_mvn_config_params jcp, const dnnl_primitive_attr &attr) : jit_uni_mvn_kernel(jcp, attr), jit_generator(jit_name()) {
-        const auto &p = attr_.post_ops_;
-        bool opt_scaleshift_applicable = jcp_.layout == MVNLayoutType::mvn_by_channel && isa == cpu::x64::avx512_core && !jcp_.across_channels;
+    explicit jit_uni_mvn_kernel_f32(jit_mvn_config_params jcp, const dnnl_primitive_attr& attr)
+        : jit_uni_mvn_kernel(jcp, attr),
+          jit_generator_t(jit_name()) {
+        const auto& p = attr_.post_ops_;
+        bool opt_scaleshift_applicable =
+            jcp_.layout == MVNLayoutType::mvn_by_channel && isa == cpu::x64::avx512_core && !jcp_.across_channels;
         if (opt_scaleshift_applicable) {
             for (int i = 0; i < p.len(); i++) {
-                auto &post_op = p.entry_[i];
+                auto& post_op = p.entry_[i];
                 if (post_op.is_depthwise()) {
                     if (0 == i && post_op.depthwise.alg == alg_kind::depthwise_scale_shift) {
                         optimized_scaleshift_num = 1;
-                    } else if (1 == i && optimized_scaleshift_num == 1 && post_op.depthwise.alg == alg_kind::depthwise_scale_shift) {
+                    } else if (1 == i && optimized_scaleshift_num == 1 &&
+                               post_op.depthwise.alg == alg_kind::depthwise_scale_shift) {
                         optimized_scaleshift_num = 2;
                     }
                 }
@@ -905,66 +1008,88 @@ struct jit_uni_mvn_kernel_f32 : public jit_uni_mvn_kernel, public jit_generator 
     }
 
     void create_ker() override {
-        jit_generator::create_kernel();
-        ker_ = (decltype(ker_))jit_ker();
+        jit_generator_t::create_kernel();
+        ker_ = jit_kernel_cast<decltype(ker_)>(jit_ker());
     }
 
     void generate() override {
-        const auto &p = attr_.post_ops_;
+        const auto& p = attr_.post_ops_;
         for (int i = 0; i < p.len(); i++) {
-            auto &post_op = p.entry_[i];
+            auto& post_op = p.entry_[i];
             if (post_op.is_eltwise()) {
-                eltwise_injectors.push_back(std::make_shared<jit_uni_eltwise_injector_f32<isa>>(
-                        this, post_op.eltwise.alg, post_op.eltwise.alpha, post_op.eltwise.beta, post_op.eltwise.scale));
+                eltwise_injectors.push_back(std::make_shared<jit_uni_eltwise_injector_t<isa>>(this,
+                                                                                              post_op.eltwise.alg,
+                                                                                              post_op.eltwise.alpha,
+                                                                                              post_op.eltwise.beta,
+                                                                                              post_op.eltwise.scale,
+                                                                                              data_type::f32));
             } else if (post_op.is_depthwise()) {
-                depthwise_injectors.push_back(std::make_shared<jit_uni_depthwise_injector_f32<isa>>(
-                        this, post_op));
+                depthwise_injectors.push_back(std::make_shared<jit_uni_depthwise_injector_f32<isa>>(this, post_op));
             } else if (post_op.is_quantization()) {
-                quantization_injectors.push_back(std::make_shared<jit_uni_quantization_injector_f32<isa>>(
-                        this, post_op, vmm_d_weights, vmm_d_bias, reg_d_weights, reg_d_bias));
+                quantization_injectors.push_back(std::make_shared<jit_uni_quantization_injector_f32<isa>>(this,
+                                                                                                          post_op,
+                                                                                                          vmm_d_weights,
+                                                                                                          vmm_d_bias,
+                                                                                                          reg_d_weights,
+                                                                                                          reg_d_bias));
             }
         }
 
-        load_emitter[VECTOR] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, vector_step));
-        load_emitter[TAIL8] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, 8));
-        load_emitter[TAIL4] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, 4));
-        load_emitter[TAIL2] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, 2));
-        load_emitter[TAIL1] = std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, 1));
-        store_emitter[VECTOR] = std::unique_ptr<jit_store_emitter>(new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, vector_step));
-        store_emitter[TAIL8] = std::unique_ptr<jit_store_emitter>(new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, 8));
-        store_emitter[TAIL4] = std::unique_ptr<jit_store_emitter>(new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, 4));
-        store_emitter[TAIL2] = std::unique_ptr<jit_store_emitter>(new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, 2));
-        store_emitter[TAIL1] = std::unique_ptr<jit_store_emitter>(new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, 1));
+        load_emitter[VECTOR] = std::unique_ptr<jit_load_emitter>(
+            new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, vector_step));
+        load_emitter[TAIL8] =
+            std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, 8));
+        load_emitter[TAIL4] =
+            std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, 4));
+        load_emitter[TAIL2] =
+            std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, 2));
+        load_emitter[TAIL1] =
+            std::unique_ptr<jit_load_emitter>(new jit_load_emitter(this, isa, jcp_.src_prc, ov::element::f32, 1));
+        store_emitter[VECTOR] = std::unique_ptr<jit_store_emitter>(
+            new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, vector_step));
+        store_emitter[TAIL8] =
+            std::unique_ptr<jit_store_emitter>(new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, 8));
+        store_emitter[TAIL4] =
+            std::unique_ptr<jit_store_emitter>(new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, 4));
+        store_emitter[TAIL2] =
+            std::unique_ptr<jit_store_emitter>(new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, 2));
+        store_emitter[TAIL1] =
+            std::unique_ptr<jit_store_emitter>(new jit_store_emitter(this, isa, ov::element::f32, jcp_.dst_prc, 1));
 
         this->preamble();
 
         mov(reg_post_ops_data, ptr[reg_params + GET_OFF(post_op_data)]);
         mov(reg_src, ptr[reg_params + GET_OFF(src)]);
         mov(reg_mean, ptr[reg_params + GET_OFF(mean)]);
-        if (jcp_.normalize_variance)
+        if (jcp_.normalize_variance) {
             mov(reg_variance_inv, ptr[reg_params + GET_OFF(variance)]);
+        }
         mov(reg_dst, ptr[reg_params + GET_OFF(dst)]);
         mov(reg_work_amount, ptr[reg_params + GET_OFF(work_amount)]);
         mov(reg_rt_shape, ptr[reg_params + GET_OFF(rt_shape_size)]);
         mov(reg_oc_off, ptr[reg_params + GET_OFF(oc_off)]);
 
-        size_t data_step = (isa == cpu::x64::sse41 && jcp_.layout == MVNLayoutType::mvn_block) ? vector_step * 2 : vector_step;
+        size_t data_step =
+            (isa == cpu::x64::sse41 && jcp_.layout == MVNLayoutType::mvn_block) ? vector_step * 2 : vector_step;
         src_stride = data_step * jcp_.src_data_size;
         dst_stride = data_step * jcp_.dst_data_size;
 
         if (jcp_.layout == MVNLayoutType::mvn_planar || jcp_.across_channels) {
             uni_vbroadcastss(vmm_mean, ptr[reg_mean]);
-            if (jcp_.normalize_variance)
+            if (jcp_.normalize_variance) {
                 uni_vbroadcastss(vmm_variance_inv, ptr[reg_variance_inv]);
+            }
         } else {
             uni_vmovups(vmm_mean, ptr[reg_mean]);
-            if (jcp_.normalize_variance)
+            if (jcp_.normalize_variance) {
                 uni_vmovups(vmm_variance_inv, ptr[reg_variance_inv]);
+            }
         }
 
         uni_vpxor(vmm_zero, vmm_zero, vmm_zero);
 
-        load_pool_gpr_idxs = {static_cast<size_t>(reg_load_store_mask.getIdx()), static_cast<size_t>(reg_load_table.getIdx())};
+        load_pool_gpr_idxs = {static_cast<size_t>(reg_load_store_mask.getIdx()),
+                              static_cast<size_t>(reg_load_table.getIdx())};
         store_pool_gpr_idxs = {static_cast<size_t>(reg_load_store_mask.getIdx())};
         store_pool_vec_idxs = {static_cast<size_t>(vmm_zero.getIdx()), static_cast<size_t>(vmm_val.getIdx())};
 
@@ -978,30 +1103,34 @@ struct jit_uni_mvn_kernel_f32 : public jit_uni_mvn_kernel, public jit_generator 
             };
             worker_mvn_tails(reg_rt_shape, tails_func);
         } else if (jcp_.layout == MVNLayoutType::mvn_by_channel) {
-            if (jcp_.across_channels)
+            if (jcp_.across_channels) {
                 norm_nspc_ac_ker();
-            else
+            } else {
                 norm_nspc_pc_ker();
+            }
         } else {
             norm_block_ker();
         }
 
         this->postamble();
 
-        for (size_t i = 0; i < EMITTERS_NUM; i++)
+        for (size_t i = 0; i < EMITTERS_NUM; i++) {
             load_emitter[i]->emit_data();
-        for (size_t i = 0; i < EMITTERS_NUM; i++)
+        }
+        for (size_t i = 0; i < EMITTERS_NUM; i++) {
             store_emitter[i]->emit_data();
+        }
 
-        for (auto& inj : eltwise_injectors)
+        for (auto& inj : eltwise_injectors) {
             inj->prepare_table();
+        }
     }
 
 private:
-    using Vmm = typename conditional3<isa == cpu::x64::sse41, Xbyak::Xmm, isa == cpu::x64::avx2,
-            Xbyak::Ymm, Xbyak::Zmm>::type;
+    using Vmm =
+        typename conditional3<isa == cpu::x64::sse41, Xbyak::Xmm, isa == cpu::x64::avx2, Xbyak::Ymm, Xbyak::Zmm>::type;
 
-    const int vlen = cpu_isa_traits<isa>::vlen;
+    const int vlen = cpu_isa_traits_t<isa>::vlen;
     const int vector_step = vlen / sizeof(float);
 
     Xbyak::Reg64 reg_src = r8;
@@ -1017,7 +1146,7 @@ private:
     Xbyak::Reg64 reg_post_ops_data = rsi;
 
     Xbyak::Reg64 reg_rt_shape = r15;
-    Xbyak::Reg64 reg_load_table = r15; // fill not needed, dummy
+    Xbyak::Reg64 reg_load_table = r15;  // fill not needed, dummy
     Xbyak::Reg64 reg_load_store_mask = rbp;
 
     size_t src_stride = 0;
@@ -1031,7 +1160,7 @@ private:
     Vmm vmm_d_weights = Vmm(0);
     Vmm vmm_d_bias = Vmm(1);
 
-    enum { VECTOR, TAIL8, TAIL4, TAIL2, TAIL1, EMITTERS_NUM };
+    enum : uint8_t { VECTOR, TAIL8, TAIL4, TAIL2, TAIL1, EMITTERS_NUM };
     std::unique_ptr<jit_load_emitter> load_emitter[EMITTERS_NUM];
     std::unique_ptr<jit_store_emitter> store_emitter[EMITTERS_NUM];
     std::vector<size_t> store_pool_gpr_idxs;
@@ -1040,11 +1169,11 @@ private:
 
     const int tile_size[kTileNum] = {8, 4, 2, 1};
 
-    std::vector<std::shared_ptr<jit_uni_eltwise_injector_f32<isa>>> eltwise_injectors;
+    std::vector<std::shared_ptr<jit_uni_eltwise_injector_t<isa>>> eltwise_injectors;
     std::vector<std::shared_ptr<jit_uni_depthwise_injector_f32<isa>>> depthwise_injectors;
     std::vector<std::shared_ptr<jit_uni_quantization_injector_f32<isa>>> quantization_injectors;
 
-    inline void norm_block_ker() {
+    void norm_block_ker() {
         Xbyak::Reg64 reg_src_bk = rax;
         Xbyak::Reg64 reg_dst_bk = rdx;
         Xbyak::Reg64 reg_work_amount_bk = rdi;
@@ -1141,7 +1270,7 @@ private:
     }
 
     // nspc norm per channel with unroll
-    inline void norm_nspc_pc_ker() {
+    void norm_nspc_pc_ker() {
         // stack used as no more GPR.
         const int gpr_size = 8;
         sub(rsp, 7 * gpr_size);
@@ -1157,7 +1286,7 @@ private:
         mov(rax, reg_rt_shape);
         mov(addr_vector_num, vector_step);
         xor_(rdx, rdx);
-        div(addr_vector_num);    // reg_rt_shape / vector_step, rax is result, rdx is tails
+        div(addr_vector_num);  // reg_rt_shape / vector_step, rax is result, rdx is tails
         mov(addr_vector_num, rax);
         mov(addr_tail_num, rdx);
 
@@ -1227,11 +1356,13 @@ private:
 
         auto load_src = [&](int vmm_id, int step) {
             load_emitter[VECTOR]->emit_code({static_cast<size_t>(reg_src_aux.getIdx())},
-                                           {static_cast<size_t>(ur_base + vmm_id)}, {}, {load_pool_gpr_idxs});
+                                            {static_cast<size_t>(ur_base + vmm_id)},
+                                            {},
+                                            {load_pool_gpr_idxs});
             add(reg_src_aux, step * jcp_.src_data_size);
         };
 
-        auto norm = [&](int vmm_id, int step) {
+        auto norm = [&](int vmm_id, [[maybe_unused]] int step) {
             uni_vsubps(Vmm(ur_base + vmm_id), Vmm(ur_base + vmm_id), Vmm(ur_base + 4 + vmm_id));
             if (jcp_.normalize_variance) {
                 uni_vmulps(Vmm(ur_base + vmm_id), Vmm(ur_base + vmm_id), Vmm(ur_base + 8 + vmm_id));
@@ -1239,8 +1370,10 @@ private:
         };
 
         // optimized scaleshift fusion
-        auto optimized_ss = [&](int vmm_id, int step) {
-            uni_vfmadd132ps(Vmm(ur_base + vmm_id), Vmm(24 + ss_repeat_id * 4 + vmm_id), Vmm(16 + ss_repeat_id * 4 + vmm_id));
+        auto optimized_ss = [&](int vmm_id, [[maybe_unused]] int step) {
+            uni_vfmadd132ps(Vmm(ur_base + vmm_id),
+                            Vmm(24 + ss_repeat_id * 4 + vmm_id),
+                            Vmm(16 + ss_repeat_id * 4 + vmm_id));
         };
 
         auto post_ops = [&](int vmm_id, int step) {
@@ -1249,12 +1382,14 @@ private:
         };
 
         auto store_dst = [&](int vmm_id, int step) {
-            store_emitter[VECTOR]->emit_code({static_cast<size_t>(ur_base + vmm_id)}, {static_cast<size_t>(reg_dst_aux.getIdx())},
-                {store_pool_vec_idxs}, {store_pool_gpr_idxs});
+            store_emitter[VECTOR]->emit_code({static_cast<size_t>(ur_base + vmm_id)},
+                                             {static_cast<size_t>(reg_dst_aux.getIdx())},
+                                             {store_pool_vec_idxs},
+                                             {store_pool_gpr_idxs});
             add(reg_dst_aux, step * jcp_.dst_data_size);
         };
 
-        auto vector_worker = [&](std::function<void(int, int)> func) {
+        auto vector_worker = [&](const std::function<void(int, int)>& func) {
             Xbyak::Label label_end;
             func(0, vector_step);
             cmp(addr_unroll_size, 1);
@@ -1424,14 +1559,18 @@ private:
             int vmm_id = get_tile_vr_id(step);
             int emitter_id = get_tile_emitter_id(step);
             load_emitter[emitter_id]->emit_code({static_cast<size_t>(reg_src_aux.getIdx())},
-                                                {static_cast<size_t>(ur_base + vmm_id)}, {}, {load_pool_gpr_idxs});
+                                                {static_cast<size_t>(ur_base + vmm_id)},
+                                                {},
+                                                {load_pool_gpr_idxs});
             add(reg_src_aux, step * jcp_.src_data_size);
         };
         auto store_tails = [&](int step) {
             int vmm_id = get_tile_vr_id(step);
             int emitter_id = get_tile_emitter_id(step);
-            store_emitter[emitter_id]->emit_code({static_cast<size_t>(ur_base + vmm_id)}, {static_cast<size_t>(reg_dst_aux.getIdx())},
-                                       {store_pool_vec_idxs}, {store_pool_gpr_idxs});
+            store_emitter[emitter_id]->emit_code({static_cast<size_t>(ur_base + vmm_id)},
+                                                 {static_cast<size_t>(reg_dst_aux.getIdx())},
+                                                 {store_pool_vec_idxs},
+                                                 {store_pool_gpr_idxs});
             add(reg_dst_aux, step * jcp_.dst_data_size);
         };
 
@@ -1515,7 +1654,7 @@ private:
         add(rsp, 7 * gpr_size);
     }
 
-    inline void norm_nspc_ac_ker() {
+    void norm_nspc_ac_ker() {
         Xbyak::Reg64 reg_rt_shape_bk = rdx;
         Xbyak::Reg64 reg_oc_off_bk = rax;
         mov(reg_rt_shape_bk, reg_rt_shape);
@@ -1540,8 +1679,9 @@ private:
                 worker_mvn_block(tile_size);
                 add(reg_src, tile_size * jcp_.src_data_size);
                 add(reg_dst, tile_size * jcp_.dst_data_size);
-                if (attr_.post_ops_.len() != 0)
+                if (attr_.post_ops_.len() != 0) {
                     add(reg_oc_off, tile_size * sizeof(float));
+                }
             };
             worker_mvn_tails(reg_rt_shape, tails_func);
 
@@ -1551,7 +1691,7 @@ private:
         L(loop_end_label);
     }
 
-    inline void worker_mvn_vector_unroll(Xbyak::Reg64& reg_work_amount) {
+    void worker_mvn_vector_unroll(Xbyak::Reg64& reg_work_amount) {
         Xbyak::Label mvn_loop_label;
         Xbyak::Label mvn_loop_end_label;
 
@@ -1567,8 +1707,9 @@ private:
 
             add(reg_src, src_stride);
             add(reg_dst, dst_stride);
-            if (jcp_.layout == MVNLayoutType::mvn_by_channel && attr_.post_ops_.len() != 0)
+            if (jcp_.layout == MVNLayoutType::mvn_by_channel && attr_.post_ops_.len() != 0) {
                 add(reg_oc_off, vector_step * sizeof(float));
+            }
 
             sub(reg_work_amount, step_sub);
 
@@ -1577,22 +1718,35 @@ private:
         L(mvn_loop_end_label);
     }
 
-    inline void worker_mvn_vector() {
-        load_emitter[VECTOR]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-            {}, {load_pool_gpr_idxs});
+    void worker_mvn_vector() {
+        load_emitter[VECTOR]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                        {static_cast<size_t>(vmm_val.getIdx())},
+                                        {},
+                                        {load_pool_gpr_idxs});
 
         uni_vsubps(vmm_val, vmm_val, vmm_mean);
-        if (jcp_.normalize_variance)
+        if (jcp_.normalize_variance) {
             uni_vmulps(vmm_val, vmm_val, vmm_variance_inv);
+        }
 
         apply_post_ops(jcp_.dst_prc, vmm_val.getIdx(), jcp_.layout == MVNLayoutType::mvn_planar);
 
-        store_emitter[VECTOR]->emit_code({static_cast<size_t>(vmm_val.getIdx())}, {static_cast<size_t>(reg_dst.getIdx())},
-            {store_pool_vec_idxs}, {store_pool_gpr_idxs});
+        store_emitter[VECTOR]->emit_code({static_cast<size_t>(vmm_val.getIdx())},
+                                         {static_cast<size_t>(reg_dst.getIdx())},
+                                         {store_pool_vec_idxs},
+                                         {store_pool_gpr_idxs});
     }
 
-    inline void worker_mvn_tails(Xbyak::Reg64& reg_tail_num, std::function<void(int)> func) {
-        int tile_start_idx = (isa == cpu::x64::avx512_core) ? 0 : ((isa == cpu::x64::avx2) ? 1 : 2);
+    void worker_mvn_tails(Xbyak::Reg64& reg_tail_num, const std::function<void(int)>& func) {
+        int tile_start_idx = [&]() {
+            if (isa == cpu::x64::avx512_core) {
+                return 0;
+            }
+            if (isa == cpu::x64::avx2) {
+                return 1;
+            }
+            return 2;
+        }();
         Label tile_exit[kTileNum];
         for (int i = tile_start_idx; i < kTileNum; i++) {
             cmp(reg_tail_num, tile_size[i]);
@@ -1605,23 +1759,31 @@ private:
         }
     }
 
-    inline void worker_mvn_block(int block_num) {
+    void worker_mvn_block(int block_num) {
         switch (block_num) {
         case 8:
-            load_emitter[TAIL8]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                {}, {load_pool_gpr_idxs});
+            load_emitter[TAIL8]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                           {static_cast<size_t>(vmm_val.getIdx())},
+                                           {},
+                                           {load_pool_gpr_idxs});
             break;
         case 4:
-            load_emitter[TAIL4]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                {}, {load_pool_gpr_idxs});
+            load_emitter[TAIL4]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                           {static_cast<size_t>(vmm_val.getIdx())},
+                                           {},
+                                           {load_pool_gpr_idxs});
             break;
         case 2:
-            load_emitter[TAIL2]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                {}, {load_pool_gpr_idxs});
+            load_emitter[TAIL2]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                           {static_cast<size_t>(vmm_val.getIdx())},
+                                           {},
+                                           {load_pool_gpr_idxs});
             break;
         case 1:
-            load_emitter[TAIL1]->emit_code({static_cast<size_t>(reg_src.getIdx())}, {static_cast<size_t>(vmm_val.getIdx())},
-                {}, {load_pool_gpr_idxs});
+            load_emitter[TAIL1]->emit_code({static_cast<size_t>(reg_src.getIdx())},
+                                           {static_cast<size_t>(vmm_val.getIdx())},
+                                           {},
+                                           {load_pool_gpr_idxs});
             break;
         default:
             assert(!"MVN layer tails is processed only with 8/4/2/1 blocks.");
@@ -1629,27 +1791,36 @@ private:
         }
 
         uni_vsubps(vmm_val, vmm_val, vmm_mean);
-        if (jcp_.normalize_variance)
+        if (jcp_.normalize_variance) {
             uni_vmulps(vmm_val, vmm_val, vmm_variance_inv);
+        }
 
         apply_post_ops(jcp_.dst_prc, vmm_val.getIdx(), jcp_.layout == MVNLayoutType::mvn_planar);
 
         switch (block_num) {
         case 8:
-            store_emitter[TAIL8]->emit_code({static_cast<size_t>(vmm_val.getIdx())}, {static_cast<size_t>(reg_dst.getIdx())},
-                {store_pool_vec_idxs}, {store_pool_gpr_idxs});
+            store_emitter[TAIL8]->emit_code({static_cast<size_t>(vmm_val.getIdx())},
+                                            {static_cast<size_t>(reg_dst.getIdx())},
+                                            {store_pool_vec_idxs},
+                                            {store_pool_gpr_idxs});
             break;
         case 4:
-            store_emitter[TAIL4]->emit_code({static_cast<size_t>(vmm_val.getIdx())}, {static_cast<size_t>(reg_dst.getIdx())},
-                {store_pool_vec_idxs}, {store_pool_gpr_idxs});
+            store_emitter[TAIL4]->emit_code({static_cast<size_t>(vmm_val.getIdx())},
+                                            {static_cast<size_t>(reg_dst.getIdx())},
+                                            {store_pool_vec_idxs},
+                                            {store_pool_gpr_idxs});
             break;
         case 2:
-            store_emitter[TAIL2]->emit_code({static_cast<size_t>(vmm_val.getIdx())}, {static_cast<size_t>(reg_dst.getIdx())},
-                {store_pool_vec_idxs}, {store_pool_gpr_idxs});
+            store_emitter[TAIL2]->emit_code({static_cast<size_t>(vmm_val.getIdx())},
+                                            {static_cast<size_t>(reg_dst.getIdx())},
+                                            {store_pool_vec_idxs},
+                                            {store_pool_gpr_idxs});
             break;
         case 1:
-            store_emitter[TAIL1]->emit_code({static_cast<size_t>(vmm_val.getIdx())}, {static_cast<size_t>(reg_dst.getIdx())},
-                {store_pool_vec_idxs}, {store_pool_gpr_idxs});
+            store_emitter[TAIL1]->emit_code({static_cast<size_t>(vmm_val.getIdx())},
+                                            {static_cast<size_t>(reg_dst.getIdx())},
+                                            {store_pool_vec_idxs},
+                                            {store_pool_gpr_idxs});
             break;
         default:
             assert(!"MVN layer tails is processed only with 8/4/2/1 blocks.");
@@ -1658,7 +1829,7 @@ private:
     }
 
     void apply_post_ops(ov::element::Type dst_prc, size_t vmm_idx, bool is_broadcast) {
-        const auto &p = attr_.post_ops_;
+        const auto& p = attr_.post_ops_;
         int eltwise_inj_idx = 0;
         int depthwise_inj_idx = 0;
         int quantization_inj_idx = 0;
@@ -1677,8 +1848,11 @@ private:
                 mov(reg_d_weights, ptr[reg_post_ops_data + post_ops_data_offset]);
                 add(reg_d_weights, reg_oc_off);
 
-                depthwise_injectors[depthwise_inj_idx]->compute_vector_range(
-                        vmm_idx, vmm_idx + 1, reg_d_weights, reg_d_weights, is_broadcast);
+                depthwise_injectors[depthwise_inj_idx]->compute_vector_range(vmm_idx,
+                                                                             vmm_idx + 1,
+                                                                             reg_d_weights,
+                                                                             reg_d_weights,
+                                                                             is_broadcast);
 
                 post_ops_data_offset += depthwise_injectors[depthwise_inj_idx]->memoryStep();
                 depthwise_inj_idx++;
@@ -1686,14 +1860,24 @@ private:
                 bool do_dequantization = post_op.quantization.alg == alg_kind::quantization_quantize_dequantize;
                 bool do_rounding = do_dequantization || isFloatCompatible(dst_prc) || i != p.len() - 1;
 
-                quantization_injectors[quantization_inj_idx]->init_crop_ptrs(reg_post_ops_data + post_ops_data_offset, reg_oc_off);
+                quantization_injectors[quantization_inj_idx]->init_crop_ptrs(reg_post_ops_data + post_ops_data_offset,
+                                                                             reg_oc_off);
                 quantization_injectors[quantization_inj_idx]->compute_crop(vmm_idx, vmm_idx + 1, 0, 0, is_broadcast);
 
-                quantization_injectors[quantization_inj_idx]->init_input_scale_shift_ptrs(reg_post_ops_data + post_ops_data_offset, reg_oc_off);
-                quantization_injectors[quantization_inj_idx]->compute_input_scale_shift(vmm_idx, vmm_idx + 1, 0, do_rounding, 0, is_broadcast);
+                quantization_injectors[quantization_inj_idx]->init_input_scale_shift_ptrs(
+                    reg_post_ops_data + post_ops_data_offset,
+                    reg_oc_off);
+                quantization_injectors[quantization_inj_idx]
+                    ->compute_input_scale_shift(vmm_idx, vmm_idx + 1, 0, do_rounding, 0, is_broadcast);
 
-                quantization_injectors[quantization_inj_idx]->init_output_scale_shift_ptrs(reg_post_ops_data + post_ops_data_offset, reg_oc_off);
-                quantization_injectors[quantization_inj_idx]->compute_output_scale_shift(vmm_idx, vmm_idx + 1, 0, 0, is_broadcast);
+                quantization_injectors[quantization_inj_idx]->init_output_scale_shift_ptrs(
+                    reg_post_ops_data + post_ops_data_offset,
+                    reg_oc_off);
+                quantization_injectors[quantization_inj_idx]->compute_output_scale_shift(vmm_idx,
+                                                                                         vmm_idx + 1,
+                                                                                         0,
+                                                                                         0,
+                                                                                         is_broadcast);
 
                 post_ops_data_offset += quantization_injectors[quantization_inj_idx]->memoryStep();
                 quantization_inj_idx++;
@@ -1702,7 +1886,7 @@ private:
     }
 };
 
-#endif // OPENVINO_ARCH_X86_64
+#endif  // OPENVINO_ARCH_X86_64
 
 //////////////////////////////////////////////////////////////////////////////////
 
@@ -1726,10 +1910,9 @@ bool MVN::isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::s
             }
 
             auto epsMode = mvnOp->get_eps_mode();
-            if (epsMode != ov::op::MVNEpsMode::INSIDE_SQRT &&
-                    epsMode != ov::op::MVNEpsMode::OUTSIDE_SQRT) {
+            if (epsMode != ov::op::MVNEpsMode::INSIDE_SQRT && epsMode != ov::op::MVNEpsMode::OUTSIDE_SQRT) {
                 errorMessage = std::string("Just INSIDE_SQRT and OUTSIDE_SQRT epsilon mods are supported. Actual: ") +
-                        std::to_string(static_cast<int>(epsMode));
+                               std::to_string(static_cast<int>(epsMode));
                 return false;
             }
             // Validates MVN node axes to check whether it can be executed on the current CPU implementation.
@@ -1740,8 +1923,9 @@ bool MVN::isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::s
             // 4D: axes: [1,2,3], [2,3]
             // 5D: axes: [1,2,3,4], [2,3,4]
             auto axesVal = axesOp->cast_vector<int>();
-            for (int& axe : axesVal)
-                axe = axe < 0 ? axe + inDataRank : axe;
+            for (int& axe : axesVal) {
+                axe = axe < 0 ? axe + static_cast<int>(inDataRank) : axe;
+            }
             std::sort(axesVal.begin(), axesVal.end());
             if (inDataRank == 1) {
                 if (axesVal.size() != 1 || axesVal[0] != 0) {
@@ -1754,8 +1938,8 @@ bool MVN::isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::s
                     errorMessage = "Unsupported axes.";
                     return false;
                 }
-                int value = inDataRank - 1;
-                for (int i = axesVal.size() - 1; i >= 0; i--, value--) {
+                int value = static_cast<int>(inDataRank) - 1;
+                for (int i = static_cast<int>(axesVal.size()) - 1; i >= 0; i--, value--) {
                     if (axesVal[i] != value) {
                         errorMessage = "Unsupported axes.";
                         return false;
@@ -1773,8 +1957,8 @@ bool MVN::isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::s
     return true;
 }
 
-MVN::MVN(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context)
-        : Node(op, context, NgraphShapeInferFactory(op, EMPTY_PORT_MASK)) {
+MVN::MVN(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context)
+    : Node(op, context, NgraphShapeInferFactory(op)) {
     std::string errorMessage;
     if (!isSupportedOperation(op, errorMessage)) {
         OPENVINO_THROW_NOT_IMPLEMENTED(errorMessage);
@@ -1790,11 +1974,12 @@ MVN::MVN(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context)
 
         mvnAttrs.initAcrossChannels_ = false;
         const auto& inDataShapeSize = getInputShapeAtPort(0).getRank();
-        if (inDataShapeSize == mvnOp->input_value(1).get_shape()[0] + 1 || inDataShapeSize == 1)
+        if (inDataShapeSize == mvnOp->input_value(1).get_shape()[0] + 1 || inDataShapeSize == 1) {
             mvnAttrs.initAcrossChannels_ = true;
+        }
     } else if (auto mvnOp = ov::as_type_ptr<ov::op::v0::MVN>(op)) {
         mvnAttrs.normalizeVariance_ = mvnOp->get_normalize_variance();
-        mvnAttrs.epsValue_ = mvnOp->get_eps();
+        mvnAttrs.epsValue_ = static_cast<float>(mvnOp->get_eps());
         mvnAttrs.initAcrossChannels_ = mvnOp->get_across_channels();
     } else {
         OPENVINO_THROW_NOT_IMPLEMENTED("Node is not an instance of MVN from the operation set v0 or v6");
@@ -1805,52 +1990,54 @@ MVN::MVN(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context)
 void MVN::getSupportedDescriptors() {}
 
 static inline bool isUnaryEltwise(const NodePtr& node) {
-    return one_of(node->getAlgorithm(), Algorithm::EltwiseRelu,
-                                        Algorithm::EltwiseGeluErf,
-                                        Algorithm::EltwiseGeluTanh,
-                                        Algorithm::EltwiseElu,
-                                        Algorithm::EltwiseSigmoid,
-                                        Algorithm::EltwiseClamp,
-                                        Algorithm::EltwiseTanh,
-                                        Algorithm::EltwiseSwish,
-                                        Algorithm::EltwiseHswish,
-                                        Algorithm::EltwiseMish,
-                                        Algorithm::EltwiseHsigmoid,
-                                        Algorithm::EltwiseRoundHalfToEven,
-                                        Algorithm::EltwiseRoundHalfAwayFromZero,
-                                        Algorithm::EltwiseAbs,
-                                        Algorithm::EltwiseSqrt,
-                                        Algorithm::EltwiseSoftRelu);
+    return any_of(node->getAlgorithm(),
+                  Algorithm::EltwiseRelu,
+                  Algorithm::EltwiseGeluErf,
+                  Algorithm::EltwiseGeluTanh,
+                  Algorithm::EltwiseElu,
+                  Algorithm::EltwiseSigmoid,
+                  Algorithm::EltwiseClamp,
+                  Algorithm::EltwiseTanh,
+                  Algorithm::EltwiseSwish,
+                  Algorithm::EltwiseHswish,
+                  Algorithm::EltwiseMish,
+                  Algorithm::EltwiseHsigmoid,
+                  Algorithm::EltwiseRoundHalfToEven,
+                  Algorithm::EltwiseRoundHalfAwayFromZero,
+                  Algorithm::EltwiseAbs,
+                  Algorithm::EltwiseSqrt,
+                  Algorithm::EltwiseSoftRelu);
 }
 
 void MVN::initSupportedPrimitiveDescriptors() {
-    if (!supportedPrimitiveDescriptors.empty())
+    if (!supportedPrimitiveDescriptors.empty()) {
         return;
+    }
 
     ov::element::Type inputPrecision = getOriginalInputPrecisionAtPort(0);
     ov::element::Type outputPrecision = getOriginalOutputPrecisionAtPort(0);
-    if (!hasHardwareSupport(outputPrecision))
+    if (!hasHardwareSupport(outputPrecision)) {
         outputPrecision = ov::element::f32;
+    }
 
     if (!fusedWith.empty()) {
         outputPrecision = fusedWith[fusedWith.size() - 1]->getOriginalOutputPrecisionAtPort(0);
         onlyUnaryPostOps = true;
-        for (auto &node : fusedWith) {
+        for (auto& node : fusedWith) {
             if (isUnaryEltwise(node)) {
                 continue;
-            } else {
-                onlyUnaryPostOps = false;
-                break;
             }
+            onlyUnaryPostOps = false;
+            break;
         }
     }
 #if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64)
     // ref with float planar and no fusion
-    if (!mayiuse(cpu::x64::sse41)) {
+    if (!ov::with_cpu_x86_sse42()) {
         inputPrecision = outputPrecision = ov::element::f32;
     }
 #endif
-//Output precision has to be equal to input precision in ACL MVN
+// Output precision has to be equal to input precision in ACL MVN
 #if defined(OV_CPU_WITH_ACL)
     outputPrecision = inputPrecision;
 #endif
@@ -1872,54 +2059,61 @@ void MVN::initSupportedPrimitiveDescriptors() {
         config.inConfs[1].constant(true);
     }
 
-    auto& creatorsMap = BlockedDescCreator::getCommonCreators();
+    const auto& creatorsMap = BlockedDescCreator::getCommonCreators();
     auto pushDesc = [&](LayoutType format, impl_desc_type impl_type, bool useAclExecutor = false) {
         config.inConfs[0].setMemDesc(creatorsMap.at(format)->createSharedDesc(inputPrecision, getInputShapeAtPort(0)));
-        config.outConfs[0].setMemDesc(creatorsMap.at(format)->createSharedDesc(outputPrecision, getOutputShapeAtPort(0)));
+        config.outConfs[0].setMemDesc(
+            creatorsMap.at(format)->createSharedDesc(outputPrecision, getOutputShapeAtPort(0)));
 
         if (useAclExecutor) {
             std::vector<MemoryDescPtr> srcMemoryDescs;
-            for (size_t i = 0; i < config.inConfs.size(); i++) {
-                srcMemoryDescs.push_back(config.inConfs[i].getMemDesc());
+            srcMemoryDescs.reserve(config.inConfs.size());
+            for (const auto& inConf : config.inConfs) {
+                srcMemoryDescs.push_back(inConf.getMemDesc());
             }
             std::vector<MemoryDescPtr> dstMemoryDescs;
-            for (size_t i = 0; i < config.outConfs.size(); i++) {
-                dstMemoryDescs.push_back(config.outConfs[i].getMemDesc());
+            dstMemoryDescs.reserve(config.outConfs.size());
+            for (const auto& outConf : config.outConfs) {
+                dstMemoryDescs.push_back(outConf.getMemDesc());
             }
 
-            auto factory = std::make_shared<MVNExecutorFactory>(mvnAttrs, srcMemoryDescs, dstMemoryDescs,
-                                                                        std::make_shared<ExecutorContext>(context, getImplPriority()));
+            auto factory =
+                std::make_shared<MVNExecutorFactory>(mvnAttrs,
+                                                     srcMemoryDescs,
+                                                     dstMemoryDescs,
+                                                     std::make_shared<ExecutorContext>(context, getImplPriority()));
             if (!factory->isEmpty()) {
-                supportedPrimitiveDescriptors.push_back({config, impl_type, factory});
+                supportedPrimitiveDescriptors.emplace_back(config, impl_type, factory);
             }
         } else {
-            supportedPrimitiveDescriptors.push_back({config, impl_type});
+            supportedPrimitiveDescriptors.emplace_back(config, impl_type);
         }
     };
 
 #if defined(OV_CPU_WITH_ACL)
-        pushDesc(LayoutType::nspc, undef, true);
-        pushDesc(LayoutType::ncsp, undef, true);
-        canUseAclExecutor = !supportedPrimitiveDescriptors.empty();
-        if (canUseAclExecutor)
-            return;
-        else
-            // Reference MVN implementation does not support fp16, so set fp32 explicitly
-            inputPrecision = outputPrecision = ov::element::f32;
-#endif // OV_CPU_WITH_ACL
+    pushDesc(LayoutType::nspc, undef, true);
+    pushDesc(LayoutType::ncsp, undef, true);
+    canUseAclExecutor = !supportedPrimitiveDescriptors.empty();
+    if (canUseAclExecutor) {
+        return;
+    }  // Reference MVN implementation does not support fp16, so set fp32 explicitly
+    inputPrecision = outputPrecision = ov::element::f32;
+#endif  // OV_CPU_WITH_ACL
 
-    impl_desc_type impl_type;
-    if (mayiuse(cpu::x64::avx512_core)) {
-        impl_type = impl_desc_type::jit_avx512;
-    } else if (mayiuse(cpu::x64::avx2)) {
-        impl_type = impl_desc_type::jit_avx2;
-    } else if (mayiuse(cpu::x64::sse41)) {
-        impl_type = impl_desc_type::jit_sse42;
-    } else {
-        impl_type = impl_desc_type::ref;
-    }
+    impl_desc_type impl_type = [&]() {
+        if (ov::with_cpu_x86_avx512_core()) {
+            return impl_desc_type::jit_avx512;
+        }
+        if (ov::with_cpu_x86_avx2()) {
+            return impl_desc_type::jit_avx2;
+        }
+        if (ov::with_cpu_x86_sse42()) {
+            return impl_desc_type::jit_sse42;
+        }
+        return impl_desc_type::ref;
+    }();
 
-    if (mayiuse(cpu::x64::sse41)) {
+    if (ov::with_cpu_x86_sse42()) {
         // nspc
         if (getInputShapeAtPort(0).getRank() == 4 || getInputShapeAtPort(0).getRank() == 5) {
             pushDesc(LayoutType::nspc, impl_type);
@@ -1929,7 +2123,7 @@ void MVN::initSupportedPrimitiveDescriptors() {
             if (getInputShapeAtPort(0).getRank() == 4 || getInputShapeAtPort(0).getRank() == 5) {
                 pushDesc(LayoutType::nCsp16c, impl_type);
             }
-        } else if (impl_desc_type::jit_avx2 ==  impl_type || impl_desc_type::jit_sse42 == impl_type) {
+        } else if (impl_desc_type::jit_avx2 == impl_type || impl_desc_type::jit_sse42 == impl_type) {
             if (getInputShapeAtPort(0).getRank() == 4 || getInputShapeAtPort(0).getRank() == 5) {
                 pushDesc(LayoutType::nCsp8c, impl_type);
             }
@@ -1937,8 +2131,9 @@ void MVN::initSupportedPrimitiveDescriptors() {
     }
 
     // planar
-    if (canBeInplace)
+    if (canBeInplace) {
         config.inConfs[0].inPlace(0);
+    }
     pushDesc(LayoutType::ncsp, impl_type);
 }
 
@@ -1947,9 +2142,8 @@ MVN::MVNExecutorBase::MVNExecutorBase(const MVNAttrs& mvnAttrs)
       src_data_size(mvnAttrs.src_prc.size()),
       dst_data_size(mvnAttrs.dst_prc.size()) {}
 
-MVN::MVNJitExecutor::MVNJitExecutor(const MVNAttrs& mvnAttrs,
-                                              const dnnl::primitive_attr& attr):
-                                              MVNExecutorBase(mvnAttrs) {
+MVN::MVNJitExecutor::MVNJitExecutor(const MVNAttrs& mvnAttrs, [[maybe_unused]] const dnnl::primitive_attr& attr)
+    : MVNExecutorBase(mvnAttrs) {
     auto jcp = jit_mvn_config_params();
     jcp.src_prc = mvnAttrs.src_prc;
     jcp.dst_prc = mvnAttrs.dst_prc;
@@ -1959,86 +2153,100 @@ MVN::MVNJitExecutor::MVNJitExecutor(const MVNAttrs& mvnAttrs,
     jcp.normalize_variance = mvnAttrs.normalizeVariance_;
     jcp.across_channels = mvnAttrs.execAcrossChannels_;
 #if defined(OPENVINO_ARCH_X86_64)
-    if (mayiuse(cpu::x64::avx512_core)) {
-        mvn_kernel.reset(new jit_uni_mvn_kernel_f32<cpu::x64::avx512_core>(jcp, *attr.get()));
+    if (ov::with_cpu_x86_avx512_core()) {
+        mvn_kernel = std::make_shared<jit_uni_mvn_kernel_f32<cpu::x64::avx512_core>>(jcp, *attr.get());
         jcp.normalize_variance = false;
-        mvn_mean_kernel.reset(new jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::avx512_core>(jcp));
+        mvn_mean_kernel = std::make_shared<jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::avx512_core>>(jcp);
         if (mvnAttrs.normalizeVariance_) {
             jcp.normalize_variance = true;
-            mvn_variance_kernel.reset(new jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::avx512_core>(jcp));
+            mvn_variance_kernel = std::make_shared<jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::avx512_core>>(jcp);
         }
-    } else if (mayiuse(cpu::x64::avx2)) {
-        mvn_kernel.reset(new jit_uni_mvn_kernel_f32<cpu::x64::avx2>(jcp, *attr.get()));
+    } else if (ov::with_cpu_x86_avx2()) {
+        mvn_kernel = std::make_shared<jit_uni_mvn_kernel_f32<cpu::x64::avx2>>(jcp, *attr.get());
         jcp.normalize_variance = false;
-        mvn_mean_kernel.reset(new jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::avx2>(jcp));
+        mvn_mean_kernel = std::make_shared<jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::avx2>>(jcp);
         if (mvnAttrs.normalizeVariance_) {
             jcp.normalize_variance = true;
-            mvn_variance_kernel.reset(new jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::avx2>(jcp));
+            mvn_variance_kernel = std::make_shared<jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::avx2>>(jcp);
         }
-    } else if (mayiuse(cpu::x64::sse41)) {
-        mvn_kernel.reset(new jit_uni_mvn_kernel_f32<cpu::x64::sse41>(jcp, *attr.get()));
+    } else if (ov::with_cpu_x86_sse42()) {
+        mvn_kernel = std::make_shared<jit_uni_mvn_kernel_f32<cpu::x64::sse41>>(jcp, *attr.get());
         jcp.normalize_variance = false;
-        mvn_mean_kernel.reset(new jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::sse41>(jcp));
+        mvn_mean_kernel = std::make_shared<jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::sse41>>(jcp);
         if (mvnAttrs.normalizeVariance_) {
             jcp.normalize_variance = true;
-            mvn_variance_kernel.reset(new jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::sse41>(jcp));
+            mvn_variance_kernel = std::make_shared<jit_uni_mvn_mean_variance_kernel_f32<cpu::x64::sse41>>(jcp);
         }
     } else {
         OPENVINO_THROW("Can't create jit MVN kernel");
     }
-#endif // OPENVINO_ARCH_X86_64
-    if (mvn_kernel)
+#endif  // OPENVINO_ARCH_X86_64
+    if (mvn_kernel) {
         mvn_kernel->create_ker();
-    if (mvn_mean_kernel)
+    }
+    if (mvn_mean_kernel) {
         mvn_mean_kernel->create_ker();
-    if (mvn_variance_kernel)
+    }
+    if (mvn_variance_kernel) {
         mvn_variance_kernel->create_ker();
+    }
 }
 
-void MVN::MVNJitExecutor::exec(const uint8_t *src_data, uint8_t *dst_data, const void *post_ops_data_, const VectorDims& shape5d) {
-    if (!mvn_mean_kernel || (mvnAttrs.normalizeVariance_ && !mvn_variance_kernel) || !mvn_kernel) {
-        OPENVINO_THROW("MVN layer doesn't create kernel to execute on sse41 above platform.");
-    }
+void MVN::MVNJitExecutor::exec(const uint8_t* src_data,
+                               uint8_t* dst_data,
+                               const void* post_ops_data_,
+                               const VectorDims& shape5d,
+                               const CpuParallelPtr& cpu_parallel) {
+    OPENVINO_ASSERT(mvn_mean_kernel && (!mvnAttrs.normalizeVariance_ || mvn_variance_kernel) && mvn_kernel,
+                    "MVN layer doesn't create kernel to execute on sse41 above platform.");
     if (mvnAttrs.layout == MVNLayoutType::mvn_planar) {
-        mvn_pln(src_data, dst_data, post_ops_data_, shape5d);
+        mvn_pln(src_data, dst_data, post_ops_data_, shape5d, cpu_parallel);
     } else if (mvnAttrs.layout == MVNLayoutType::mvn_by_channel) {
         mvn_nspc(src_data, dst_data, post_ops_data_, shape5d);
     } else {
-        mvn_blk(src_data, dst_data, post_ops_data_, shape5d);
+        mvn_blk(src_data, dst_data, post_ops_data_, shape5d, cpu_parallel);
     }
 }
 
-MVN::MVNRefExecutor::MVNRefExecutor(const MVNAttrs& mvnAttrs):MVNExecutorBase(mvnAttrs) {}
+MVN::MVNRefExecutor::MVNRefExecutor(const MVNAttrs& mvnAttrs) : MVNExecutorBase(mvnAttrs) {}
 
-void MVN::MVNRefExecutor::exec(const uint8_t *src_data, uint8_t *dst_data, const void *post_ops_data_, const VectorDims& shape5d) {
-    mvn_ref(src_data, dst_data, shape5d);
+void MVN::MVNRefExecutor::exec(const uint8_t* src_data,
+                               uint8_t* dst_data,
+                               [[maybe_unused]] const void* post_ops_data_,
+                               const VectorDims& shape5d,
+                               const CpuParallelPtr& cpu_parallel) {
+    mvn_ref(src_data, dst_data, shape5d, cpu_parallel);
 }
 
 void MVN::prepareParams() {
     auto dstMemPtr = getDstMemoryAtPort(0);
     auto srcMemPtr = getSrcMemoryAtPort(0);
-    if (!dstMemPtr || !dstMemPtr->isAllocated())
-        OPENVINO_THROW("Destination memory didn't allocate.");
-    if (!srcMemPtr || !srcMemPtr->isAllocated())
-        OPENVINO_THROW("Input memory didn't allocate.");
-    if (getSelectedPrimitiveDescriptor() == nullptr)
-        OPENVINO_THROW("Preferable primitive descriptor is not set.");
+    if (!dstMemPtr || !dstMemPtr->isDefined()) {
+        CPU_NODE_THROW("Destination memory is undefined.");
+    }
+    if (!srcMemPtr || !srcMemPtr->isDefined()) {
+        CPU_NODE_THROW("Input memory is undefined.");
+    }
+    if (getSelectedPrimitiveDescriptor() == nullptr) {
+        CPU_NODE_THROW("Preferable primitive descriptor is not set.");
+    }
 
     const VectorDims in_dims = srcMemPtr->getStaticDims();
     transformTo5DCase(in_dims);
 
 #if defined(OPENVINO_ARCH_X86_64)
     // New shape5D always need prepare via transformTo5DCase(), which is need in exec().
-    // MVN itself and unary post ops is totally shape agnostic, execPtr can be reused directly w/o recompilation and setPostOps when shape is changed.
-    // As key have not shape, if shape changes and new post ops attr is also the same, execPtr can still hit.
-    // If new shape(channel changes) impact post ops attr, such as entry.quantization.offset, entry.depthwise.offset, entry.quantization.per_channel,
-    // which is participate in compilation, even postOpsData is passed in runtime, still need recompilation.
+    // MVN itself and unary post ops is totally shape agnostic, execPtr can be reused directly w/o recompilation and
+    // setPostOps when shape is changed. As key have not shape, if shape changes and new post ops attr is also the same,
+    // execPtr can still hit. If new shape(channel changes) impact post ops attr, such as entry.quantization.offset,
+    // entry.depthwise.offset, entry.quantization.per_channel, which is participate in compilation, even postOpsData is
+    // passed in runtime, still need recompilation.
     if (execPtr != nullptr && (fusedWith.empty() || onlyUnaryPostOps)) {
         return;
     }
 #endif
 
-    auto selectedPD = getSelectedPrimitiveDescriptor();
+    auto* selectedPD = getSelectedPrimitiveDescriptor();
     mvnAttrs.src_prc = selectedPD->getConfig().inConfs[0].getMemDesc()->getPrecision();
     mvnAttrs.dst_prc = selectedPD->getConfig().outConfs[0].getMemDesc()->getPrecision();
     if (getParentEdgeAt(0)->getMemory().getDesc().hasLayoutType(LayoutType::ncsp)) {
@@ -2057,8 +2265,11 @@ void MVN::prepareParams() {
         std::vector<MemoryDescPtr> dstMemoryDescs;
         dstMemoryDescs.push_back(getDstMemoryAtPort(0)->getDescPtr());
 
-        auto selectedPD = getSelectedPrimitiveDescriptor();
-        aclExecPtr = selectedPD->getExecutorFactoryAs<MVNExecutorFactory>()->makeExecutor(mvnAttrs, srcMemoryDescs, dstMemoryDescs, {});
+        auto* selectedPD = getSelectedPrimitiveDescriptor();
+        aclExecPtr = selectedPD->getExecutorFactoryAs<MVNExecutorFactory>()->makeExecutor(mvnAttrs,
+                                                                                          srcMemoryDescs,
+                                                                                          dstMemoryDescs,
+                                                                                          {});
         selectedPD->setImplementationType(aclExecPtr->getImplType());
 
         return;
@@ -2069,7 +2280,7 @@ void MVN::prepareParams() {
 
     auto builder = [&](const MVNKey& key) -> std::shared_ptr<MVNExecutorBase> {
         std::shared_ptr<MVNExecutorBase> executor;
-        if (mayiuse(cpu::x64::sse41)) {
+        if (ov::with_cpu_x86_sse42()) {
             executor = std::make_shared<MVNJitExecutor>(key.mvnAttrs, key.attr);
         } else {
             executor = std::make_shared<MVNRefExecutor>(key.mvnAttrs);
@@ -2087,52 +2298,60 @@ void MVN::transformTo5DCase(const VectorDims& shape) {
     // for 1 and 2 rank, if initAcrossChannels_ is true, adjust shape to fully vectorize under unified 5d procedure.
     // otherwise there are not enough data in spatial dimension to process in one kernel.
     switch (rank) {
-        case 1 :  // C
-            if (mvnAttrs.initAcrossChannels_) {
-                shape5D = {1, 1, 1, 1, shape[0]};
-                mvnAttrs.execAcrossChannels_ = false;
-                break;
-            } else {
-                shape5D = {1, shape[0], 1, 1, 1};
-                break;
-            }
-        case 2 :  // NC
-            if (mvnAttrs.initAcrossChannels_) {
-                shape5D = {1, shape[0], 1, shape[1], 1};
-                mvnAttrs.execAcrossChannels_ = false;
-                break;
-            } else {
-                shape5D = {shape[0], shape[1], 1, 1, 1};
-                break;
-            }
-        case 3 : { shape5D = {shape[0], shape[1], 1, shape[2], 1}; break; }
-        case 4 : { shape5D = {shape[0], shape[1], 1, shape[2], shape[3]}; break; }
-        case 5 : { shape5D = {shape[0], shape[1], shape[2], shape[3], shape[4]}; break; }
-        default: {
-            OPENVINO_THROW("MVN layer with name '",
-                           getName(),
-                           "' doesn't support planar layout with rank: ",
-                           shape.size());
+    case 1:  // C
+        if (mvnAttrs.initAcrossChannels_) {
+            shape5D = {1, 1, 1, 1, shape[0]};
+            mvnAttrs.execAcrossChannels_ = false;
+            break;
+        } else {
+            shape5D = {1, shape[0], 1, 1, 1};
+            break;
         }
+    case 2:  // NC
+        if (mvnAttrs.initAcrossChannels_) {
+            shape5D = {1, shape[0], 1, shape[1], 1};
+            mvnAttrs.execAcrossChannels_ = false;
+            break;
+        } else {
+            shape5D = {shape[0], shape[1], 1, 1, 1};
+            break;
+        }
+    case 3: {
+        shape5D = {shape[0], shape[1], 1, shape[2], 1};
+        break;
+    }
+    case 4: {
+        shape5D = {shape[0], shape[1], 1, shape[2], shape[3]};
+        break;
+    }
+    case 5: {
+        shape5D = {shape[0], shape[1], shape[2], shape[3], shape[4]};
+        break;
+    }
+    default: {
+        CPU_NODE_THROW("doesn't support planar layout with rank: ", shape.size());
+    }
     }
 }
 
-void MVN::setPostOps(dnnl::primitive_attr &attr, bool initWeights) {
+void MVN::setPostOps(dnnl::primitive_attr& attr, [[maybe_unused]] bool initWeights) {
     dnnl::post_ops ops;
     postOpsDataPtrs.clear();
-    for (auto &node : fusedWith) {
-        auto* fakeQuantizeNode = dynamic_cast<FakeQuantize *>(node.get());
+    for (auto& node : fusedWith) {
+        int channelAxis = 1;
+
+        auto* fakeQuantizeNode = dynamic_cast<FakeQuantize*>(node.get());
         if (fakeQuantizeNode) {
-            fakeQuantizeNode->appendPostOps(ops, {}, postOpsDataPtrs);
+            fakeQuantizeNode->appendPostOps(ops, {}, postOpsDataPtrs, channelAxis);
             continue;
         }
 
-        auto* eltwiseNode = dynamic_cast<Eltwise *>(node.get());
+        auto* eltwiseNode = dynamic_cast<Eltwise*>(node.get());
         if (eltwiseNode) {
-            eltwiseNode->appendPostOps(ops, shape5D, postOpsDataPtrs);
+            eltwiseNode->appendPostOps(ops, shape5D, postOpsDataPtrs, channelAxis);
             continue;
         }
-        OPENVINO_THROW("Fusing of ",
+        CPU_NODE_THROW("Fusing of ",
                        NameFromType(node->getType()),
                        " operation to ",
                        NameFromType(this->getType()),
@@ -2141,32 +2360,40 @@ void MVN::setPostOps(dnnl::primitive_attr &attr, bool initWeights) {
     attr.set_post_ops(ops);
 }
 
-void MVN::executeDynamicImpl(dnnl::stream strm) {
+void MVN::executeDynamicImpl(const dnnl::stream& strm) {
     execute(strm);
 }
 
-void MVN::execute(dnnl::stream strm) {
+void MVN::execute([[maybe_unused]] const dnnl::stream& strm) {
     auto dstMemPtr = getDstMemoryAtPort(0);
     auto srcMemPtr = getSrcMemoryAtPort(0);
 
     if (execPtr) {
-        uint8_t *dst_data = dstMemPtr->getDataAs<uint8_t>();
-        uint8_t *src_data = srcMemPtr->getDataAs<uint8_t>();
-        execPtr->exec(src_data, dst_data, postOpsDataPtrs.data(), shape5D);
+        auto* dst_data = dstMemPtr->getDataAs<uint8_t>();
+        auto* src_data = srcMemPtr->getDataAs<uint8_t>();
+        execPtr->exec(src_data,
+                      dst_data,
+                      reinterpret_cast<void*>(postOpsDataPtrs.data()),
+                      shape5D,
+                      context->getCpuParallel());
     } else if (aclExecPtr) {
-        aclExecPtr->exec({srcMemPtr}, {dstMemPtr}, postOpsDataPtrs.data());
+        aclExecPtr->exec({srcMemPtr}, {dstMemPtr}, reinterpret_cast<void*>(postOpsDataPtrs.data()));
     } else {
-        OPENVINO_THROW("Can't execute Interpolate node. Primitive didn't created");
+        CPU_NODE_THROW("Primitive wasn't created");
     }
 }
 
-void MVN::MVNJitExecutor::mvn_pln(const uint8_t* src_data, uint8_t* dst_data, const void *post_ops_data_, const VectorDims& shape5d) {
+void MVN::MVNJitExecutor::mvn_pln(const uint8_t* src_data,
+                                  uint8_t* dst_data,
+                                  const void* post_ops_data_,
+                                  const VectorDims& shape5d,
+                                  const CpuParallelPtr& cpu_parallel) {
     size_t blk_size = 1;  // blk size in vmm
-    if (mayiuse(cpu::x64::avx512_core)) {
+    if (ov::with_cpu_x86_avx512_core()) {
         blk_size = 16;
-    } else if (mayiuse(cpu::x64::avx2)) {
+    } else if (ov::with_cpu_x86_avx2()) {
         blk_size = 8;
-    } else if (mayiuse(cpu::x64::sse41)) {
+    } else if (ov::with_cpu_x86_sse42()) {
         blk_size = 4;
     }
 
@@ -2181,20 +2408,20 @@ void MVN::MVNJitExecutor::mvn_pln(const uint8_t* src_data, uint8_t* dst_data, co
     size_t C3 = C2 * C;
 
     if (mvnAttrs.execAcrossChannels_) {
-        parallel_for(N, [&](int b) {
+        cpu_parallel->parallel_for(N, [&](int b) {
             size_t cb = b * C3;
             // Calculate mean value for one instance in batch
             // Parallel sum for each channel
-            float C3inv = 1.f / static_cast<float>(C3);
-            float mean_temp = 0.0f;
-            mean_temp = parallel_sum(C, mean_temp, [&](size_t c)->float {
-                float mean_internal = 0.0f;
+            float C3inv = 1.F / static_cast<float>(C3);
+            float mean_temp = 0.0F;
+            mean_temp = cpu_parallel->parallel_sum(C, mean_temp, [&](size_t c) -> float {
+                float mean_internal = 0.0F;
                 size_t cc = cb + c * C2;
                 auto arg = jit_mvn_call_args();
                 arg.src = src_data + cc * src_data_size;
-                arg.sum = static_cast<float*>(&mean_internal);
-                arg.work_amount = static_cast<size_t>(C2 / blk_size); // for vector part
-                arg.rt_shape_size = static_cast<size_t>(C2 % blk_size);
+                arg.sum = (&mean_internal);
+                arg.work_amount = (C2 / blk_size);  // for vector part
+                arg.rt_shape_size = (C2 % blk_size);
                 arg.post_op_data = post_ops_data_;
                 (*mvn_mean_kernel)(&arg);
                 return mean_internal;
@@ -2205,51 +2432,52 @@ void MVN::MVNJitExecutor::mvn_pln(const uint8_t* src_data, uint8_t* dst_data, co
             // calculate variance value for one instance in batch
             // parallel sum for each channel
             if (mvnAttrs.normalizeVariance_) {
-                float variance_temp = 0.0f;
-                variance_temp = parallel_sum(C, variance_temp, [&](size_t c)->float {
-                    float variance_internal = 0.0f;
+                float variance_temp = 0.0F;
+                variance_temp = cpu_parallel->parallel_sum(C, variance_temp, [&](size_t c) -> float {
+                    float variance_internal = 0.0F;
                     size_t cc = cb + c * C2;
                     auto arg = jit_mvn_call_args();
                     arg.src = src_data + cc * src_data_size;
-                    arg.mean = static_cast<float*>(&mean);
-                    arg.variance = static_cast<float*>(&variance_internal);
-                    arg.work_amount = static_cast<size_t>(C2 / blk_size);  // vector part
-                    arg.rt_shape_size = static_cast<size_t>(C2 % blk_size);  // for tails
+                    arg.mean = (&mean);
+                    arg.variance = (&variance_internal);
+                    arg.work_amount = (C2 / blk_size);    // vector part
+                    arg.rt_shape_size = (C2 % blk_size);  // for tails
                     arg.post_op_data = post_ops_data_;
                     (*mvn_variance_kernel)(&arg);
                     return variance_internal;
                 });
 
-                float variance = 1.f;
-                if (mvnAttrs.epsMode_ == INSIDE_SQRT)
+                float variance = 1.F;
+                if (mvnAttrs.epsMode_ == INSIDE_SQRT) {
                     variance /= sqrtf(variance_temp * C3inv + mvnAttrs.epsValue_);
-                else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT)
+                } else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT) {
                     variance /= sqrtf(variance_temp * C3inv) + mvnAttrs.epsValue_;
+                }
 
                 // mvn for one instance in batch
-                parallel_for(C, [&](int c) {
+                cpu_parallel->parallel_for(C, [&](int c) {
                     size_t cc = cb + c * C2;
                     auto arg = jit_mvn_call_args();
                     arg.src = src_data + cc * src_data_size;
                     arg.dst = dst_data + cc * dst_data_size;
-                    arg.mean = static_cast<float*>(&mean);
-                    arg.variance = static_cast<float*>(&variance);
-                    arg.work_amount = static_cast<size_t>(C2 / blk_size);  // work amount for vector part
-                    arg.rt_shape_size = static_cast<size_t>(C2 % blk_size);  // for tails
+                    arg.mean = (&mean);
+                    arg.variance = (&variance);
+                    arg.work_amount = (C2 / blk_size);    // work amount for vector part
+                    arg.rt_shape_size = (C2 % blk_size);  // for tails
                     arg.oc_off = sizeof(float) * c;
                     arg.post_op_data = post_ops_data_;
                     (*mvn_kernel)(&arg);
                 });
             } else {
                 // mvn for one instance in batch
-                parallel_for(C, [&](int c) {
+                cpu_parallel->parallel_for(C, [&](int c) {
                     size_t cc = cb + c * C2;
                     auto arg = jit_mvn_call_args();
                     arg.src = src_data + cc * src_data_size;
                     arg.dst = dst_data + cc * dst_data_size;
-                    arg.mean = static_cast<float*>(&mean);
-                    arg.work_amount = static_cast<size_t>(C2 / blk_size);
-                    arg.rt_shape_size = static_cast<size_t>(C2 % blk_size);  // for tails
+                    arg.mean = (&mean);
+                    arg.work_amount = (C2 / blk_size);
+                    arg.rt_shape_size = (C2 % blk_size);  // for tails
                     arg.oc_off = sizeof(float) * c;
                     arg.post_op_data = post_ops_data_;
                     (*mvn_kernel)(&arg);
@@ -2257,20 +2485,20 @@ void MVN::MVNJitExecutor::mvn_pln(const uint8_t* src_data, uint8_t* dst_data, co
             }
         });
     } else {
-        parallel_for2d(N, C, [&](size_t b, size_t c) {
+        cpu_parallel->parallel_for2d(N, C, [&](size_t b, size_t c) {
             size_t cb = b * C3;
             size_t cc = cb + c * C2;
-            float C2inv = 1.f / static_cast<float>(C2);
+            float C2inv = 1.F / static_cast<float>(C2);
 
             // mean for this channel
-            float mean = 0.f;
+            float mean = 0.F;
             // the same arg for three kernels
             auto arg = jit_mvn_call_args();
             arg.src = src_data + cc * src_data_size;
             arg.dst = dst_data + cc * dst_data_size;
-            arg.sum = static_cast<float*>(&mean);
-            arg.work_amount = static_cast<size_t>(C2 / blk_size);
-            arg.rt_shape_size = static_cast<size_t>(C2 % blk_size);
+            arg.sum = (&mean);
+            arg.work_amount = (C2 / blk_size);
+            arg.rt_shape_size = (C2 % blk_size);
             arg.oc_off = static_cast<size_t>(c * sizeof(float));
             arg.post_op_data = post_ops_data_;
             (*mvn_mean_kernel)(&arg);
@@ -2279,30 +2507,34 @@ void MVN::MVNJitExecutor::mvn_pln(const uint8_t* src_data, uint8_t* dst_data, co
 
             if (mvnAttrs.normalizeVariance_) {
                 // variance for this channel
-                float variance = 0.f;
-                arg.mean = static_cast<float*>(&mean);
-                arg.variance = static_cast<float*>(&variance);
+                float variance = 0.F;
+                arg.mean = (&mean);
+                arg.variance = (&variance);
                 (*mvn_variance_kernel)(&arg);
 
-                if (mvnAttrs.epsMode_ == INSIDE_SQRT)
-                    variance = 1.f / sqrtf(variance * C2inv + mvnAttrs.epsValue_);
-                else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT)
-                    variance = 1.f / (sqrtf(variance * C2inv) + mvnAttrs.epsValue_);
+                if (mvnAttrs.epsMode_ == INSIDE_SQRT) {
+                    variance = 1.F / sqrtf(variance * C2inv + mvnAttrs.epsValue_);
+                } else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT) {
+                    variance = 1.F / (sqrtf(variance * C2inv) + mvnAttrs.epsValue_);
+                }
 
                 // mvn for this channel
                 (*mvn_kernel)(&arg);
             } else {
                 // mvn for this channel
-                arg.mean = static_cast<float*>(&mean);
+                arg.mean = (&mean);
                 (*mvn_kernel)(&arg);
             }
         });
     }
 }
 
-void MVN::MVNRefExecutor::mvn_ref(const uint8_t* src_data, uint8_t* dst_data, const VectorDims& shape5d) {
-    const float *src_data_ptr = reinterpret_cast<const float *>(src_data);
-    float *dst_data_ptr = reinterpret_cast<float *>(dst_data);
+void MVN::MVNRefExecutor::mvn_ref(const uint8_t* src_data,
+                                  uint8_t* dst_data,
+                                  const VectorDims& shape5d,
+                                  const CpuParallelPtr& cpu_parallel) {
+    const auto* src_data_ptr = reinterpret_cast<const float*>(src_data);
+    auto* dst_data_ptr = reinterpret_cast<float*>(dst_data);
     const size_t N = shape5d[0];
     const size_t C = shape5d[1];
     const size_t D = shape5d[2];
@@ -2313,17 +2545,17 @@ void MVN::MVNRefExecutor::mvn_ref(const uint8_t* src_data, uint8_t* dst_data, co
     size_t C2 = C1 * D;
     size_t C3 = C2 * C;
 
-    parallel_for(N, [&](int b) {
+    cpu_parallel->parallel_for(N, [&](int b) {
         size_t cb = b * C3;
         if (mvnAttrs.execAcrossChannels_) {
             // Parallel sum for each channel for mean
-            float C3inv = 1.f / static_cast<float>(C3);
-            float mean_temp = 0.0f;
+            float C3inv = 1.F / static_cast<float>(C3);
+            float mean_temp = 0.0F;
 
-            mean_temp = parallel_sum(C, mean_temp, [&](size_t c)->float {
-                float mean_internal = 0.0f;
+            mean_temp = cpu_parallel->parallel_sum(C, mean_temp, [&](size_t c) -> float {
+                float mean_internal = 0.0F;
                 size_t cc = cb + c * C2;
-                for (size_t sp = 0lu; sp < C2; sp++) {
+                for (size_t sp = 0LU; sp < C2; sp++) {
                     mean_internal += src_data_ptr[cc + sp];
                 }
                 return mean_internal;
@@ -2333,66 +2565,68 @@ void MVN::MVNRefExecutor::mvn_ref(const uint8_t* src_data, uint8_t* dst_data, co
 
             if (mvnAttrs.normalizeVariance_) {
                 // parallel sum for each channel for variance
-                float variance_temp = 0.0f;
-                variance_temp = parallel_sum(C, variance_temp, [&](size_t c)->float {
-                    float variance_internal = 0.0f;
+                float variance_temp = 0.0F;
+                variance_temp = cpu_parallel->parallel_sum(C, variance_temp, [&](size_t c) -> float {
+                    float variance_internal = 0.0F;
                     size_t cc = cb + c * C2;
-                    for (size_t sp = 0lu; sp < C2; sp++) {
+                    for (size_t sp = 0LU; sp < C2; sp++) {
                         variance_internal += (src_data_ptr[cc + sp] - mean) * (src_data_ptr[cc + sp] - mean);
                     }
                     return variance_internal;
                 });
 
-                float variance = 1.f;
-                if (mvnAttrs.epsMode_ == INSIDE_SQRT)
-                    variance = 1.f / sqrtf(variance_temp * C3inv + mvnAttrs.epsValue_);
-                else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT)
-                    variance = 1.f / (sqrtf(variance_temp * C3inv) + mvnAttrs.epsValue_);
+                float variance = 1.F;
+                if (mvnAttrs.epsMode_ == INSIDE_SQRT) {
+                    variance = 1.F / sqrtf(variance_temp * C3inv + mvnAttrs.epsValue_);
+                } else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT) {
+                    variance = 1.F / (sqrtf(variance_temp * C3inv) + mvnAttrs.epsValue_);
+                }
 
-                parallel_for(C, [&](int c) {
+                cpu_parallel->parallel_for(C, [&](int c) {
                     size_t cc = cb + c * C2;
-                    for (size_t sp = 0lu; sp < C2; sp++) {
+                    for (size_t sp = 0LU; sp < C2; sp++) {
                         dst_data_ptr[cc + sp] = (src_data_ptr[cc + sp] - mean) * variance;
                     }
                 });
             } else {
-                parallel_for(C, [&](int c) {
+                cpu_parallel->parallel_for(C, [&](int c) {
                     size_t cc = cb + c * C2;
-                    for (size_t sp = 0lu; sp < C2; sp++) {
+                    for (size_t sp = 0LU; sp < C2; sp++) {
                         dst_data_ptr[cc + sp] = src_data_ptr[cc + sp] - mean;
                     }
                 });
             }
         } else {  // per channel
-            float C2inv = 1.f / static_cast<float>(C2);
-            parallel_for(C, [&](size_t c) {
+            float C2inv = 1.F / static_cast<float>(C2);
+            cpu_parallel->parallel_for(C, [&](size_t c) {
                 // mean for this channel
-                float mean = 0.f;
+                float mean = 0.F;
                 size_t cc = cb + c * C2;
-                for (size_t sp = 0lu; sp < C2; sp++) {
+                for (size_t sp = 0LU; sp < C2; sp++) {
                     mean += src_data_ptr[cc + sp];
                 }
                 mean *= C2inv;
 
                 if (mvnAttrs.normalizeVariance_) {
                     // variance for this channel
-                    float variance = 0.f;
-                    for (size_t sp = 0lu; sp < C2; sp++) {
+                    float variance = 0.F;
+                    for (size_t sp = 0LU; sp < C2; sp++) {
                         variance += (src_data_ptr[cc + sp] - mean) * (src_data_ptr[cc + sp] - mean);
                     }
 
-                    if (mvnAttrs.epsMode_ == INSIDE_SQRT)
-                        variance = 1.f / sqrtf(variance * C2inv + mvnAttrs.epsValue_);
-                    else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT)
-                        variance = 1.f / (sqrtf(variance * C2inv) + mvnAttrs.epsValue_);
+                    if (mvnAttrs.epsMode_ == INSIDE_SQRT) {
+                        variance = 1.F / sqrtf(variance * C2inv + mvnAttrs.epsValue_);
+                    } else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT) {
+                        variance = 1.F / (sqrtf(variance * C2inv) + mvnAttrs.epsValue_);
+                    }
 
                     // mvn for this channel
-                    for (size_t sp = 0lu; sp < C2; sp++) {
+                    for (size_t sp = 0LU; sp < C2; sp++) {
                         dst_data_ptr[cc + sp] = (src_data_ptr[cc + sp] - mean) * variance;
                     }
                 } else {
                     // mvn for this channel
-                    for (size_t sp = 0lu; sp < C2; sp++) {
+                    for (size_t sp = 0LU; sp < C2; sp++) {
                         dst_data_ptr[cc + sp] = src_data_ptr[cc + sp] - mean;
                     }
                 }
@@ -2401,11 +2635,14 @@ void MVN::MVNRefExecutor::mvn_ref(const uint8_t* src_data, uint8_t* dst_data, co
     });
 }
 
-void MVN::MVNJitExecutor::mvn_nspc(const uint8_t* src_data, uint8_t* dst_data, const void *post_ops_data_, const VectorDims& shape5d) {
+void MVN::MVNJitExecutor::mvn_nspc(const uint8_t* src_data,
+                                   uint8_t* dst_data,
+                                   const void* post_ops_data_,
+                                   const VectorDims& shape5d) {
     size_t blk_size = 1;  // channel blk for memory layout
-    if (mayiuse(cpu::x64::avx512_core)) {
+    if (ov::with_cpu_x86_avx512_core()) {
         blk_size = 16;
-    } else if (mayiuse(cpu::x64::avx2)) {
+    } else if (ov::with_cpu_x86_avx2()) {
         blk_size = 8;
     } else {
         blk_size = 4;
@@ -2417,34 +2654,41 @@ void MVN::MVNJitExecutor::mvn_nspc(const uint8_t* src_data, uint8_t* dst_data, c
     const size_t H = shape5d[3];
     const size_t W = shape5d[4];
 
-    size_t threads_num = parallel_get_num_threads();
-    size_t aux_buffer_size = mvnAttrs.execAcrossChannels_ ? 1 : rnd_up(C, blk_size) + blk_size;
-    parallel_for(N, [&](size_t b) {
-        std::vector<float> mean_buffer(aux_buffer_size * threads_num, 0.f);
+    const size_t max_threads = parallel_get_max_threads();
+    const size_t b_threads = std::min(max_threads, N);
+    const size_t w_threads = max_threads / b_threads;
+    const size_t aux_buffer_size = mvnAttrs.execAcrossChannels_ ? 1 : rnd_up(C, blk_size) + blk_size;
+
+    auto b_loop = [&](size_t b) {
+        std::vector<float> mean_buffer(aux_buffer_size * w_threads, 0.F);
         std::vector<float> variance_buffer;
         if (mvnAttrs.normalizeVariance_) {
-            variance_buffer.resize(aux_buffer_size * threads_num, 0.f);
+            variance_buffer.resize(aux_buffer_size * w_threads, 0.F);
         }
-        size_t b_offset = b * C * D * H * W;
+        float* mean_ptr = mean_buffer.data();
+        float* variance_ptr = variance_buffer.data();
+        const size_t b_offset = b * C * D * H * W;
 
         // kernel_type: 0 for mean, 1 for variance, 2 for normalization
         auto worker = [&](const bool across_channel, const int kernel_type) {
-            parallel_nt(0, [&](const int ithr, const int nthr) {
-                size_t start = 0, end = 0;
+            parallel_nt(w_threads, [&](const int ithr, const int nthr) {
+                size_t start = 0;
+                size_t end = 0;
                 splitter(D * H * W, nthr, ithr, start, end);
 
                 auto arg = jit_mvn_call_args();
                 arg.src = src_data + (b_offset + (start * C)) * src_data_size;
                 if (0 == kernel_type) {
-                    arg.sum = &mean_buffer[aux_buffer_size * ithr];
+                    arg.sum = &mean_ptr[aux_buffer_size * ithr];
                 } else if (1 == kernel_type) {
-                    arg.mean = &mean_buffer[0];
-                    arg.variance = &variance_buffer[aux_buffer_size * ithr];
+                    arg.mean = mean_ptr;
+                    arg.variance = &variance_ptr[aux_buffer_size * ithr];
                 } else if (2 == kernel_type) {
                     arg.dst = dst_data + (b_offset + (start * C)) * dst_data_size;
-                    arg.mean = &mean_buffer[0];
-                    if (mvnAttrs.normalizeVariance_)
-                        arg.variance = &variance_buffer[0];
+                    arg.mean = mean_ptr;
+                    if (mvnAttrs.normalizeVariance_) {
+                        arg.variance = variance_ptr;
+                    }
                     arg.oc_off = 0;
                     arg.post_op_data = post_ops_data_;
                 }
@@ -2471,53 +2715,67 @@ void MVN::MVNJitExecutor::mvn_nspc(const uint8_t* src_data, uint8_t* dst_data, c
         };
 
         if (mvnAttrs.execAcrossChannels_) {
-            float size_inv = 1.f / static_cast<float>(C * D * H * W);
+            float size_inv = 1.F / static_cast<float>(C * D * H * W);
             worker(true, 0);
-            for (size_t i = 1; i < threads_num; i++) {
-                mean_buffer[0] += mean_buffer[i];
+            for (size_t i = 1; i < w_threads; i++) {
+                mean_ptr[0] += mean_ptr[i];
             }
-            mean_buffer[0] *= size_inv;
+            mean_ptr[0] *= size_inv;
             if (mvnAttrs.normalizeVariance_) {
                 worker(true, 1);
-                for (size_t i = 1; i < threads_num; i++) {
-                    variance_buffer[0] += variance_buffer[i];
+                for (size_t i = 1; i < w_threads; i++) {
+                    variance_ptr[0] += variance_ptr[i];
                 }
-                if (mvnAttrs.epsMode_ == INSIDE_SQRT)
-                    variance_buffer[0] = 1.f / sqrtf(variance_buffer[0] * size_inv + mvnAttrs.epsValue_);
-                else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT)
-                    variance_buffer[0] = 1.f / (sqrtf(variance_buffer[0] * size_inv) + mvnAttrs.epsValue_);
+                if (mvnAttrs.epsMode_ == INSIDE_SQRT) {
+                    variance_ptr[0] = 1.F / sqrtf(variance_ptr[0] * size_inv + mvnAttrs.epsValue_);
+                } else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT) {
+                    variance_ptr[0] = 1.F / (sqrtf(variance_ptr[0] * size_inv) + mvnAttrs.epsValue_);
+                }
             }
             worker(true, 2);
         } else {  // for per_channel
-            float size_inv = 1.f / static_cast<float>(D * H * W);
+            float size_inv = 1.F / static_cast<float>(D * H * W);
             worker(false, 0);
-            for (size_t i = 1; i < threads_num; i++) {
-                for (size_t c = 0; c < C; c++)
-                    mean_buffer[c] += mean_buffer[c + aux_buffer_size * i];
+            for (size_t i = 1; i < w_threads; i++) {
+                for (size_t c = 0; c < C; c++) {
+                    mean_ptr[c] += mean_ptr[c + aux_buffer_size * i];
+                }
             }
-            for (size_t c = 0; c < C; c++)
-                mean_buffer[c] *= size_inv;
+            for (size_t c = 0; c < C; c++) {
+                mean_ptr[c] *= size_inv;
+            }
             if (mvnAttrs.normalizeVariance_) {
                 worker(false, 1);
-                for (size_t i = 1; i < threads_num; i++) {
-                    for (size_t c = 0; c < C; c++)
-                        variance_buffer[c] += variance_buffer[c + aux_buffer_size * i];
+                for (size_t i = 1; i < w_threads; i++) {
+                    for (size_t c = 0; c < C; c++) {
+                        variance_ptr[c] += variance_ptr[c + aux_buffer_size * i];
+                    }
                 }
                 for (size_t c = 0; c < C; c++) {
-                    if (mvnAttrs.epsMode_ == INSIDE_SQRT)
-                        variance_buffer[c] = 1.f / sqrtf(variance_buffer[c] * size_inv + mvnAttrs.epsValue_);
-                    else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT)
-                        variance_buffer[c] = 1.f / (sqrtf(variance_buffer[c] * size_inv) + mvnAttrs.epsValue_);
+                    if (mvnAttrs.epsMode_ == INSIDE_SQRT) {
+                        variance_ptr[c] = 1.F / sqrtf(variance_ptr[c] * size_inv + mvnAttrs.epsValue_);
+                    } else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT) {
+                        variance_ptr[c] = 1.F / (sqrtf(variance_ptr[c] * size_inv) + mvnAttrs.epsValue_);
+                    }
                 }
             }
             worker(false, 2);
         }
+    };
+
+    ParallelNestingContext nested_context;
+    parallel_nt_static(b_threads, [&](const int ithr, const int nthr) {
+        for_1d(ithr, nthr, N, b_loop);
     });
 }
 
-void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data, uint8_t* dst_data, const void *post_ops_data_, const VectorDims& shape5d) {
+void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data,
+                                  uint8_t* dst_data,
+                                  const void* post_ops_data_,
+                                  const VectorDims& shape5d,
+                                  const CpuParallelPtr& cpu_parallel) {
     size_t blk_size = 1;  // channel blk for memory layout
-    if (mayiuse(cpu::x64::avx512_core)) {
+    if (ov::with_cpu_x86_avx512_core()) {
         blk_size = 16;
     } else {
         blk_size = 8;
@@ -2529,42 +2787,56 @@ void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data, uint8_t* dst_data, co
     const size_t H = shape5d[3];
     const size_t W = shape5d[4];
 
-    size_t CB = div_up(C, blk_size);
+    const size_t CB = div_up(C, blk_size);
 
-    size_t C0 = W * blk_size;
-    size_t C1 = C0 * H;
-    size_t C2 = C1 * D;
-    size_t C3 = C2 * CB;
-    size_t C5 = C * D * H * W;
+    const size_t C0 = W * blk_size;
+    const size_t C1 = C0 * H;
+    const size_t C2 = C1 * D;
+    const size_t C3 = C2 * CB;
+    const size_t C5 = C * D * H * W;
 
-    size_t threads_num = parallel_get_num_threads();
+    const size_t threads_num = parallel_get_max_threads();
     size_t aux_buffer_size = mvnAttrs.execAcrossChannels_ ? blk_size : rnd_up(C, blk_size);
     aux_buffer_size += blk_size;
     std::vector<float> mean_buffer(aux_buffer_size * threads_num);
     std::vector<float> variance_buffer(aux_buffer_size * threads_num);
+    const size_t overflow_thread_id = std::numeric_limits<size_t>::max() / aux_buffer_size;
 
-    for (size_t b = 0lu; b < N; b++) {
+    for (size_t b = 0LU; b < N; b++) {
         size_t b_offset = b * C3;
         if (mvnAttrs.execAcrossChannels_) {
             // mean for this instance in batch
-            float C5inv = 1.f / static_cast<float>(C5);
-            float mean_temp = 0.0f;
-            mean_temp = parallel_sum3d(CB, D, H, mean_temp, [&](size_t cb, size_t d, size_t h)->float {
+            float C5inv = 1.F / static_cast<float>(C5);
+            float mean_temp = 0.0F;
+            mean_temp = cpu_parallel->parallel_sum3d(CB, D, H, mean_temp, [&](size_t cb, size_t d, size_t h) -> float {
                 size_t src_offset = b_offset + cb * C2 + d * C1 + h * C0;
 
-                float mean_internal = 0.0f;
+                float mean_internal = 0.0F;
                 /////////////////////////////////
                 //          W           //  |
                 //                      //  |
                 //                      //  |
-                //blk +  +  +  +  +  +  //  |  +
+                // blk +  +  +  +  +  +  //  |  +
                 //                      //  |
                 //                      //  |
                 //                      // \|/
                 /////////////////////////////////
-                auto mean_buffer_ptr = &mean_buffer[aux_buffer_size * parallel_get_thread_num()];
-                for (size_t i = 0; i < blk_size; i++)
-                    mean_buffer_ptr[i] = 0.f;
+                auto raw_tid = parallel_get_thread_num();
+                OPENVINO_ASSERT(raw_tid >= 0, "parallel_get_thread_num() returns negative value in MVNJitExecutor");
+                const auto thread_idx = static_cast<size_t>(raw_tid);
+                OPENVINO_ASSERT(
+                    thread_idx < threads_num,
+                    "parallel_get_thread_num() returns value greater than or equal to max threads in MVNJitExecutor");
+                // Prevent overflow in aux_buffer_size * thread_idx (for static analyzers and safety)
+                OPENVINO_ASSERT(thread_idx <= overflow_thread_id,
+                                "Calculated offset for mean_buffer is too large in MVNJitExecutor");
+                const size_t offset = aux_buffer_size * thread_idx;
+                OPENVINO_ASSERT(offset <= mean_buffer.size(),
+                                "Calculated offset for mean_buffer is out of range in MVNJitExecutor");
+                auto* mean_buffer_ptr = mean_buffer.data() + offset;
+                for (size_t i = 0; i < blk_size; i++) {
+                    mean_buffer_ptr[i] = 0.F;
+                }
 
                 auto arg = jit_mvn_call_args();
                 arg.src = src_data + src_offset * src_data_size;
@@ -2573,56 +2845,74 @@ void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data, uint8_t* dst_data, co
                 // real tail number or tail is 0(for full vector block).
                 arg.rt_shape_size = (C - cb * blk_size) < blk_size ? static_cast<size_t>(C % blk_size) : 0;
                 arg.oc_off = static_cast<size_t>(cb * blk_size * sizeof(float));  // for tail process
-                (*mvn_mean_kernel)(&arg); // for W * blk
+                (*mvn_mean_kernel)(&arg);                                         // for W * blk
 
                 size_t min_cb = (std::min)(blk_size, C - cb * blk_size);
-                for (size_t i = 0; i < min_cb; i++)
+                for (size_t i = 0; i < min_cb; i++) {
                     mean_internal += mean_buffer_ptr[i];
+                }
                 return mean_internal;
             });
             float mean = mean_temp * C5inv;
 
             if (mvnAttrs.normalizeVariance_) {
                 // variance: sum((x-mean)*(x-mean)) for one instance in batch
-                float variance_temp = 0.0f;
-                variance_temp = parallel_sum3d(CB, D, H, variance_temp, [&](size_t cb, size_t d, size_t h)->float {
-                    size_t src_offset = b_offset + cb * C2 + d * C1 + h * C0;
+                float variance_temp = 0.0F;
+                variance_temp =
+                    cpu_parallel->parallel_sum3d(CB, D, H, variance_temp, [&](size_t cb, size_t d, size_t h) -> float {
+                        size_t src_offset = b_offset + cb * C2 + d * C1 + h * C0;
 
-                    float variance_internal = 0.0f;
-                    auto variance_buffer_ptr = &variance_buffer[aux_buffer_size * parallel_get_thread_num()];
-                    for (size_t i = 0; i < blk_size; i++)
-                        variance_buffer_ptr[i] = 0.f;
+                        float variance_internal = 0.0F;
+                        auto raw_tid = parallel_get_thread_num();
+                        OPENVINO_ASSERT(raw_tid >= 0,
+                                        "parallel_get_thread_num() returns negative value in MVNJitExecutor");
+                        const auto thread_idx = static_cast<size_t>(raw_tid);
+                        OPENVINO_ASSERT(thread_idx < threads_num,
+                                        "parallel_get_thread_num() returns value greater than or equal to max threads "
+                                        "in MVNJitExecutor");
+                        // Prevent overflow in aux_buffer_size * thread_idx (for static analyzers and safety)
+                        OPENVINO_ASSERT(thread_idx <= overflow_thread_id,
+                                        "Calculated offset for mean_buffer is too large in MVNJitExecutor");
+                        const size_t offset = aux_buffer_size * thread_idx;
+                        OPENVINO_ASSERT(offset <= variance_buffer.size(),
+                                        "Calculated offset for variance_buffer is out of range in MVNJitExecutor");
+                        auto* variance_buffer_ptr = variance_buffer.data() + offset;
+                        for (size_t i = 0; i < blk_size; i++) {
+                            variance_buffer_ptr[i] = 0.F;
+                        }
 
-                    auto arg = jit_mvn_call_args();
-                    arg.src = src_data + src_offset * src_data_size;
-                    arg.mean = static_cast<float*>(&mean);
-                    arg.variance = variance_buffer_ptr;
-                    arg.work_amount = static_cast<size_t>(W);
-                    arg.rt_shape_size = (C - cb * blk_size) < blk_size ? static_cast<size_t>(C % blk_size) : 0;
-                    arg.oc_off = cb * blk_size * sizeof(float);
-                    arg.post_op_data = post_ops_data_;
-                    (*mvn_variance_kernel)(&arg);
+                        auto arg = jit_mvn_call_args();
+                        arg.src = src_data + src_offset * src_data_size;
+                        arg.mean = (&mean);
+                        arg.variance = variance_buffer_ptr;
+                        arg.work_amount = static_cast<size_t>(W);
+                        arg.rt_shape_size = (C - cb * blk_size) < blk_size ? static_cast<size_t>(C % blk_size) : 0;
+                        arg.oc_off = cb * blk_size * sizeof(float);
+                        arg.post_op_data = post_ops_data_;
+                        (*mvn_variance_kernel)(&arg);
 
-                    size_t min_cb = (std::min)(blk_size, C - cb * blk_size);
-                    for (size_t i = 0; i < min_cb; i++)
-                        variance_internal += variance_buffer_ptr[i];
-                    return variance_internal;
-                });
+                        size_t min_cb = (std::min)(blk_size, C - cb * blk_size);
+                        for (size_t i = 0; i < min_cb; i++) {
+                            variance_internal += variance_buffer_ptr[i];
+                        }
+                        return variance_internal;
+                    });
 
-                float variance = 1.f;
-                if (mvnAttrs.epsMode_ == INSIDE_SQRT)
+                float variance = 1.F;
+                if (mvnAttrs.epsMode_ == INSIDE_SQRT) {
                     variance /= sqrtf(variance_temp * C5inv + mvnAttrs.epsValue_);
-                else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT)
+                } else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT) {
                     variance /= sqrtf(variance_temp * C5inv) + mvnAttrs.epsValue_;
+                }
 
                 // mvn for one instance in batch
-                parallel_for3d(CB, D, H, [&](size_t cb, size_t d, size_t h) {
+                cpu_parallel->parallel_for3d(CB, D, H, [&](size_t cb, size_t d, size_t h) {
                     size_t src_offset = b_offset + cb * C2 + d * C1 + h * C0;
                     auto arg = jit_mvn_call_args();
                     arg.src = src_data + src_offset * src_data_size;
                     arg.dst = dst_data + src_offset * dst_data_size;
-                    arg.mean = static_cast<float*>(&mean);
-                    arg.variance = static_cast<float*>(&variance);
+                    arg.mean = (&mean);
+                    arg.variance = (&variance);
                     arg.work_amount = static_cast<size_t>(W);
                     arg.rt_shape_size = (C - cb * blk_size) < blk_size ? static_cast<size_t>(C % blk_size) : 0;
                     arg.oc_off = cb * blk_size * sizeof(float);
@@ -2631,12 +2921,12 @@ void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data, uint8_t* dst_data, co
                 });
             } else {
                 // mvn for one instance in batch
-                parallel_for3d(CB, D, H, [&](size_t cb, size_t d, size_t h) {
+                cpu_parallel->parallel_for3d(CB, D, H, [&](size_t cb, size_t d, size_t h) {
                     size_t src_offset = b_offset + cb * C2 + d * C1 + h * C0;
                     auto arg = jit_mvn_call_args();
                     arg.src = src_data + src_offset * src_data_size;
                     arg.dst = dst_data + src_offset * dst_data_size;
-                    arg.mean = static_cast<float*>(&mean);
+                    arg.mean = (&mean);
                     arg.work_amount = static_cast<size_t>(W);
                     arg.rt_shape_size = (C - cb * blk_size) < blk_size ? static_cast<size_t>(C % blk_size) : 0;
                     arg.oc_off = cb * blk_size * sizeof(float);
@@ -2645,16 +2935,17 @@ void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data, uint8_t* dst_data, co
                 });
             }
         } else {  // for per_channel
-            float size_inv = 1.f / static_cast<float>(D * H * W);
-            for (size_t i = 0; i < mean_buffer.size(); i++)
-                mean_buffer[i] = 0.f;
+            float size_inv = 1.F / static_cast<float>(D * H * W);
+            for (float& i : mean_buffer) {
+                i = 0.F;
+            }
 
             // one thread for one C*W size(the same H) to get C size result for the same H, added to last group result
             // keep the compute order the same as planar
-            parallel_for2d(D, H, [&](size_t thr_idx, size_t d, size_t h) {
+            auto dh_loop = [&](size_t thr_idx, size_t d, size_t h) {
                 for (size_t cb = 0; cb < CB; cb++) {
                     size_t src_offset = b_offset + cb * C2 + d * C1 + h * C0;
-                    auto mean_buffer_ptr = &mean_buffer[blk_size * cb + aux_buffer_size * thr_idx];
+                    auto* mean_buffer_ptr = &mean_buffer[blk_size * cb + aux_buffer_size * thr_idx];
 
                     auto arg = jit_mvn_call_args();
                     arg.src = src_data + src_offset * src_data_size;
@@ -2665,24 +2956,31 @@ void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data, uint8_t* dst_data, co
                     arg.post_op_data = post_ops_data_;
                     (*mvn_mean_kernel)(&arg);
                 }
+            };
+
+            parallel_nt_static(threads_num, [&](const int ithr, const int nthr) {
+                for_2d(ithr, nthr, D, H, dh_loop);
             });
 
             for (size_t i = 1; i < threads_num; i++) {
-                for (size_t c = 0; c < C; c++)
+                for (size_t c = 0; c < C; c++) {
                     mean_buffer[c] += mean_buffer[c + aux_buffer_size * i];
+                }
             }
-            for (size_t c = 0; c < C; c++)
+            for (size_t c = 0; c < C; c++) {
                 mean_buffer[c] *= size_inv;
+            }
 
             if (mvnAttrs.normalizeVariance_) {
-                for (size_t i = 0; i < variance_buffer.size(); i++)
-                    variance_buffer[i] = 0.f;
+                for (float& i : variance_buffer) {
+                    i = 0.F;
+                }
 
-                parallel_for2d(D, H, [&](size_t thr_idx, size_t d, size_t h) {
+                auto dh_loop = [&](size_t thr_idx, size_t d, size_t h) {
                     for (size_t cb = 0; cb < CB; cb++) {
                         size_t src_offset = b_offset + cb * C2 + d * C1 + h * C0;
-                        auto mean_buffer_ptr = &mean_buffer[blk_size * cb];
-                        auto variance_buffer_ptr = &variance_buffer[blk_size * cb + aux_buffer_size * thr_idx];
+                        auto* mean_buffer_ptr = &mean_buffer[blk_size * cb];
+                        auto* variance_buffer_ptr = &variance_buffer[blk_size * cb + aux_buffer_size * thr_idx];
 
                         auto arg = jit_mvn_call_args();
                         arg.src = src_data + src_offset * src_data_size;
@@ -2694,23 +2992,30 @@ void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data, uint8_t* dst_data, co
                         arg.post_op_data = post_ops_data_;
                         (*mvn_variance_kernel)(&arg);
                     }
+                };
+
+                parallel_nt_static(threads_num, [&](const int ithr, const int nthr) {
+                    for_2d(ithr, nthr, D, H, dh_loop);
                 });
+
                 for (size_t i = 1; i < threads_num; i++) {
-                    for (size_t c = 0; c < C; c++)
+                    for (size_t c = 0; c < C; c++) {
                         variance_buffer[c] += variance_buffer[c + aux_buffer_size * i];
+                    }
                 }
                 for (size_t c = 0; c < C; c++) {
-                    if (mvnAttrs.epsMode_ == INSIDE_SQRT)
-                        variance_buffer[c] = 1.f / sqrtf(variance_buffer[c] * size_inv + mvnAttrs.epsValue_);
-                    else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT)
-                        variance_buffer[c] = 1.f / (sqrtf(variance_buffer[c] * size_inv) + mvnAttrs.epsValue_);
+                    if (mvnAttrs.epsMode_ == INSIDE_SQRT) {
+                        variance_buffer[c] = 1.F / sqrtf(variance_buffer[c] * size_inv + mvnAttrs.epsValue_);
+                    } else if (mvnAttrs.epsMode_ == OUTSIDE_SQRT) {
+                        variance_buffer[c] = 1.F / (sqrtf(variance_buffer[c] * size_inv) + mvnAttrs.epsValue_);
+                    }
                 }
 
-                parallel_for2d(D, H, [&](size_t d, size_t h) {
+                cpu_parallel->parallel_for2d(D, H, [&](size_t d, size_t h) {
                     for (size_t cb = 0; cb < CB; cb++) {
                         size_t src_offset = b_offset + cb * C2 + d * C1 + h * C0;
-                        auto mean_buffer_ptr = &mean_buffer[blk_size * cb];
-                        auto variance_buffer_ptr = &variance_buffer[blk_size * cb];
+                        auto* mean_buffer_ptr = &mean_buffer[blk_size * cb];
+                        auto* variance_buffer_ptr = &variance_buffer[blk_size * cb];
 
                         auto arg = jit_mvn_call_args();
                         arg.src = src_data + src_offset * src_data_size;
@@ -2726,10 +3031,10 @@ void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data, uint8_t* dst_data, co
                 });
             } else {
                 // normalizeVariance_ == false
-                parallel_for2d(D, H, [&](size_t d, size_t h) {
+                cpu_parallel->parallel_for2d(D, H, [&](size_t d, size_t h) {
                     for (size_t cb = 0; cb < CB; cb++) {
                         size_t src_offset = b_offset + cb * C2 + d * C1 + h * C0;
-                        auto mean_buffer_ptr = &mean_buffer[blk_size * cb];
+                        auto* mean_buffer_ptr = &mean_buffer[blk_size * cb];
 
                         auto arg = jit_mvn_call_args();
                         arg.src = src_data + src_offset * src_data_size;
@@ -2748,15 +3053,14 @@ void MVN::MVNJitExecutor::mvn_blk(const uint8_t* src_data, uint8_t* dst_data, co
 }
 
 bool MVN::canFuse(const NodePtr& node) const {
-    if (!mayiuse(cpu::x64::sse41)) {
+    if (!ov::with_cpu_x86_sse42()) {
         return false;
     }
     // limit post ops to unary when shape transformed on channel
     // 1D only fused with unary
     int inputRank = getInputShapeAtPort(0).getRank();
     bool unaryEltwise = isUnaryEltwise(node);
-    if ((inputRank == 1 && !unaryEltwise) ||
-        (inputRank == 2 && !unaryEltwise && mvnAttrs.initAcrossChannels_)) {
+    if ((inputRank == 1 && !unaryEltwise) || (inputRank == 2 && !unaryEltwise && mvnAttrs.initAcrossChannels_)) {
         return false;
     }
 
@@ -2767,6 +3071,4 @@ bool MVN::created() const {
     return getType() == Type::MVN;
 }
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

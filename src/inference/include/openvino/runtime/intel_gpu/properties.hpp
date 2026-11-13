@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -33,6 +33,12 @@ namespace intel_gpu {
 static constexpr Property<uint64_t, PropertyMutability::RO> device_total_mem_size{"GPU_DEVICE_TOTAL_MEM_SIZE"};
 
 /**
+ * @brief Read-only property which defines max size of memory object allocation in bytes
+ * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
+ */
+static constexpr Property<uint64_t, PropertyMutability::RO> device_max_alloc_mem_size{"GPU_DEVICE_MAX_ALLOC_MEM_SIZE"};
+
+/**
  * @brief Read-only property to get microarchitecture identifier in major.minor.revision format
  * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
  */
@@ -43,6 +49,12 @@ static constexpr Property<std::string, PropertyMutability::RO> uarch_version{"GP
  * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
  */
 static constexpr Property<int32_t, PropertyMutability::RO> execution_units_count{"GPU_EXECUTION_UNITS_COUNT"};
+
+/**
+ * @brief Read-only property to get cache line size for current GPU
+ * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
+ */
+static constexpr Property<uint32_t, PropertyMutability::RO> cacheline_size{"GPU_CACHELINE_SIZE"};
 
 /**
  * @brief Read-only property to get statistics of GPU memory allocated by engine for each allocation type
@@ -115,7 +127,66 @@ static constexpr Property<ov::hint::Priority> host_task_priority{"GPU_HOST_TASK_
  * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
  */
 static constexpr Property<int64_t> available_device_mem{"AVAILABLE_DEVICE_MEM_SIZE"};
+
+/**
+ * @brief Turning on this key disables SDPA operation decomposition and keeps SDPA operation in the graph.
+ * Enabling SDPA optimization may provide performance improvements and memory usage reduction.
+ * This key serves as a recommendation and may be ignored in known sub-optimal cases.
+ * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
+ */
+static constexpr Property<bool> enable_sdpa_optimization{"GPU_ENABLE_SDPA_OPTIMIZATION"};
+
+/**
+ * @brief Turning on this key enables LoRA operation,
+ * otherwise the graph will remain in its original form with the decomposed LoRA subgraph.
+ * Enabling LoRA operation may provide performance improvements, but has stricter restrictions:
+ * LoRA rank must be less than or equal to 256 and divisible by 16.
+ * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
+ */
+static constexpr Property<bool> enable_lora_operation{"GPU_ENABLE_LORA_OPERATION"};
+
+/**
+ * @brief Enables kernel reuse across implementations to reduce memory footprint.
+ * As a trade-off, OpenCL set_arguments() is invoked more frequently, which increases host CPU usage
+ * and may slow down execution.
+ * This property applies only to single-stream scenarios and is ignored otherwise.
+ * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
+ */
+static constexpr Property<bool> enable_kernels_reuse{"GPU_ENABLE_KERNELS_REUSE"};
+
+/**
+ * @brief This property defines maximum group size for dynamic quantization optimization
+ * @ingroup ov_runtime_cpp_prop_api
+ *
+ * If dynamic_quantization_group_size is larger than this max value, dynamic quantization will be disabled.
+ * This property is intended to be set from model rt-info to limit dynamic quantization group size for certain models.
+ */
+static constexpr Property<uint64_t, PropertyMutability::RW> dynamic_quantization_group_size_max{
+    "GPU_DYNAMIC_QUANTIZATION_GROUP_SIZE_MAX"};
+
+/**
+ * @brief Turning on this key bypasses the device max allocation size check and switches
+ * addressing mode to allow allocations larger than 4GB as described here:
+ * https://github.com/intel/compute-runtime/blob/master/programmers-guide/ALLOCATIONS_GREATER_THAN_4GB.md#creating-allocations-greater-than-4GB
+ * Note: Performance may be lower with this option enabled.
+ * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
+ */
+static constexpr Property<bool> enable_large_allocations{"GPU_ENABLE_LARGE_ALLOCATIONS"};
+
 }  // namespace hint
+
+/**
+ * @brief Percentage (0–100) of model weights to offload to disk.
+ * When set to 0 (default), all weights are resident on GPU. A value of N means
+ * N% of eligible weights are streamed from host memory on demand via an LRU cache,
+ * reducing GPU memory usage at the cost of inference latency.
+ * Currently supported for MoE expert weights only. This property requires weightless
+ * caching: it automatically enables @ref ov::enable_weightless unless the user explicitly
+ * disables it. Setting this property together with @ref ov::enable_weightless(false) or
+ * @ref ov::cache_mode(ov::CacheMode::OPTIMIZE_SPEED) throws an exception.
+ * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
+ */
+static constexpr Property<size_t, PropertyMutability::RW> offload_ratio{"OFFLOAD_RATIO"};
 
 /**
  * @brief These keys instruct the GPU plugin to use surface/buffer memory type.
@@ -146,6 +217,12 @@ namespace capability {
  * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
  */
 constexpr static const auto HW_MATMUL = "GPU_HW_MATMUL";
+
+/**
+ * @brief Device supports unified shared memory
+ * @ingroup ov_runtime_ocl_gpu_prop_cpp_api
+ */
+constexpr static const auto USM_MEMORY = "GPU_USM_MEMORY";
 
 }  // namespace capability
 }  // namespace intel_gpu

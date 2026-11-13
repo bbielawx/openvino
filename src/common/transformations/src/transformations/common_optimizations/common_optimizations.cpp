@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -24,8 +24,11 @@
 #include "transformations/common_optimizations/disable_random_uniform_constant_folding.hpp"
 #include "transformations/common_optimizations/dropout_with_random_uniform_replacer.hpp"
 #include "transformations/common_optimizations/eliminate_unsqueeze_gather.hpp"
+#include "transformations/common_optimizations/fq_concat_fusion.hpp"
+#include "transformations/common_optimizations/fq_eliminate_sequential.hpp"
 #include "transformations/common_optimizations/fq_mul_fusion.hpp"
 #include "transformations/common_optimizations/fq_reshape_fusion.hpp"
+#include "transformations/common_optimizations/fuse_clamp_and_fake_quantize.hpp"
 #include "transformations/common_optimizations/gelu_fusion.hpp"
 #include "transformations/common_optimizations/hsigmoid_fusion.hpp"
 #include "transformations/common_optimizations/hswish_fusion.hpp"
@@ -66,12 +69,15 @@
 #include "transformations/init_node_info.hpp"
 #include "transformations/op_conversions/batch_norm_decomposition.hpp"
 #include "transformations/op_conversions/bidirectional_sequences_decomposition.hpp"
+#include "transformations/op_conversions/convert_avgpool_downgrade.hpp"
 #include "transformations/op_conversions/convert_bitwise_to_logical_bool.hpp"
 #include "transformations/op_conversions/convert_broadcast_to_tiles.hpp"
 #include "transformations/op_conversions/convert_convertlike.hpp"
 #include "transformations/op_conversions/convert_deformable_conv_v8_to_v1.hpp"
 #include "transformations/op_conversions/convert_depth_to_space.hpp"
 #include "transformations/op_conversions/convert_divide.hpp"
+#include "transformations/op_conversions/convert_embedding_bag_offsets15_downgrade.hpp"
+#include "transformations/op_conversions/convert_embedding_bag_packed15_downgrade.hpp"
 #include "transformations/op_conversions/convert_gather_downgrade.hpp"
 #include "transformations/op_conversions/convert_gather_upgrade.hpp"
 #include "transformations/op_conversions/convert_gelu.hpp"
@@ -79,9 +85,9 @@
 #include "transformations/op_conversions/convert_interpolate1_to_interpolate4.hpp"
 #include "transformations/op_conversions/convert_maxpool_downgrade.hpp"
 #include "transformations/op_conversions/convert_maxpool_upgrade.hpp"
-#include "transformations/op_conversions/convert_minimum_to_power_and_max.hpp"
 #include "transformations/op_conversions/convert_mod.hpp"
 #include "transformations/op_conversions/convert_multiclass_nms_upgrade.hpp"
+#include "transformations/op_conversions/convert_one_hot_v16_to_v1.hpp"
 #include "transformations/op_conversions/convert_pad12_downgrade.hpp"
 #include "transformations/op_conversions/convert_pad_to_group_conv.hpp"
 #include "transformations/op_conversions/convert_prior_box_v8_to_v0.hpp"
@@ -89,9 +95,13 @@
 #include "transformations/op_conversions/convert_roi_align_v3_to_v9.hpp"
 #include "transformations/op_conversions/convert_roi_align_v9_to_v3.hpp"
 #include "transformations/op_conversions/convert_scatter_elements_update12_downgrade.hpp"
+#include "transformations/op_conversions/convert_scatter_nd_update15_downgrade.hpp"
+#include "transformations/op_conversions/convert_slice_to_strided_slice.hpp"
+#include "transformations/op_conversions/convert_slicescatter.hpp"
 #include "transformations/op_conversions/convert_softmax_downgrade.hpp"
 #include "transformations/op_conversions/convert_softmax_upgrade.hpp"
 #include "transformations/op_conversions/convert_space_to_depth.hpp"
+#include "transformations/op_conversions/convert_squeeze15_downgrade.hpp"
 #include "transformations/op_conversions/convert_subtract.hpp"
 #include "transformations/op_conversions/convert_topk11_downgrade.hpp"
 #include "transformations/op_conversions/convert_xor_to_logical_xor.hpp"
@@ -101,6 +111,7 @@
 #include "transformations/op_conversions/eye_decomposition.hpp"
 #include "transformations/op_conversions/gelu7_downgrade.hpp"
 #include "transformations/op_conversions/group_normalization_decomposition.hpp"
+#include "transformations/op_conversions/group_query_attention_decomposition.hpp"
 #include "transformations/op_conversions/hsigmoid_decomposition.hpp"
 #include "transformations/op_conversions/hswish_decomposition.hpp"
 #include "transformations/op_conversions/log_softmax_decomposition.hpp"
@@ -113,16 +124,19 @@
 #include "transformations/op_conversions/softmax_decomposition.hpp"
 #include "transformations/op_conversions/softsign_decomposition.hpp"
 #include "transformations/op_conversions/unique_decomposition.hpp"
+#include "transformations/symbolic_transformations/dereshape_matmul.hpp"
 #include "transformations/symbolic_transformations/symbolic_optimizations.hpp"
 
 bool ov::pass::CommonOptimizations::run_on_model(const std::shared_ptr<ov::Model>& f) {
     RUN_ON_FUNCTION_SCOPE(CommonOptimizations);
-    ov::pass::Manager manager(get_pass_config());
+    ov::pass::Manager manager(get_pass_config(), "CommonOptimizations");
     manager.set_per_pass_validation(false);
 
     using namespace ov::pass;
     REGISTER_PASS(manager, DisableDecompressionConvertConstantFolding)
-
+    // MOCTransformations contain StridedSliceOptimization transformation,
+    // so we must call SliceToStridedSlice before MOCTransformations call
+    REGISTER_PASS(manager, SliceToStridedSlice, true)
     // Disable low_precision_enabled as all plugins handle low-precision sub-graph manually
     // before CommonOptimization pipeline execution
     REGISTER_PASS(manager, MOCTransformations, true, false)
@@ -147,6 +161,7 @@ bool ov::pass::CommonOptimizations::run_on_model(const std::shared_ptr<ov::Model
     REGISTER_DISABLED_PASS(manager, ConvertInterpolate1ToInterpolate4)
 
     auto decomp = manager.register_pass<GraphRewrite>();
+    ADD_MATCHER(decomp, GroupQueryAttentionDecomposition)
     ADD_MATCHER(decomp, ScaledDotProductAttentionDecomposition)
     ADD_MATCHER(decomp, Gelu7Downgrade)
     ADD_MATCHER(decomp, BidirectionalSequenceDecomposition)
@@ -159,7 +174,6 @@ bool ov::pass::CommonOptimizations::run_on_model(const std::shared_ptr<ov::Model
     ADD_MATCHER(decomp, ConvertBroadcastToTiles)
     ADD_MATCHER(decomp, ConvertMod)
     ADD_MATCHER(decomp, ConvertGELU)
-    ADD_MATCHER(decomp, ConvertMinimum)
     ADD_MATCHER(decomp, ConvertSubtract)
     ADD_MATCHER(decomp, ConvertDivide)
     ADD_MATCHER(decomp, ConvertDepthToSpace)
@@ -179,6 +193,9 @@ bool ov::pass::CommonOptimizations::run_on_model(const std::shared_ptr<ov::Model
     ADD_MATCHER(decomp, UniqueDecomposition)
     decomp->set_name("ov::pass::CommonDecompositions");
 
+    REGISTER_PASS(manager, NopElimination, true)
+    REGISTER_PASS(manager, DeReshapeMatMul)
+    REGISTER_PASS(manager, DeReshapeFullyConnected)
     // CF is required after all decompositions
     REGISTER_PASS(manager, ConstantFolding)
 
@@ -207,6 +224,7 @@ bool ov::pass::CommonOptimizations::run_on_model(const std::shared_ptr<ov::Model
     REGISTER_PASS(manager, ConvertDeformableConv8To1)
     REGISTER_PASS(manager, ConvertSoftMax8ToSoftMax1)
     REGISTER_DISABLED_PASS(manager, ConvertSoftMax1ToSoftMax8)
+    REGISTER_PASS(manager, ConvertMaxPool14ToMaxPool8)
     REGISTER_PASS(manager, ConvertMaxPool8ToMaxPool1)
     REGISTER_DISABLED_PASS(manager, ConvertMaxPool1ToMaxPool8)
     REGISTER_PASS(manager, ConvertPriorBox8To0)
@@ -221,15 +239,26 @@ bool ov::pass::CommonOptimizations::run_on_model(const std::shared_ptr<ov::Model
     REGISTER_PASS(manager, ConvertPad12ToPad1)
     REGISTER_PASS(manager, ConvertScatterElementsUpdate12ToScatterElementsUpdate3)
     REGISTER_PASS(manager, ConcatFusion)
+    REGISTER_PASS(manager, ConvertAvgPool14ToAvgPool1)
+    REGISTER_PASS(manager, ConvertEmbeddingBagOffsets15ToEmbeddingBagOffsetsSum3)
+    REGISTER_PASS(manager, ConvertEmbeddingBagPacked15ToEmbeddingBagPackedSum3)
+    REGISTER_PASS(manager, ConvertScatterNDUpdate15ToScatterNDUpdate3)
+    REGISTER_PASS(manager, ConvertSliceScatter)
+    REGISTER_PASS(manager, ConvertSqueeze15ToSqueeze0)
+    REGISTER_PASS(manager, ConvertOneHot16To1)
 
     auto fq_fusions = manager.register_pass<GraphRewrite>();
     ADD_MATCHER(fq_fusions, FakeQuantizeMulFusion)
     ADD_MATCHER(fq_fusions, FakeQuantizeReshapeFusion)
     ADD_MATCHER(fq_fusions, PullTransposeThroughFQUp)
+    ADD_MATCHER(fq_fusions, FakeQuantizeConcatFusion)
     ADD_MATCHER(fq_fusions, ReluFakeQuantizeFusion)
+    ADD_MATCHER(fq_fusions, FuseClampAndFakeQuantize)
     ADD_MATCHER(fq_fusions, AddFakeQuantizeFusion)
     ADD_MATCHER(fq_fusions, MulFakeQuantizeFusion)
     fq_fusions->set_name("ov::pass::FakeQuantizeFusions");
+
+    REGISTER_PASS(manager, FakeQuantizeEliminateSequential)
 
     // Temporary transformation to allow for PyTorch frontend to
     // partially support bitwise operators with boolean inputs for plugins
@@ -241,7 +270,6 @@ bool ov::pass::CommonOptimizations::run_on_model(const std::shared_ptr<ov::Model
     // because we cannot insert any MaxPools since they may prevent
     // other optimizations
     REGISTER_PASS(manager, StridesOptimization)
-    REGISTER_PASS(manager, SymbolicOptimizations)
     REGISTER_PASS(manager, Validate)
     manager.run_passes(f);
 

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -405,6 +405,26 @@ inline uint get_os_zyxi_osv16_index(uint o, uint i, uint z, uint y, uint x, uint
         ((o) / (sub_group_size))*CAT(prefix, _OFM_PITCH)                 \
     )
 
+#define GET_FILTER_OS_IYX_OSV_INDEX_INT4_PACKED(prefix, o, i, y, x, sub_group_size) \
+    CAT(prefix, _OFFSET) +                                               \
+    ((o) % (sub_group_size)) +                                           \
+    (sub_group_size)*(                                                   \
+        (x)*CAT(prefix, _X_PITCH) +                                      \
+        (y)*CAT(prefix, _Y_PITCH) +                                      \
+        (i)*CAT(prefix, _IFM_PITCH) +                                    \
+        ((o) / (sub_group_size))*(CAT(prefix, _OFM_PITCH)/2)             \
+    )
+
+#define GET_FILTER_OS_IS_YX_OSV_ISV_INDEX_INT4_PACKED(prefix, o, i, y, x, sub_group_size) \
+    CAT(prefix, _OFFSET) +                                               \
+    ((o) % (sub_group_size)) +                                           \
+    (sub_group_size)*(                                                   \
+        (x)*CAT(prefix, _X_PITCH) +                                      \
+        (y)*CAT(prefix, _Y_PITCH) +                                      \
+        (i)*CAT(prefix, _IFM_PITCH) +                                    \
+        ((o) / (sub_group_size))*(CAT(prefix, _OFM_PITCH)/2)                 \
+    )
+
 #define GET_FILTER_OS_IYX_OSV_ROTATE_180_INDEX(prefix, o, i, y, x, sub_group_size) \
     CAT(prefix, _OFFSET) +                                                          \
     ((o) % (sub_group_size)) +                                                      \
@@ -774,6 +794,65 @@ inline uint get_os_is_yx_osa4_isa8_osv8_isv4_swizzled_by_4_index(uint o, uint i,
     return idx;
 }
 
+inline uint get_os_is_yx_osa2_isa8_osv16_isv4_swizzled_by_2_index(
+    uint o, uint i, uint y, uint x,
+    uint size_x, uint size_y,
+    uint size_ifm, uint size_ofm,
+    uint offset)
+{
+    const uint o_swizzled = (o % 2) * 16 + ((o % 32) / 2) + (o / 32) * 32;
+    const uint isv_idx = i % 4;
+    const uint isa_idx = (i / 4) % 8;
+    const uint is_idx  = i / 32;
+    const uint osv_idx = o_swizzled % 16;
+    const uint osa_idx = (o_swizzled / 16) % 2;
+    const uint os_idx  = o / 32;
+
+    const uint f_32_aligned = (size_ifm + 31) / 32;
+
+    size_t idx = offset +
+                 isv_idx +
+                 osv_idx * 4 +
+                 isa_idx * 16 * 4 +
+                 osa_idx * 16 * 32 +
+                 x * 32 * 32 +
+                 y * size_x * 32 * 32 +
+                 is_idx * 32 * 32 * size_x * size_y +
+                 os_idx * 32 * 32 * f_32_aligned * size_x * size_y;
+
+    return idx;
+}
+
+inline uint get_os_is_zyx_osa2_isa8_osv16_isv4_swizzled_by_2_index(
+    uint o, uint i, uint z, uint y, uint x,
+    uint size_x, uint size_y, uint size_z,
+    uint size_ifm, uint size_ofm,
+    uint offset)
+{
+    const uint o_swizzled = (o % 2) * 16 + ((o % 32) / 2) + (o / 32) * 32;
+    const uint isv_idx = i % 4;
+    const uint isa_idx = (i / 4) % 8;
+    const uint is_idx  = i / 32;
+    const uint osv_idx = o_swizzled % 16;
+    const uint osa_idx = (o_swizzled / 16) % 2;
+    const uint os_idx  = o / 32;
+
+    const uint f_32_aligned = (size_ifm + 31) / 32;
+
+    size_t idx = offset +
+                 isv_idx +
+                 osv_idx * 4 +
+                 isa_idx * 16 * 4 +
+                 osa_idx * 16 * 32 +
+                 x * 32 * 32 +
+                 y * size_x * 32 * 32 +
+                 z * size_x * size_y * 32 * 32 +
+                 is_idx * 32 * 32 * size_x * size_y * size_z +
+                 os_idx * 32 * 32 * f_32_aligned * size_x * size_y * size_z;
+
+    return idx;
+}
+
 inline uint get_os_is_zyx_osa4_isa8_osv8_isv4_swizzled_by_4_index(uint o, uint i, uint z, uint y, uint x,
                                                                         uint size_x, uint size_y, uint size_z,
                                                                         uint size_ifm, uint size_ofm, uint offset)
@@ -963,6 +1042,25 @@ inline uint get_g_is_os_yx_isa4_osa8_isv8_osv4(uint g, uint o, uint i, uint z, u
         CAT(prefix, _SIZE_Z),                                                               \
         CAT(prefix, _IFM_NUM),                                                              \
         CAT(prefix, _OFM_NUM),                                                              \
+        CAT(prefix, _OFFSET))
+
+#define GET_FILTER_OS_IS_YX_OSA2_ISA8_OSV16_ISV4_SWIZZLED_BY_2_INDEX(prefix, o, i, y, x) \
+    get_os_is_yx_osa2_isa8_osv16_isv4_swizzled_by_2_index(                               \
+        o, i, y, x,                                                                     \
+        CAT(prefix, _SIZE_X),                                                           \
+        CAT(prefix, _SIZE_Y),                                                           \
+        CAT(prefix, _IFM_NUM),                                                          \
+        CAT(prefix, _OFM_NUM),                                                          \
+        CAT(prefix, _OFFSET))
+
+#define GET_FILTER_OS_IS_ZYX_OSA2_ISA8_OSV16_ISV4_SWIZZLED_BY_2_INDEX(prefix, o, i, z, y, x) \
+    get_os_is_zyx_osa2_isa8_osv16_isv4_swizzled_by_2_index(                               \
+        o, i, z, y, x,                                                                     \
+        CAT(prefix, _SIZE_X),                                                           \
+        CAT(prefix, _SIZE_Y),                                                           \
+        CAT(prefix, _SIZE_Z),                                                           \
+        CAT(prefix, _IFM_NUM),                                                          \
+        CAT(prefix, _OFM_NUM),                                                          \
         CAT(prefix, _OFFSET))
 
 inline uint get_is_o32_yx_isv32_swizzled_by_4_index(uint o, uint i, uint y, uint x, uint i_size, uint o_size, uint x_size, uint y_size)

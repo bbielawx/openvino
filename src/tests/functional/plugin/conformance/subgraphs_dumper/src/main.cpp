@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -25,9 +25,11 @@ int main(int argc, char *argv[]) {
 
     if (!FLAGS_device.empty() && !FLAGS_plugin_lib_name.empty()) {
         try {
-            auto plugin_path = ov::util::make_plugin_library_name(ov::util::get_ov_lib_path(), std::string(FLAGS_plugin_lib_name) + OV_BUILD_POSTFIX);
+            auto plugin_path = ov::util::make_plugin_library_name(ov::util::get_ov_lib_path(),
+                                                                  FLAGS_plugin_lib_name + OV_BUILD_POSTFIX);
             if (!ov::util::file_exists(plugin_path)) {
-                throw std::runtime_error("[ WARNING ][ GRAPH CACHE ] Plugin: " + plugin_path + " does not exists!");
+                throw std::runtime_error("[ WARNING ][ GRAPH CACHE ] Plugin: " + ov::util::path_to_string(plugin_path) +
+                                         " does not exist!");
             }
             ov::util::core->register_plugin(plugin_path, FLAGS_device);
             std::cout << "[ INFO ] Device: " << FLAGS_device << " is registred in OV core with " << FLAGS_plugin_lib_name << " lib" << std::endl;
@@ -76,7 +78,7 @@ int main(int argc, char *argv[]) {
         if (!FLAGS_local_cache.empty()) {
             std::vector<std::string> tmp_paths;
             for (auto& dir : local_cache_dirs) {
-                tmp_paths.push_back(ov::util::path_join({dir, cache->m_cache_subdir}));
+                tmp_paths.push_back(ov::util::path_join({dir, cache->m_cache_subdir}).string());
             }
             auto cached_ops = ov::util::find_models(tmp_paths, FLAGS_path_regex);
             auto this_cache_model_status = ov::util::cache_models(cache, cached_ops.first, FLAGS_extract_body, true);

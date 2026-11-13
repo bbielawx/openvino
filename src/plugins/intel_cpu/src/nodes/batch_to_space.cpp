@@ -1,25 +1,41 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include <vector>
-#include <string>
-#include "dnnl_types.h"
-#include "openvino/core/parallel.hpp"
-#include "selective_build.h"
 #include "batch_to_space.h"
-#include "nodes/common/blocked_desc_creator.h"
-#include <openvino/opsets/opset2.hpp>
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "cpu_types.h"
+#include "graph_context.h"
+#include "memory_desc/blocked_memory_desc.h"
+#include "memory_desc/cpu_memory_desc.h"
+#include "node.h"
+#include "onednn/iml_type_mapper.h"
+#include "openvino/core/except.hpp"
+#include "openvino/core/node.hpp"
+#include "openvino/core/parallel.hpp"
+#include "openvino/core/type.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/core/type/element_type_traits.hpp"
+#include "openvino/op/batch_to_space.hpp"
+#include "shape_inference/shape_inference_cpu.hpp"
+#include "utils/general_utils.h"
+
+namespace ov::intel_cpu::node {
 
 bool BatchToSpace::isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::string& errorMessage) noexcept {
     try {
-        const auto batchToSpace = std::dynamic_pointer_cast<const ov::opset2::BatchToSpace>(op);
+        const auto batchToSpace = ov::as_type_ptr<const ov::op::v1::BatchToSpace>(op);
         if (!batchToSpace) {
-            errorMessage = "Only opset2 BatchToSpace operation is supported";
+            errorMessage = "Only v1 BatchToSpace operation is supported";
             return false;
         }
     } catch (...) {
@@ -28,35 +44,33 @@ bool BatchToSpace::isSupportedOperation(const std::shared_ptr<const ov::Node>& o
     return true;
 }
 
-BatchToSpace::BatchToSpace(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context)
-    : Node(op, context, NgraphShapeInferFactory(op, PortMask(1, 2, 3))) {
+BatchToSpace::BatchToSpace(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context)
+    : Node(op, context, NgraphShapeInferFactory(op)) {
     std::string errorMessage;
     if (!isSupportedOperation(op, errorMessage)) {
         OPENVINO_THROW_NOT_IMPLEMENTED(errorMessage);
     }
 
-    errorPrefix = "BatchToSpace layer with name '" + op->get_friendly_name() + "'";
+    CPU_NODE_ASSERT(inputShapes.size() == 4 && outputShapes.size() == 1,
+                    "has incorrect number of input or output edges!");
 
-    if (inputShapes.size() != 4 || outputShapes.size() != 1)
-        OPENVINO_THROW(errorPrefix, " has incorrect number of input or output edges!");
-
-    const auto &inDims = getInputShapeAtPort(0).getDims();
-    const auto &outDims = getOutputShapeAtPort(0).getDims();
-    if (inDims.size() < 4 || inDims.size() > 5)
-        OPENVINO_THROW(errorPrefix, " has unsupported 'data' input rank: ", inDims.size());
-    if (inDims.size() != outDims.size())
-        OPENVINO_THROW(errorPrefix, " has incorrect number of input/output dimensions");
+    const auto& inDims = getInputShapeAtPort(0).getDims();
+    const auto& outDims = getOutputShapeAtPort(0).getDims();
+    CPU_NODE_ASSERT(inDims.size() >= 4 && inDims.size() <= 5, "has unsupported 'data' input rank: ", inDims.size());
+    CPU_NODE_ASSERT(inDims.size() == outDims.size(), "has incorrect number of input/output dimensions");
 }
 
 void BatchToSpace::initSupportedPrimitiveDescriptors() {
-    if (!supportedPrimitiveDescriptors.empty())
+    if (!supportedPrimitiveDescriptors.empty()) {
         return;
+    }
 
-    const auto &inDims = getInputShapeAtPort(0).getDims();
+    const auto& inDims = getInputShapeAtPort(0).getDims();
     const auto precision = getOriginalInputPrecisionAtPort(0);
     const std::set<size_t> supported_precision_sizes = {1, 2, 4, 8};
-    if (supported_precision_sizes.find(precision.size()) == supported_precision_sizes.end())
-        OPENVINO_THROW(errorPrefix, " has unsupported precision: ", precision.get_type_name());
+    CPU_NODE_ASSERT(supported_precision_sizes.find(precision.size()) != supported_precision_sizes.end(),
+                    "has unsupported precision: ",
+                    precision.get_type_name());
 
     addSupportedPrimDesc({{LayoutType::nspc, precision},
                           {LayoutType::ncsp, ov::element::i32},
@@ -88,7 +102,7 @@ void BatchToSpace::initSupportedPrimitiveDescriptors() {
     }
 }
 
-static std::vector<size_t> getShape5D(const VectorDims &shape) {
+static std::vector<size_t> getShape5D(const VectorDims& shape) {
     std::vector<size_t> shape5D(5, 1);
     for (int i = 0; i < 2; i++) {
         shape5D[i] = shape[i];
@@ -98,26 +112,26 @@ static std::vector<size_t> getShape5D(const VectorDims &shape) {
     return shape5D;
 }
 
-template<typename T>
+template <typename T>
 void BatchToSpace::batchToSpaceKernel() {
-    const auto *srcData = getSrcDataAtPortAs<const T>(0);
-    const auto *blockShapesPtr = getSrcDataAtPortAs<int>(1);
+    const auto* srcData = getSrcDataAtPortAs<const T>(0);
+    const auto* blockShapesPtr = getSrcDataAtPortAs<int>(1);
     size_t dataRank = getSrcMemoryAtPort(0)->getShape().getRank();
     blockShapeIn.clear();
     for (size_t i = 0; i < dataRank; i++) {
         blockShapeIn.push_back(*(blockShapesPtr + i));
     }
 
-    const auto *padsBeginPtr = getSrcDataAtPortAs<int>(2);
+    const auto* padsBeginPtr = getSrcDataAtPortAs<int>(2);
     cropsBeginIn.clear();
     for (size_t i = 0; i < dataRank; i++) {
         cropsBeginIn.push_back(*(padsBeginPtr + i));
     }
 
-    auto *dstData = getDstDataAtPortAs<T>(0);
+    auto* dstData = getDstDataAtPortAs<T>(0);
 
-    const auto &inDims = getParentEdgeAt(0)->getMemory().getStaticDims();
-    const auto &outDims = getChildEdgeAt(0)->getMemory().getStaticDims();
+    const auto& inDims = getParentEdgeAt(0)->getMemory().getStaticDims();
+    const auto& outDims = getChildEdgeAt(0)->getMemory().getStaticDims();
 
     auto srcDesc = getParentEdgeAt(0)->getMemory().getDescWithType<BlockedMemoryDesc>();
 
@@ -128,7 +142,7 @@ void BatchToSpace::batchToSpaceKernel() {
     auto outShape5D = getShape5D(outDims);
     auto blockShape = getShape5D(blockShapeIn);
 
-    if (srcDesc->hasLayoutType(LayoutType::nspc) && one_of(srcDesc->getShape().getRank(), 4u, 5u)) {
+    if (srcDesc->hasLayoutType(LayoutType::nspc) && any_of(srcDesc->getShape().getRank(), 4U, 5U)) {
         inShape5D.push_back(inShape5D[1]);
         inShape5D.erase(inShape5D.begin() + 1);
         outShape5D.push_back(outShape5D[1]);
@@ -139,7 +153,7 @@ void BatchToSpace::batchToSpaceKernel() {
 
     auto dstDesc = getChildEdgeAt(0)->getMemory().getDescWithType<BlockedMemoryDesc>();
 
-    const size_t blockSize = blocked ? dstDesc->getBlockDims().back() : 1lu;
+    const size_t blockSize = blocked ? dstDesc->getBlockDims().back() : 1LU;
     const size_t blockCountInput = srcDesc->getBlockDims()[1];
     const size_t blockCountOutput = dstDesc->getBlockDims()[1];
     const auto blockRemainder = inShape5D[1] % blockSize;
@@ -154,9 +168,11 @@ void BatchToSpace::batchToSpaceKernel() {
     size_t channels = (inShape5D[1] / blockSize);
     channels = channels == 0 ? 1 : channels;
     const size_t workAmount = inShape5D[0] * channels;
+    CPU_NODE_ASSERT(workAmount != 0, "has unsupported work amount == 0");
 
     parallel_nt(0, [&](const int ithr, const int nthr) {
-        size_t start(0lu), end(0lu);
+        size_t start(0LU);
+        size_t end(0LU);
         splitter(workAmount, nthr, ithr, start, end);
         std::vector<size_t> indxStart(2, 0);
         std::vector<size_t> indxEnd(2, 0);
@@ -173,51 +189,56 @@ void BatchToSpace::batchToSpaceKernel() {
             bIdx /= blockShapeIn[dimsSize - 1];
             oAdd[3] = bIdx % blockShapeIn[dimsSize - 2] - cropsBeginIn[dimsSize - 2];
             bIdx /= blockShapeIn[dimsSize - 2];
-            oAdd[2] = dimsSize == 5 ? bIdx % blockShapeIn[2] - cropsBeginIn[2] : 0lu;
+            oAdd[2] = dimsSize == 5 ? bIdx % blockShapeIn[2] - cropsBeginIn[2] : 0LU;
             bIdx = dimsSize == 5 ? bIdx / blockShapeIn[2] : bIdx;
             oAdd[1] = bIdx % blockShapeIn[1] - cropsBeginIn[1];
-            if (srcDesc->hasLayoutType(LayoutType::nspc) && one_of(srcDesc->getShape().getRank(), 4u, 5u)) {
+            if (srcDesc->hasLayoutType(LayoutType::nspc) && any_of(srcDesc->getShape().getRank(), 4U, 5U)) {
                 oAdd.push_back(oAdd[1]);
                 oAdd.erase(oAdd.begin() + 1);
             }
-            begin[1] = (blockShape[1] - 1 - oAdd[1]) / blockShape[1] / blockSize;
-            finish[1] = (outShape5D[1] - 1 - oAdd[1]) / blockShape[1] / blockSize;
+
+            const auto numBlockElements = blockShape[1] * blockSize;
+            begin[1] = (blockShape[1] - 1 - oAdd[1]) / numBlockElements;
+            finish[1] = (outShape5D[1] + numBlockElements - 1 - oAdd[1]) / numBlockElements;
             begin[2] = (blockShape[2] - 1 - oAdd[2]) / blockShape[2];
-            finish[2] = (outShape5D[2] - 1 - oAdd[2]) / blockShape[2];
+            finish[2] = (outShape5D[2] + blockShape[2] - 1 - oAdd[2]) / blockShape[2];
             begin[3] = (blockShape[3] - 1 - oAdd[3]) / blockShape[3];
-            finish[3] = (outShape5D[3] - 1 - oAdd[3]) / blockShape[3];
+            finish[3] = (outShape5D[3] + blockShape[3] - 1 - oAdd[3]) / blockShape[3];
             begin[4] = (blockShape[4] - 1 - oAdd[4]) / blockShape[4];
-            finish[4] = (outShape5D[4] - 1 - oAdd[4]) / blockShape[4];
-            const int64_t addTmpOC = blocked ? 0lu : oAdd[1];
-            const int64_t addTmpOc = blocked ? oAdd[1] : 0lu;
-            indxStart[1] = begin[1] > indxStart[1] ? begin[1] : indxStart[1];
-            const size_t lastI1 = i0 == indxEnd[0] ? (indxEnd[1] > finish[1] ? finish[1] : indxEnd[1]) : finish[1];
-            for (; indxStart[1] < lastI1 + 1; ++indxStart[1]) {
-                const size_t block = indxStart[1] == finish[1] ? lastBlock : blockSize;
-                const int64_t tmpOC = indxStart[1] * blockShape[1] + addTmpOC;
-                const size_t srcIdx1 = srcIdx0 + indxStart[1] * inSpatialStep * blockSize;
+            finish[4] = (outShape5D[4] + blockShape[4] - 1 - oAdd[4]) / blockShape[4];
+            const int64_t addTmpOC = blocked ? 0LU : oAdd[1];
+            const int64_t addTmpOc = blocked ? oAdd[1] : 0LU;
+
+            const size_t firstI1 = i0 == 0 ? std::max(begin[1], indxStart[1]) : begin[1];
+            const size_t lastI1 = i0 == indxEnd[0] ? std::min(indxEnd[1] + 1, finish[1]) : finish[1];
+
+            for (size_t i1 = firstI1; i1 < lastI1; ++i1) {
+                const size_t block = i1 == finish[1] ? lastBlock : blockSize;
+                const int64_t tmpOC = i1 * blockShape[1] + addTmpOC;
+                const size_t srcIdx1 = srcIdx0 + i1 * inSpatialStep * blockSize;
                 const size_t dstIdx1 = dstIdx0 + tmpOC * outSpatialStep * blockSize;
-                const size_t itEnd = blocked ? ((block - 1) * blockShape[1] + oAdd[1]) / blockSize : 0lu;
-                for (size_t i2 = begin[2]; i2 < finish[2] + 1; ++i2) {
+                const size_t itEnd = blocked ? ((block - 1) * blockShape[1] + oAdd[1]) / blockSize : 0LU;
+                for (size_t i2 = begin[2]; i2 < finish[2]; ++i2) {
                     const int64_t tmpOd = i2 * blockShape[2] + oAdd[2];
                     const size_t srcIdx2 = srcIdx1 + i2 * inShape5D[3] * inShape5D[4] * blockSize;
                     const size_t dstIdx2 = dstIdx1 + tmpOd * outShape5D[3] * outShape5D[4] * blockSize;
-                    for (size_t i3 = begin[3]; i3 < finish[3] + 1; ++i3) {
+                    for (size_t i3 = begin[3]; i3 < finish[3]; ++i3) {
                         const int64_t tmpOh = i3 * blockShape[3] + oAdd[3];
                         const size_t srcIdx3 = srcIdx2 + i3 * inShape5D[4] * blockSize;
                         const size_t dstIdx3 = dstIdx2 + tmpOh * outShape5D[4] * blockSize;
-                        for (size_t i4 = begin[4]; i4 < finish[4] + 1; ++i4) {
+                        for (size_t i4 = begin[4]; i4 < finish[4]; ++i4) {
                             const int64_t tmpOw = i4 * blockShape[4] + oAdd[4];
                             const size_t srcIdx4 = srcIdx3 + i4 * blockSize;
                             const size_t dstIdx4 = dstIdx3 + tmpOw * blockSize;
                             for (size_t it = 0; it < itEnd + 1; ++it) {
                                 const size_t i5Begin = it == 0 ? 0 : (it * blockSize - 1 - oAdd[1]) / blockShape[1] + 1;
-                                const size_t i5End = it == itEnd ? (block - 1) : ((it + 1) * blockSize - 1 - oAdd[1]) / blockShape[1];
+                                const size_t i5End =
+                                    it == itEnd ? (block - 1) : ((it + 1) * blockSize - 1 - oAdd[1]) / blockShape[1];
                                 for (size_t i5 = i5Begin; i5 < i5End + 1; ++i5) {
                                     const int64_t tmpOc = i5 * blockShape[1] + addTmpOc;
                                     const size_t srcIdx5 = srcIdx4 + i5;
                                     const size_t dstIdx5 =
-                                            dstIdx4 + it * outSpatialStep * blockSize + (tmpOc - it * blockSize);
+                                        dstIdx4 + it * outSpatialStep * blockSize + (tmpOc - it * blockSize);
                                     dstData[dstIdx5] = srcData[srcIdx5];
                                 }
                             }
@@ -225,24 +246,29 @@ void BatchToSpace::batchToSpaceKernel() {
                     }
                 }
             }
-            indxStart[1] = 0lu;
         }
     });
 }
 
-void BatchToSpace::executeDynamicImpl(dnnl::stream strm) {
+void BatchToSpace::executeDynamicImpl(const dnnl::stream& strm) {
     execute(strm);
 }
 
-void BatchToSpace::execute(dnnl::stream strm) {
+void BatchToSpace::execute([[maybe_unused]] const dnnl::stream& strm) {
     switch (getParentEdgeAt(0)->getMemory().getDesc().getPrecision().size()) {
-        case 1: batchToSpaceKernel<element_type_traits<ov::element::u8>::value_type>();  break;
-        case 2: batchToSpaceKernel<element_type_traits<ov::element::u16>::value_type>(); break;
-        case 4: batchToSpaceKernel<element_type_traits<ov::element::i32>::value_type>(); break;
-        default:
-            OPENVINO_THROW("BatchToSpace layer does not support precision '",
-                           std::string(getParentEdgeAt(0)->getMemory().getDesc().getPrecision().get_type_name()),
-                           "'");
+    case 1:
+        batchToSpaceKernel<element_type_traits<ov::element::u8>::value_type>();
+        break;
+    case 2:
+        batchToSpaceKernel<element_type_traits<ov::element::u16>::value_type>();
+        break;
+    case 4:
+        batchToSpaceKernel<element_type_traits<ov::element::i32>::value_type>();
+        break;
+    default:
+        CPU_NODE_THROW("does not support precision '",
+                       std::string(getParentEdgeAt(0)->getMemory().getDesc().getPrecision().get_type_name()),
+                       "'");
     }
 }
 
@@ -250,6 +276,4 @@ bool BatchToSpace::created() const {
     return getType() == Type::BatchToSpace;
 }
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

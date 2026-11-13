@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -30,20 +30,37 @@ add_library(${TARGET_NAME}
 add_library(openvino::runtime ALIAS ${TARGET_NAME})
 set_target_properties(${TARGET_NAME} PROPERTIES EXPORT_NAME runtime)
 
-target_compile_features(${TARGET_NAME} PUBLIC cxx_std_11)
+target_compile_features(${TARGET_NAME} PUBLIC cxx_std_17)
 
 ov_add_vs_version_file(NAME ${TARGET_NAME} FILEDESCRIPTION "OpenVINO runtime library")
 
 target_include_directories(${TARGET_NAME} PUBLIC
     $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/core/include>
-    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/frontends/common/include>
-    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/inference/include>)
+    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/inference/include>
+    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/frontends/common/include>)
 
-target_link_libraries(${TARGET_NAME} PRIVATE openvino::reference
-                                             openvino::shape_inference
-                                             openvino::pugixml
-                                             ${CMAKE_DL_LIBS}
-                                             Threads::Threads)
+# to be aligned with OpenVINO archive, where all headers are located in the same folder and
+# exposed via openvino::runtime
+target_include_directories(${TARGET_NAME} INTERFACE
+    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/frontends/common/include>
+    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/frontends/onnx/frontend/include>
+    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/frontends/paddle/include>
+    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/frontends/pytorch/include>
+    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/frontends/tensorflow/include>
+    $<BUILD_INTERFACE:${OpenVINO_SOURCE_DIR}/src/frontends/tensorflow_lite/include>)
+
+target_link_libraries(${TARGET_NAME}
+    PRIVATE openvino::reference
+    openvino::shape_inference
+    openvino::pugixml
+    ${CMAKE_DL_LIBS}
+    Threads::Threads
+    PUBLIC $<$<AND:$<CXX_COMPILER_ID:GNU>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,9.1>>:stdc++fs>
+    $<$<AND:$<CXX_COMPILER_ID:Clang>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,9.0>>:c++fs>)
+
+if(BUILD_SHARED_LIBS)
+    target_link_libraries(${TARGET_NAME} PRIVATE openvino::shutdown)
+endif()
 
 if (TBBBIND_2_5_FOUND)
     target_link_libraries(${TARGET_NAME} PRIVATE ${TBBBIND_2_5_IMPORTED_TARGETS})
@@ -55,10 +72,6 @@ endif()
 
 if(DEFINED OV_GLIBCXX_USE_CXX11_ABI)
     target_compile_definitions(${TARGET_NAME} PUBLIC _GLIBCXX_USE_CXX11_ABI=${OV_GLIBCXX_USE_CXX11_ABI})
-endif()
-
-if(WIN32)
-    set_target_properties(${TARGET_NAME} PROPERTIES COMPILE_PDB_NAME ${TARGET_NAME})
 endif()
 
 if(RISCV64)
@@ -73,8 +86,22 @@ if(TBB_FOUND)
     if(NOT TBB_LIB_INSTALL_DIR)
         message(FATAL_ERROR "Internal error: variable 'TBB_LIB_INSTALL_DIR' is not defined")
     endif()
-    # set RPATH / LC_RPATH to TBB library directory
+
+    # set RPATH / LC_RPATH to TBB library directory (no-op on Windows)
     ov_set_install_rpath(${TARGET_NAME} ${OV_CPACK_RUNTIMEDIR} ${TBB_LIB_INSTALL_DIR})
+
+    if(WIN32 AND BUILD_SHARED_LIBS AND NOT ENABLE_SYSTEM_TBB)
+        # On Windows there is no RPATH, so copy downloaded/custom TBB DLLs next to openvino.dll.
+        # System TBB is already findable by the loader, so no copying is needed in that case.
+        foreach(_tbb_target IN LISTS TBB_IMPORTED_TARGETS)
+            add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:${_tbb_target}>
+                $<TARGET_FILE_DIR:${TARGET_NAME}>
+                COMMENT "Copying ${_tbb_target} DLL to ${TARGET_NAME} output directory"
+                VERBATIM)
+        endforeach()
+    endif()
 endif()
 
 # must be called after all target_link_libraries
@@ -100,13 +127,15 @@ install(TARGETS ${TARGET_NAME} EXPORT OpenVINOTargets
         RUNTIME DESTINATION ${OV_CPACK_RUNTIMEDIR} COMPONENT ${OV_CPACK_COMP_CORE} ${OV_CPACK_COMP_CORE_EXCLUDE_ALL}
         ARCHIVE DESTINATION ${OV_CPACK_ARCHIVEDIR} COMPONENT ${OV_CPACK_COMP_${archive_comp}} ${OV_CPACK_COMP_${archive_comp}_EXCLUDE_ALL}
         LIBRARY DESTINATION ${OV_CPACK_LIBRARYDIR} COMPONENT ${OV_CPACK_COMP_CORE} ${OV_CPACK_COMP_CORE_EXCLUDE_ALL}
-        NAMELINK_COMPONENT ${OV_CPACK_COMP_CORE_DEV}
+        NAMELINK_COMPONENT ${OV_CPACK_COMP_LINKS} ${OV_CPACK_COMP_LINKS_EXCLUDE_ALL}
         INCLUDES DESTINATION ${OV_CPACK_INCLUDEDIR})
+
+ov_install_pdb(${TARGET_NAME})
 
 # OpenVINO runtime library dev
 
 #
-# Add openvino::runtine::dev target
+# Add openvino::runtime::dev target
 #
 
 add_library(openvino_runtime_dev INTERFACE)
@@ -123,8 +152,48 @@ set_target_properties(openvino_runtime_dev PROPERTIES EXPORT_NAME runtime::dev)
 ov_developer_package_export_targets(TARGET openvino_runtime_dev
                                     INSTALL_INCLUDE_DIRECTORIES "${OpenVINO_SOURCE_DIR}/src/inference/dev_api/")
 
-file(GLOB_RECURSE dev_api_src "${CMAKE_CURRENT_SOURCE_DIR}/OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/*.hpp")
-ov_add_clang_format_target(openvino_runtime_dev_clang FOR_SOURCES ${plugin_api_src})
+set(dev_api_headers
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/compilation_context.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/device_id_parser.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/exec_model_info.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/hsm_deferred_writer.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/hsm_format.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/hsm_model_id_codec.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/hsm_reader.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/hsm_writer.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/iasync_infer_request.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/icache_manager.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/icompiled_model.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/icore.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/iinfer_request.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/internal_properties.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/iplugin.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/iremote_context.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/iremote_tensor.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/isync_infer_request.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/ivariable_state.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/make_tensor.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/memory_solver.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/performance_heuristics.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/plugin_config.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/plugin_itt.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/single_file_storage.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/so_ptr.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/system_conf.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/tlv_format.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/weightless_properties_utils.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/cpu_message.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/cpu_streams_executor.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/cpu_streams_executor_internal.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/cpu_streams_info.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/executor_manager.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/immediate_executor.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/istreams_executor.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/itask_executor.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/thread_local.hpp
+    ${OpenVINO_SOURCE_DIR}/src/inference/dev_api/openvino/runtime/threading/thread_safe_containers.hpp
+)
+ov_add_clang_format_target(openvino_runtime_dev_clang FOR_SOURCES ${dev_api_headers})
 
 ov_ncc_naming_style(FOR_TARGET openvino_runtime_dev
                     SOURCE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/src/inference/dev_api/openvino"
@@ -145,6 +214,10 @@ ov_cpack_add_component(${OV_CPACK_COMP_CORE}
 ov_cpack_add_component(${OV_CPACK_COMP_CORE_DEV}
                        HIDDEN
                        DEPENDS ${OV_CPACK_COMP_CORE} ${core_dev_components})
+
+ov_cpack_add_component(${OV_CPACK_COMP_LINKS}
+                       HIDDEN
+                       DEPENDS ${OV_CPACK_COMP_CORE_DEV})
 
 if(ENABLE_PLUGINS_XML)
     install(FILES $<TARGET_FILE_DIR:${TARGET_NAME}>/plugins.xml
@@ -169,6 +242,18 @@ install(EXPORT OpenVINOTargets
         DESTINATION ${OV_CPACK_OPENVINO_CMAKEDIR}
         COMPONENT ${OV_CPACK_COMP_CORE_DEV}
         ${OV_CPACK_COMP_CORE_DEV_EXCLUDE_ALL})
+
+#
+# Install PDB files
+#
+
+if(WIN32 AND NOT BUILD_SHARED_LIBS)
+    # installation of compile PDB files for static libraries
+    install(DIRECTORY "${OPENVINO_STATIC_PDB_OUTPUT_DIRECTORY}/"
+            DESTINATION ${OV_CPACK_ARCHIVEDIR}
+            COMPONENT pdb
+            EXCLUDE_FROM_ALL)
+endif()
 
 # build tree
 
@@ -216,6 +301,11 @@ install(FILES "${CMAKE_BINARY_DIR}/share/OpenVINOConfig.cmake"
 #
 
 if(ENABLE_PKGCONFIG_GEN)
+
+    ov_cpack_add_component(${OV_CPACK_COMP_PKG_CONFIG}
+                        HIDDEN
+                        DEPENDS ${OV_CPACK_COMP_CORE_DEV})
+
     # fill in PKGCONFIG_OpenVINO_DEFINITIONS
     get_target_property(openvino_defs openvino INTERFACE_COMPILE_DEFINITIONS)
     foreach(openvino_def IN LISTS openvino_defs)
@@ -290,6 +380,6 @@ if(ENABLE_PKGCONFIG_GEN)
 
     install(FILES "${pkgconfig_out}"
             DESTINATION "${OV_CPACK_RUNTIMEDIR}/pkgconfig"
-            COMPONENT ${OV_CPACK_COMP_CORE_DEV}
-            ${OV_CPACK_COMP_CORE_DEV_EXCLUDE_ALL})
+            COMPONENT ${OV_CPACK_COMP_PKG_CONFIG}
+            ${OV_CPACK_COMP_PKG_CONFIG_EXCLUDE_ALL})
 endif()

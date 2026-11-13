@@ -1,25 +1,29 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "openvino/frontend/complex_type_mark.hpp"
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "pt_framework_node.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 OutputVector translate_get_attr(const NodeContext& context) {
-    auto res = context.get_decoder()->try_decode_get_attr();
+    auto decoder = context.get_decoder();
+    auto res = decoder->try_decode_get_attr();
     PYTORCH_OP_CONVERSION_CHECK(res.size() > 0,
                                 "Failed to obtain data from GetAttr with output tensor name: ",
-                                context.get_decoder()->get_output_debug_name(0));
+                                decoder->get_output_debug_name(0));
     if (res.size() == 1) {
         auto node = res[0].get_node();
-        if (node->get_friendly_name() != node->get_name()) {
+        if (node && node->get_friendly_name() != node->get_name()) {
             res[0].add_names({node->get_friendly_name()});
+        }
+        auto dtype = decoder->get_output_type(0);
+        if (simplified_type_interpret(dtype).is<type::Complex>()) {
+            // Add complex mark to complex constant
+            res = {context.mark_node(std::make_shared<ComplexTypeMark>(res[0], res[0].get_element_type()))};
         }
         return res;
     } else {
@@ -31,9 +35,6 @@ OutputVector translate_get_attr(const NodeContext& context) {
             "node.");
         return {context.mark_node(fw_node)};
     }
-};
+}
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

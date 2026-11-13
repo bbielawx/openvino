@@ -1,15 +1,13 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include <limits.h>
 
 #include "default_opset.hpp"
+#include "op_utils.hpp"
 #include "openvino/frontend/paddle/node_context.hpp"
 
-namespace ov {
-namespace frontend {
-namespace paddle {
-namespace op {
+namespace ov::frontend::paddle::op {
 namespace {
 Output<Node> idx_node(const std::string& tensor_alias,
                       const std::string& list_alias,
@@ -19,8 +17,7 @@ Output<Node> idx_node(const std::string& tensor_alias,
         return std::make_shared<default_opset::Convert>(node.get_input(tensor_alias), element::i32);
     } else if (node.has_input(list_alias)) {
         auto inputs = node.get_ng_inputs(list_alias);
-        return std::make_shared<default_opset::Convert>(std::make_shared<default_opset::Concat>(inputs, 0),
-                                                        element::i32);
+        return std::make_shared<default_opset::Convert>(get_tensor_list(inputs), element::i32);
     } else {
         auto values = node.get_attribute<std::vector<int32_t>>(attr_alias);
         return default_opset::Constant::create(element::i32, {values.size()}, values);
@@ -55,6 +52,12 @@ NamedOutputs slice_op(const NodeContext& node, const bool& stride_input) {
                 slice_node,
                 std::make_shared<default_opset::Constant>(element::i64, Shape{1}, 1),
                 false);
+            const auto output_info = node.get_output_port_infos("Out");
+            size_t output_size = output_info[0].second.size();
+            if (output_size == 0) {
+                auto squeeze_node = std::make_shared<default_opset::Squeeze>(decreased_node);
+                return node.default_single_output_mapping({squeeze_node}, {"Out"});
+            }
             return node.default_single_output_mapping({decreased_node}, {"Out"});
         }
 
@@ -67,7 +70,4 @@ NamedOutputs slice_op(const NodeContext& node, const bool& stride_input) {
     }
 }
 }  // namespace
-}  // namespace op
-}  // namespace paddle
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::paddle::op

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -16,7 +16,7 @@ public:
     MOCK_METHOD(ov::Any, get_property, (const std::string&, const std::string&, const ov::AnyMap&), (const));
     MOCK_METHOD(ov::Any, get_property, (const std::string&, const std::string&), (const));
     MOCK_METHOD(ov::AnyMap, get_supported_property, (const std::string&, const ov::AnyMap&, const bool), (const));
-
+    MOCK_METHOD(ov::AnyMap, create_compile_config, (const std::string&, const ov::AnyMap&), (const));
     MOCK_METHOD(ov::SoPtr<ov::IRemoteContext>,
                 create_context,
                 (const std::string& deviceName, const ov::AnyMap& params),
@@ -31,6 +31,10 @@ public:
                 (std::istream&, const std::string&, const ov::AnyMap&),
                 (const));
     MOCK_METHOD(ov::SoPtr<ov::ICompiledModel>,
+                import_model,
+                (const ov::Tensor&, const std::string&, const ov::AnyMap&),
+                (const));
+    MOCK_METHOD(ov::SoPtr<ov::ICompiledModel>,
                 compile_model,
                 (const std::shared_ptr<const ov::Model>&, const std::string&, const ov::AnyMap&),
                 (const));
@@ -40,18 +44,29 @@ public:
                 (const));
     MOCK_METHOD(ov::SoPtr<ov::ICompiledModel>,
                 compile_model,
-                (const std::string&, const std::string&, const ov::AnyMap&),
+                (const std::filesystem::path&, const std::string&, const ov::AnyMap&),
                 (const));
     MOCK_METHOD(ov::SoPtr<ov::ICompiledModel>,
                 compile_model,
                 (const std::string&, const ov::Tensor&, const std::string&, const ov::AnyMap&),
                 (const));
     MOCK_METHOD(std::shared_ptr<ov::Model>, read_model, (const std::string&, const ov::Tensor&, bool), (const));
-    MOCK_METHOD(std::shared_ptr<ov::Model>, read_model, (const std::string&, const std::string&), (const));
+    MOCK_METHOD(std::shared_ptr<ov::Model>,
+                read_model,
+                (const std::filesystem::path&, const std::filesystem::path&, const ov::AnyMap&),
+                (const));
+    MOCK_METHOD(std::shared_ptr<ov::Model>,
+                read_model,
+                (const std::shared_ptr<AlignedBuffer>&, const std::shared_ptr<AlignedBuffer>&),
+                (const));
     MOCK_METHOD(ov::SoPtr<ov::IRemoteContext>, get_default_context, (const std::string&), (const));
     MOCK_METHOD(ov::SoPtr<ov::ICompiledModel>,
                 import_model,
                 (std::istream&, const ov::SoPtr<ov::IRemoteContext>&, const ov::AnyMap&),
+                (const));
+    MOCK_METHOD(ov::SoPtr<ov::ICompiledModel>,
+                import_model,
+                (const ov::Tensor&, const ov::SoPtr<ov::IRemoteContext>&, const ov::AnyMap&),
                 (const));
     MOCK_METHOD(bool, device_supports_model_caching, (const std::string&), (const));
     MOCK_METHOD(void, set_property, (const std::string& device_name, const ov::AnyMap& properties));

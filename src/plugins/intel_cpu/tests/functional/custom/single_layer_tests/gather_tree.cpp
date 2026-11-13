@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,6 +8,7 @@
 #include "shared_test_classes/base/ov_subgraph.hpp"
 #include "utils/cpu_test_utils.hpp"
 #include "common_test_utils/test_enums.hpp"
+#include "openvino/op/gather_tree.hpp"
 
 using namespace CPUTestUtils;
 
@@ -26,14 +27,7 @@ class GatherTreeLayerCPUTest : public testing::WithParamInterface<GatherTreeCPUT
                                public CPUTestsBase {
 public:
     static std::string getTestCaseName(const testing::TestParamInfo<GatherTreeCPUTestParams>& obj) {
-        InputShape inputShape;
-        ov::element::Type netPrecision;
-        ov::element::Type inPrc, outPrc;
-        ov::test::utils::InputLayerType secondaryInputType;
-        std::string targetName;
-
-        std::tie(inputShape, secondaryInputType, netPrecision, inPrc, outPrc, targetName) = obj.param;
-
+        const auto& [inputShape, secondaryInputType, netPrecision, inPrc, outPrc, targetName] = obj.param;
         std::ostringstream result;
         result << "IS=" << ov::test::utils::partialShape2str({inputShape.first}) << "_";
         result << "TS=";
@@ -51,12 +45,8 @@ public:
 
 protected:
     void SetUp() override {
-        InputShape inputShape;
-        ov::element::Type netPrecision;
-        ov::test::utils::InputLayerType secondaryInputType;
-        ov::element::Type inPrc, outPrc;
-
-        std::tie(inputShape, secondaryInputType, netPrecision, inPrc, outPrc, targetDevice) = GetParam();
+        const auto& [inputShape, secondaryInputType, netPrecision, inPrc, outPrc, _targetDevice] = GetParam();
+        targetDevice = _targetDevice;
         InputShape parentShape{inputShape};
         InputShape::first_type maxSeqLenFirst;
         if (inputShape.first.is_dynamic()) {
@@ -95,15 +85,10 @@ protected:
             paramsIn.push_back(param4);
         } else if (ov::test::utils::InputLayerType::CONSTANT == secondaryInputType) {
             auto maxBeamIndex = inputShape.second.front().at(2) - 1;
-
-            inp2 =
-                ov::test::utils::deprecated::make_constant<float>(netPrecision, inputShape.second.front(), {}, true, maxBeamIndex);
-            inp3 = ov::test::utils::deprecated::make_constant<float>(netPrecision,
-                                                        {inputShape.second.front().at(1)},
-                                                        {},
-                                                        true,
-                                                        maxBeamIndex);
-            inp4 = ov::test::utils::deprecated::make_constant<float>(netPrecision, {}, {}, true, maxBeamIndex);
+            ov::test::utils::InputGenerateData in_gen_data(1, maxBeamIndex - 1);
+            inp2 = ov::test::utils::make_constant(netPrecision, inputShape.second.front(), in_gen_data);
+            inp3 = ov::test::utils::make_constant(netPrecision, {inputShape.second.front().at(1)}, in_gen_data);
+            inp4 = ov::test::utils::make_constant(netPrecision, {}, in_gen_data);
         } else {
             throw std::runtime_error("Unsupported inputType");
         }
@@ -160,8 +145,8 @@ INSTANTIATE_TEST_SUITE_P(smoke_GatherTreeCPUStatic,
                          ::testing::Combine(::testing::ValuesIn(inputStaticShapes),
                                             ::testing::ValuesIn(secondaryInputTypes),
                                             ::testing::ValuesIn(netPrecisions),
-                                            ::testing::Values(ov::element::undefined),
-                                            ::testing::Values(ov::element::undefined),
+                                            ::testing::Values(ov::element::dynamic),
+                                            ::testing::Values(ov::element::dynamic),
                                             ::testing::Values(ov::test::utils::DEVICE_CPU)),
                          GatherTreeLayerCPUTest::getTestCaseName);
 
@@ -170,8 +155,8 @@ INSTANTIATE_TEST_SUITE_P(smoke_GatherTreeCPUDynamicParameter,
                          ::testing::Combine(::testing::ValuesIn(inputDynamicShapesParameter),
                                             ::testing::Values(ov::test::utils::InputLayerType::PARAMETER),
                                             ::testing::ValuesIn(netPrecisions),
-                                            ::testing::Values(ov::element::undefined),
-                                            ::testing::Values(ov::element::undefined),
+                                            ::testing::Values(ov::element::dynamic),
+                                            ::testing::Values(ov::element::dynamic),
                                             ::testing::Values(ov::test::utils::DEVICE_CPU)),
                          GatherTreeLayerCPUTest::getTestCaseName);
 
@@ -180,8 +165,8 @@ INSTANTIATE_TEST_SUITE_P(smoke_GatherTreeCPUDynamicConstant,
                          ::testing::Combine(::testing::ValuesIn(inputDynamicShapesConstant),
                                             ::testing::Values(ov::test::utils::InputLayerType::CONSTANT),
                                             ::testing::ValuesIn(netPrecisions),
-                                            ::testing::Values(ov::element::undefined),
-                                            ::testing::Values(ov::element::undefined),
+                                            ::testing::Values(ov::element::dynamic),
+                                            ::testing::Values(ov::element::dynamic),
                                             ::testing::Values(ov::test::utils::DEVICE_CPU)),
                          GatherTreeLayerCPUTest::getTestCaseName);
 

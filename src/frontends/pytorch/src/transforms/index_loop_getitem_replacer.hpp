@@ -1,16 +1,12 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
-
 #include "openvino/pass/graph_rewrite.hpp"
 #include "openvino/pass/pass.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace pass {
+namespace ov::frontend::pytorch::pass {
 
 /**
  * @brief IndexLoopGetitemReplacer transformation replaces following graph:
@@ -18,11 +14,8 @@ namespace pass {
  */
 class IndexLoopGetitemReplacer : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("ov::frontend::pytorch::pass::IndexLoopGetitemReplacer");
+    OPENVINO_MATCHER_PASS_RTTI("ov::frontend::pytorch::pass::IndexLoopGetitemReplacer");
     IndexLoopGetitemReplacer();
 };
 
-}  // namespace pass
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::pass

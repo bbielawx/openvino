@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,6 +8,7 @@
 
 #include "itt.hpp"
 #include "openvino/core/validation_util.hpp"
+#include "openvino/op/util/op_types.hpp"
 #include "openvino/op/util/precision_sensitive_attribute.hpp"
 #include "topk_shape_inference.hpp"
 
@@ -150,7 +151,7 @@ void ov::op::util::TopKBase::set_axis(const int64_t axis) {
 
 void ov::op::util::TopKBase::set_axis(const Rank& input_rank, const int64_t axis) {
     m_normalized_axis =
-        input_rank.is_static() ? ov::util::normalize_axis(this, axis, input_rank) : UNKNOWN_NORMALIZED_AXIS;
+        input_rank.is_static() ? ov::util::try_normalize_axis(axis, input_rank, *this) : UNKNOWN_NORMALIZED_AXIS;
     m_axis = axis;
 }
 

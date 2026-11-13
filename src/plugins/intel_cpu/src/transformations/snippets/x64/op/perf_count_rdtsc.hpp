@@ -1,18 +1,26 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
+#include <cstdint>
+#include <ios>
+#include <iostream>
+#include <memory>
+
+#include "openvino/core/node.hpp"
+#include "openvino/core/node_output.hpp"
+#include "openvino/core/node_vector.hpp"
 #ifdef SNIPPETS_DEBUG_CAPS
 
-#pragma once
+#    pragma once
 
-#include "openvino/op/op.hpp"
-#include "snippets/op/perf_count.hpp"
-#include <iomanip>
+#    include <iomanip>
+
+#    include "openvino/op/op.hpp"
+#    include "snippets/op/perf_count.hpp"
+
+namespace ov::intel_cpu {
 
 using namespace ov::snippets::op;
-
-namespace ov {
-namespace intel_cpu {
 
 /**
  * @interface PerfCountRdtscBegin
@@ -25,7 +33,7 @@ public:
     PerfCountRdtscBegin();
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& inputs) const override;
 
-    uint64_t start_count = 0ul;
+    uint64_t start_count = 0UL;
 };
 
 /**
@@ -36,9 +44,9 @@ public:
 class PerfCountRdtscEnd : public PerfCountEndBase {
 public:
     OPENVINO_OP("PerfCountRdtscEnd", "SnippetsOpset", PerfCountEndBase);
-    PerfCountRdtscEnd(const Output<Node>& pc_begin);
+    explicit PerfCountRdtscEnd(const Output<Node>& pc_begin);
     PerfCountRdtscEnd() = default;
-    ~PerfCountRdtscEnd() {
+    ~PerfCountRdtscEnd() override {
         double avg = 0;
         if (iteration != 0) {
             // Note: theoretically accumulation could be larger than 2^53, however
@@ -48,7 +56,7 @@ public:
             avg = integral + static_cast<double>(accumulation - integral * iteration) / iteration;
         }
         std::cerr << "name : " << get_friendly_name() << " : acc : " << accumulation << " : num_hit : " << iteration
-         << std::fixed << std::setprecision(4) << " : avg : " << avg << std::endl;
+                  << std::fixed << std::setprecision(4) << " : avg : " << avg << '\n';
     }
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& inputs) const override;
 
@@ -57,10 +65,10 @@ public:
     // in each call, PerfCountRdtscEnd get end_count, then total_duration += end_count - start_count, and iteration++.
     // in destructor of PerfCountRdtscEnd, output the perf info
     // accumulation is cycle count
-    uint64_t accumulation = 0ul;
-    uint64_t iteration = 0ul;
+    uint64_t accumulation = 0UL;
+    uint64_t iteration = 0UL;
 };
 
-} // namespace intel_cpu
-} // namespace ov
-#endif // SNIPPETS_DEBUG_CAPS
+}  // namespace ov::intel_cpu
+
+#endif  // SNIPPETS_DEBUG_CAPS

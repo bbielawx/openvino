@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -19,10 +19,7 @@ using namespace ov;
 using namespace ov::op;
 using namespace ov::frontend::tensorflow;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_max_pool_util(const NodeContext& node,
                                      size_t spatial_dims_num,
@@ -32,7 +29,7 @@ OutputVector translate_max_pool_util(const NodeContext& node,
                                      int64_t axis = 0,
                                      bool set_friendly_name = true,
                                      bool with_indices = false) {
-    default_op_checks(node, 1, {"MaxPool", "MaxPoolV2", "MaxPool3D", "MaxPoolWithArgmax"});
+    default_op_checks(node, 1, {"MaxPool", "MaxPoolV2", "MaxPool3D", "MaxPoolWithArgmax", "MAX_POOL_2D"});
     TENSORFLOW_OP_VALIDATION(node,
                              spatial_dims_num == 2 || spatial_dims_num == 3,
                              "Only MaxPool, MaxPoolV2, MaxPool3D and MaxPoolWithArgmax are supported.");
@@ -203,7 +200,7 @@ NamedOutputVector translate_max_pool_with_argmax(const NodeContext& node) {
 }
 
 OutputVector translate_max_pool_op(const NodeContext& node) {
-    if (node.get_op_type() == "MaxPool") {
+    if (node.get_op_type() == "MaxPool" || node.get_op_type() == "MAX_POOL_2D") {
         return translate_max_pool(node, 2);
     } else if (node.get_op_type() == "MaxPoolV2") {
         return translate_max_pool_v2(node);
@@ -214,7 +211,4 @@ OutputVector translate_max_pool_op(const NodeContext& node) {
     }
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

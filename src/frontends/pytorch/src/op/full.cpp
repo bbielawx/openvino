@@ -1,10 +1,11 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/broadcast.hpp"
+#include "openvino/op/concat.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert_like.hpp"
 #include "openvino/op/divide.hpp"
@@ -18,10 +19,7 @@
 #include "openvino/op/squeeze.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -56,7 +54,7 @@ Output<Node> base_translate_full_with_convert(const NodeContext& context,
 
 OutputVector translate_full(const NodeContext& context) {
     num_inputs_check(context, 2, 6);
-    auto sizes = context.get_input(0);
+    auto sizes = get_input_concat_if_list(context, 0);
     auto value = context.get_input(1);
     auto num_inputs = context.get_input_size();
     if (num_inputs < 6) {
@@ -75,7 +73,7 @@ OutputVector translate_full_fx(const NodeContext& context) {
     // aten.full.default([16, 16], 0, dtype = torch.float32, layout = torch.strided, device = device(type='cpu'),
     // pin_memory = False)
     num_inputs_check(context, 2, 2);
-    auto sizes = context.get_input(0);
+    auto sizes = get_input_concat_if_list(context, 0);
     auto value = context.get_input(1);
 
     auto filled_tensor = base_translate_full(context, sizes, value);
@@ -129,7 +127,7 @@ OutputVector translate_fill(const NodeContext& context) {
 OutputVector translate_new_full(const NodeContext& context) {
     num_inputs_check(context, 3, 7);
     auto input = context.get_input(0);
-    auto sizes = context.get_input(1);
+    auto sizes = get_input_concat_if_list(context, 1);
     auto value = context.get_input(2);
     if (context.get_input_size() == 7 && !context.input_is_none(3)) {
         return {base_translate_full_with_convert(context, sizes, value, 3)};
@@ -154,7 +152,7 @@ OutputVector translate_new_full_fx(const NodeContext& context) {
 
 OutputVector translate_zeros(const NodeContext& context) {
     num_inputs_check(context, 2, 5);
-    auto sizes = context.get_input(0);
+    auto sizes = get_input_concat_if_list(context, 0);
     auto value = context.mark_node(v0::Constant::create(element::f32, Shape{}, {0}));
     auto num_inputs = context.get_input_size();
     if (num_inputs < 5) {
@@ -211,7 +209,7 @@ OutputVector translate_zeros_like_fx(const NodeContext& context) {
 OutputVector translate_new_zeros(const NodeContext& context) {
     num_inputs_check(context, 2, 6);
     auto input = context.get_input(0);
-    auto sizes = context.get_input(1);
+    auto sizes = get_input_concat_if_list(context, 1);
     auto value = context.mark_node(v0::Constant::create(element::f32, Shape{}, {0}));
     if (context.get_input_size() == 6 && !context.input_is_none(2)) {
         return {base_translate_full_with_convert(context, sizes, value, 2)};
@@ -236,7 +234,7 @@ OutputVector translate_new_zeros_fx(const NodeContext& context) {
 
 OutputVector translate_ones(const NodeContext& context) {
     num_inputs_check(context, 1, 5);
-    auto sizes = context.get_input(0);
+    auto sizes = get_input_concat_if_list(context, 0);
     auto value = context.mark_node(v0::Constant::create(element::f32, Shape{}, {1}));
     auto num_inputs = context.get_input_size();
     if (num_inputs < 5) {
@@ -293,7 +291,7 @@ OutputVector translate_ones_like_fx(const NodeContext& context) {
 OutputVector translate_new_ones(const NodeContext& context) {
     num_inputs_check(context, 2, 6);
     auto input = context.get_input(0);
-    auto sizes = context.get_input(1);
+    auto sizes = get_input_concat_if_list(context, 1);
     auto value = context.mark_node(v0::Constant::create(element::f32, Shape{}, {1}));
     if (context.get_input_size() == 6 && !context.input_is_none(2)) {
         return {base_translate_full_with_convert(context, sizes, value, 2)};
@@ -321,7 +319,7 @@ OutputVector translate_empty(const NodeContext& context) {
     // pin_memory=None, MemoryFormat? memory_format=None) -> Tensor layout, device and work with memory ignored on our
     // side, so just skip these parameters
     num_inputs_check(context, 1, 6);
-    auto sizes = context.get_input(0);
+    auto sizes = get_input_concat_if_list(context, 0);
     // In OV uninitialized data is not supported, so we create a tensor filled with zeros with a given shape and type.
     auto value = context.mark_node(v0::Constant::create(element::f32, Shape{}, {0}));
     int dtype_id = 1;
@@ -423,7 +421,19 @@ OutputVector translate_fill_diagonal(const NodeContext& context) {
     filled_tensor = context.mark_node(std::make_shared<v1::Reshape>(filled_tensor, input_shape, false));
     return {filled_tensor};
 }
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+
+OutputVector translate_empty_fx(const NodeContext& context) {
+    // aten.empty.memory_format(SymInt[] size, *, ScalarType? dtype=None, ...)
+    // In the FX graph dtype is passed as a node attribute, not as a positional input.
+    // In OV uninitialized data is not supported, so we fill with zeros.
+    num_inputs_check(context, 1, 1);
+    auto sizes = context.get_input(0);
+    auto value = context.mark_node(v0::Constant::create(element::f32, Shape{}, {0}));
+    auto filled_tensor = base_translate_full(context, sizes, value);
+    if (context.has_attribute("dtype")) {
+        auto dtype = context.get_attribute<element::Type>("dtype");
+        filled_tensor = context.mark_node(std::make_shared<v0::Convert>(filled_tensor, dtype));
+    }
+    return {filled_tensor};
+};
+}  // namespace ov::frontend::pytorch::op

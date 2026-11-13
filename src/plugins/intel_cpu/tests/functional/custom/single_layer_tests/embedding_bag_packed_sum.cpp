@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,6 +6,7 @@
 
 #include "shared_test_classes/base/ov_subgraph.hpp"
 #include "utils/cpu_test_utils.hpp"
+#include "openvino/op/embeddingbag_packedsum.hpp"
 
 using namespace CPUTestUtils;
 namespace ov {
@@ -28,16 +29,8 @@ class EmbeddingBagPackedSumLayerCPUTest : public testing::WithParamInterface<emb
                                           public CPUTestsBase {
 public:
     static std::string getTestCaseName(const testing::TestParamInfo<embeddingBagPackedSumLayerTestParamsSet>& obj) {
-        embeddingBagPackedSumParams params;
-        ElementType netPrecision, indPrecision;
-        std::string targetDevice;
-        std::tie(params, netPrecision, indPrecision, targetDevice) = obj.param;
-
-        InputShape inputShapes;
-        std::vector<std::vector<size_t>> indices;
-        bool withWeights;
-        std::tie(inputShapes, indices, withWeights) = params;
-
+        const auto& [params, netPrecision, indPrecision, targetDevice] = obj.param;
+        const auto& [inputShapes, indices, withWeights] = params;
         std::ostringstream result;
         result << "IS=" << inputShapes << "_";
         result << "I" << ov::test::utils::vec2str(indices) << "_";
@@ -50,15 +43,10 @@ public:
 
 protected:
     void SetUp() override {
-        embeddingBagPackedSumParams embParams;
-        ElementType indPrecision;
-        std::tie(embParams, inType, indPrecision, targetDevice) = this->GetParam();
-
-        InputShape inputShapes;
-        std::vector<std::vector<size_t>> indices;
-        bool withWeights;
-        std::tie(inputShapes, indices, withWeights) = embParams;
-
+        const auto& [embParams, _inType, indPrecision, _targetDevice] = this->GetParam();
+        inType = _inType;
+        targetDevice = _targetDevice;
+        const auto& [inputShapes, indices, withWeights] = embParams;
         selectedType = makeSelectedTypeStr("ref", inType);
         targetDevice = ov::test::utils::DEVICE_CPU;
 
@@ -67,7 +55,7 @@ protected:
         auto emb_table_node = std::make_shared<ov::op::v0::Parameter>(inType, inputShapes.first);
         ov::ParameterVector params = {emb_table_node};
 
-        auto embBag = std::dynamic_pointer_cast<ov::op::v3::EmbeddingBagPackedSum>(
+        auto embBag = ov::as_type_ptr<ov::op::v3::EmbeddingBagPackedSum>(
             ov::test::utils::make_embedding_bag_packed_sum(inType, indPrecision, emb_table_node, indices, withWeights));
         ov::ResultVector results{std::make_shared<ov::op::v0::Result>(embBag)};
         function = std::make_shared<ov::Model>(results, params, "embeddingBagPackedSum");

@@ -1,7 +1,8 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "openvino/runtime/system_conf.hpp"
 
 #include "common_test_utils/ov_tensor_utils.hpp"
 #include "common_test_utils/test_enums.hpp"
@@ -23,22 +24,16 @@ using PadLayerCPUTestParamSet = std::tuple<
         std::vector<int64_t>,                           // padsEnd
         float,                                          // argPadValue
         ov::op::PadMode,                                // padMode
-        CPUSpecificParams
+        CPUSpecificParams,
+        ov::AnyMap                                      //  cpu device config
 >;
 
 class PadLayerCPUTest : public testing::WithParamInterface<PadLayerCPUTestParamSet>,
                         virtual public SubgraphBaseTest, public CPUTestsBase {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<PadLayerCPUTestParamSet> obj) {
-        InputShape shapes;
-        ov::test::utils::InputLayerType secondaryInputType;
-        ElementType elementType;
-        std::vector<int64_t> padsBegin, padsEnd;
-        ov::op::PadMode padMode;
-        float argPadValue;
-        CPUSpecificParams cpuParams;
-        std::tie(shapes, secondaryInputType, elementType, padsBegin, padsEnd, argPadValue, padMode, cpuParams) = obj.param;
-
+    static std::string getTestCaseName(const testing::TestParamInfo<PadLayerCPUTestParamSet>& obj) {
+        const auto& [shapes, secondaryInputType, elementType, padsBegin, padsEnd, argPadValue, padMode, cpuParams,
+                     additionalConfig] = obj.param;
         std::ostringstream results;
         results << "IS=" << ov::test::utils::partialShape2str({shapes.first}) << "_";
         results << "TS=";
@@ -54,6 +49,12 @@ public:
         }
         results << "PadMode=" << padMode << "_";
         results << CPUTestsBase::getTestCaseName(cpuParams);
+        if (!additionalConfig.empty()) {
+            results << "_PluginConf";
+            for (auto& item : additionalConfig) {
+                results << "_" << item.first << "=" << item.second.as<std::string>();
+            }
+        }
 
         return results.str();
     }
@@ -82,15 +83,15 @@ protected:
         }
     }
     void SetUp() override {
-        InputShape shapes;
-        ov::test::utils::InputLayerType secondaryInputType;
-        ov::op::PadMode padMode;
-        ElementType dataType;
-        CPUSpecificParams cpuParams;
-        std::tie(shapes, secondaryInputType, dataType, padsBegin, padsEnd, padValue, padMode, cpuParams) = this->GetParam();
-
+        const auto& [shapes, secondaryInputType, dataType, _padsBegin, _padsEnd, _padValue, padMode, cpuParams,
+                     additionalConfig] = this->GetParam();
+        padsBegin = _padsBegin;
+        padsEnd = _padsEnd;
+        padValue = _padValue;
+        configuration.insert(additionalConfig.begin(), additionalConfig.end());
         std::tie(inFmts, outFmts, priority, selectedType) = cpuParams;
-        selectedType = makeSelectedTypeStr("ref", dataType);
+
+        selectedType = makeSelectedTypeStr("ref", deduce_expected_precision(dataType, configuration));
         targetDevice = ov::test::utils::DEVICE_CPU;
         init_input_shapes({shapes});
         for (auto& targetShapes : targetStaticShapes) {
@@ -126,7 +127,7 @@ protected:
 
             pad = std::make_shared<ov::op::v12::Pad>(params[0], padsBeginNode, padsEndNode, argPadValueNode, padMode);
         }
-        function = makeNgraphFunction(inType, params, pad, "Pad");
+        function = create_ov_model(inType, params, pad, "Pad");
     }
     std::vector<int64_t> padsBegin;  // padsBegin
     std::vector<int64_t> padsEnd;    // padsEnd
@@ -157,6 +158,11 @@ const std::vector<ElementType> inputPrecisions = {
         ElementType::f32,
         ElementType::bf16,
         ElementType::i8
+};
+
+const std::vector<ov::AnyMap> deviceConfig = {
+    CPUTestUtils::empty_plugin_config,
+    cpu_f16_plugin_config
 };
 
 const std::vector<ov::test::utils::InputLayerType> inputLayerTypes = {
@@ -198,7 +204,7 @@ const std::vector<std::vector<int64_t>> padsEnd4D_Full   = {{0, 0, -2, 0}, {0, 0
 
 const std::vector<CPUSpecificParams> CPUParams4DBlocked = {
         cpuParams_nChw16c,
-        cpuParams_nChw8c,
+        cpuParams_nChw8c
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -212,7 +218,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DConstBlocked_Smoke),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams4DBlocked)),
+                ::testing::ValuesIn(CPUParams4DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -227,7 +234,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4D_Smoke),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::Values(cpuParams_nhwc)),
+                ::testing::Values(cpuParams_nhwc),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -242,7 +250,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DBlocked_Smoke),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams4DBlocked)),
+                ::testing::ValuesIn(CPUParams4DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -257,7 +266,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DBlocked_Smoke),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::Values(cpuParams_nhwc)),
+                ::testing::Values(cpuParams_nhwc),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -272,7 +282,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DConstBlocked_Full),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams4DBlocked)),
+                ::testing::ValuesIn(CPUParams4DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -287,7 +298,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4D_Full),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::Values(cpuParams_nhwc)),
+                ::testing::Values(cpuParams_nhwc),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -302,7 +314,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DBlocked_Full),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams4DBlocked)),
+                ::testing::ValuesIn(CPUParams4DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -317,7 +330,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DBlocked_Full),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::Values(cpuParams_nhwc)),
+                ::testing::Values(cpuParams_nhwc),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -352,7 +366,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4D_Smoke),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams4DDynamic)),
+                ::testing::ValuesIn(CPUParams4DDynamic),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -367,7 +382,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DConstBlocked_Smoke),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams4DBlocked)),
+                ::testing::ValuesIn(CPUParams4DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -382,7 +398,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4D_Smoke),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams4DDynamic)),
+                ::testing::ValuesIn(CPUParams4DDynamic),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -397,7 +414,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DBlocked_Smoke),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams4DBlocked)),
+                ::testing::ValuesIn(CPUParams4DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -412,7 +430,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4D_Full),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams4DDynamic)),
+                ::testing::ValuesIn(CPUParams4DDynamic),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -427,7 +446,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DConstBlocked_Full),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams4DBlocked)),
+                ::testing::ValuesIn(CPUParams4DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -442,7 +462,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4D_Full),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams4DDynamic)),
+                ::testing::ValuesIn(CPUParams4DDynamic),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -457,7 +478,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd4DBlocked_Full),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams4DBlocked)),
+                ::testing::ValuesIn(CPUParams4DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -499,7 +521,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5DConstBlocked_Smoke),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams5DBlocked)),
+                ::testing::ValuesIn(CPUParams5DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -514,7 +537,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5D_Smoke),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::Values(cpuParams_ndhwc)),
+                ::testing::Values(cpuParams_ndhwc),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -529,7 +553,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5DBlocked_Smoke),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams5DBlocked)),
+                ::testing::ValuesIn(CPUParams5DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -544,7 +569,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5D_Smoke),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::Values(cpuParams_ndhwc)),
+                ::testing::Values(cpuParams_ndhwc),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -559,7 +585,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5DConstBlocked_Full),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams5DBlocked)),
+                ::testing::ValuesIn(CPUParams5DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -574,7 +601,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5D_Full),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::Values(cpuParams_ndhwc)),
+                ::testing::Values(cpuParams_ndhwc),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -589,7 +617,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5DBlocked_Full),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams5DBlocked)),
+                ::testing::ValuesIn(CPUParams5DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -604,7 +633,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5D_Full),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::Values(cpuParams_ndhwc)),
+                ::testing::Values(cpuParams_ndhwc),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -639,7 +669,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5D_Smoke),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams5DDynamic)),
+                ::testing::ValuesIn(CPUParams5DDynamic),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -654,7 +685,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5DConstBlocked_Smoke),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams5DBlocked)),
+                ::testing::ValuesIn(CPUParams5DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -669,7 +701,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5D_Smoke),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams5DDynamic)),
+                ::testing::ValuesIn(CPUParams5DDynamic),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -684,7 +717,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5DBlocked_Smoke),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams5DBlocked)),
+                ::testing::ValuesIn(CPUParams5DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -699,7 +733,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5D_Full),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams5DDynamic)),
+                ::testing::ValuesIn(CPUParams5DDynamic),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -714,7 +749,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5DConstBlocked_Full),
                 ::testing::ValuesIn(argPadValue),
                 ::testing::Values(ov::op::PadMode::CONSTANT),
-                ::testing::ValuesIn(CPUParams5DBlocked)),
+                ::testing::ValuesIn(CPUParams5DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -729,7 +765,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5D_Full),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams5DDynamic)),
+                ::testing::ValuesIn(CPUParams5DDynamic),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 
@@ -744,7 +781,8 @@ INSTANTIATE_TEST_SUITE_P(
                 ::testing::ValuesIn(padsEnd5DBlocked_Full),
                 ::testing::Values(0),
                 ::testing::ValuesIn(padMode),
-                ::testing::ValuesIn(CPUParams5DBlocked)),
+                ::testing::ValuesIn(CPUParams5DBlocked),
+                ::testing::ValuesIn(deviceConfig)),
         PadLayerCPUTest::getTestCaseName
 );
 

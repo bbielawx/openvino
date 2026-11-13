@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #pragma once
@@ -25,9 +25,8 @@ struct multinomial : public primitive_base<multinomial> {
           bool log_probs,
           std::uint64_t global_seed,
           std::uint64_t op_seed,
-          std::int64_t num_samples,
-          const padding& output_padding = padding())
-        : primitive_base{id, {cdf, random_probabilities}, {output_padding}},
+          std::int64_t num_samples)
+        : primitive_base{id, {cdf, random_probabilities}},
           output_data_type {output_data_type},
           with_replacement {with_replacement},
           log_probs {log_probs},
@@ -54,8 +53,9 @@ struct multinomial : public primitive_base<multinomial> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
         const multinomial& rhs_casted = downcast<const multinomial>(rhs);
         return output_data_type == rhs_casted.output_data_type &&
             with_replacement == rhs_casted.with_replacement &&

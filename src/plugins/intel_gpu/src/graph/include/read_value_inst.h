@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -26,16 +26,21 @@ public:
 using read_value_node = typed_program_node<read_value>;
 
 template<>
-class typed_primitive_inst<read_value> : public typed_primitive_inst_base<read_value>, public memory_state::variable {
+class typed_primitive_inst<read_value> : public typed_primitive_inst_base<read_value>, public memory_state::releasable_variable {
     using parent = typed_primitive_inst_base<read_value>;
 
 public:
     template<typename ShapeType>
     static std::vector<layout> calc_output_layouts(read_value_node const& /*node*/, const kernel_impl_params& impl_param) {
         auto desc = impl_param.typed_desc<read_value>();
-        const auto default_layout = desc->output_layout;
+        std::vector<layout> output_layouts;
 
-        return { impl_param.state_layout.value_or(default_layout) };
+        for (size_t i = 0; i < desc->num_outputs; i++) {
+            const auto& default_layout = desc->output_layouts[i];
+            output_layouts.push_back(impl_param.state_layouts.size() > i ? impl_param.state_layouts[i] : default_layout);
+        }
+
+        return output_layouts;
     }
 
     static layout calc_output_layout(const read_value_node& node, kernel_impl_params const& impl_param);
@@ -43,9 +48,10 @@ public:
     static std::string to_string(const read_value_node& node);
 
     typed_primitive_inst(network& network, const read_value_node& desc);
-    typed_primitive_inst(network& network) : parent(network), memory_state::variable("") {}
+    typed_primitive_inst(network& network) : parent(network), memory_state::releasable_variable("") {}
 
     void update_output_memory() override;
+    void release_variable() override;
 
 protected:
     void on_execute() override;

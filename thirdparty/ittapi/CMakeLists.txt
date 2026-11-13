@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -24,7 +24,5 @@ else()
 
     # create alias ittapi::ittnotify
     add_library(ittapi::ittnotify ALIAS ittnotify)
-
-    ov_developer_package_export_targets(TARGET ittapi::ittnotify)
     ov_install_static_lib(ittnotify ${OV_CPACK_COMP_CORE})
 endif()

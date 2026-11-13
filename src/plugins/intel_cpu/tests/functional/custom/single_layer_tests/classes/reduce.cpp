@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,22 +15,9 @@ using namespace CPUTestUtils;
 namespace ov {
 namespace test {
 
-std::string ReduceCPULayerTest::getTestCaseName(testing::TestParamInfo<ReduceLayerCPUTestParamSet> obj) {
-    basicReduceParams basicParams;
-    CPUSpecificParams cpuParams;
-    fusingSpecificParams fusingParams;
-    std::map<std::string, ov::element::Type> additionalConfig;
-    std::tie(basicParams, cpuParams, fusingParams, additionalConfig) = obj.param;
-
-    std::vector<int> axes;
-    ov::test::utils::OpType opType;
-    bool keepDims;
-    ov::test::utils::ReductionType reductionType;
-    ElementType netPrecision, inPrc, outPrc;
-    std::vector<InputShape> inputShapes;
-
-    std::tie(axes, opType, keepDims, reductionType, netPrecision, inPrc, outPrc, inputShapes) = basicParams;
-
+std::string ReduceCPULayerTest::getTestCaseName(const testing::TestParamInfo<ReduceLayerCPUTestParamSet>& obj) {
+    const auto& [basicParams, cpuParams, fusingParams, additionalConfig] = obj.param;
+    const auto& [axes, opType, keepDims, reductionType, netPrecision, inPrc, outPrc, inputShapes] = basicParams;
     std::ostringstream result;
     result << "IS=(";
     for (const auto& shape : inputShapes) {
@@ -68,27 +55,12 @@ std::string ReduceCPULayerTest::getTestCaseName(testing::TestParamInfo<ReduceLay
 
 void ReduceCPULayerTest::SetUp() {
     targetDevice = ov::test::utils::DEVICE_CPU;
-
-    basicReduceParams basicParams;
-    CPUSpecificParams cpuParams;
-    fusingSpecificParams fusingParams;
-    std::map<std::string, ov::element::Type> additionalConfig;
-    std::tie(basicParams, cpuParams, fusingParams, additionalConfig) = this->GetParam();
-
+    const auto& [basicParams, cpuParams, fusingParams, additionalConfig] = this->GetParam();
     std::tie(inFmts, outFmts, priority, selectedType) = cpuParams;
     std::tie(postOpMgrPtr, fusedOps) = fusingParams;
-
-    std::vector<int> axes;
-    ov::test::utils::OpType opType;
-    bool keepDims;
-    ElementType inPrc, outPrc;
-    std::vector<InputShape> inputShapes;
-
-    std::tie(axes, opType, keepDims, reductionType, netPrecision, inPrc, outPrc, inputShapes) = basicParams;
-    if (netPrecision == ElementType::boolean) {
-        inPrc = outPrc = netPrecision;
-    }
-
+    const auto& [axes, opType, keepDims, _reductionType, _netPrecision, inPrc, outPrc, inputShapes] = basicParams;
+    reductionType = _reductionType;
+    netPrecision = _netPrecision;
     configuration.insert(additionalConfig.begin(), additionalConfig.end());
     updateSelectedType(getPrimitiveType(), netPrecision == ElementType::boolean ? ElementType::i8 : netPrecision, configuration);
 
@@ -137,13 +109,11 @@ void ReduceCPULayerTest::SetUp() {
         }
     }
 
-    function = makeNgraphFunction(netPrecision, params, reduce, "Reduce");
+    function = create_ov_model(netPrecision, params, reduce, "Reduce");
 
-    if (ov::with_cpu_x86_avx512_core_amx()) {
-        if (netPrecision == ov::element::f32 && configuration.count(ov::hint::inference_precision.name()) &&
-            configuration.at(ov::hint::inference_precision.name()) == ov::element::f16) {
-            abs_threshold = 5e-3;
-        }
+    if (netPrecision == ov::element::f32 && configuration.count(ov::hint::inference_precision.name()) &&
+        configuration.at(ov::hint::inference_precision.name()) == ov::element::f16) {
+        abs_threshold = 5e-3;
     }
 }
 
@@ -245,6 +215,25 @@ const std::vector<ov::test::utils::ReductionType>& reductionTypes() {
     return reductionTypes;
 }
 
+const std::vector<ov::test::utils::ReductionType>& reductionTypesArithmetic() {
+    static const std::vector<ov::test::utils::ReductionType> reductionTypesArithmetic = {
+            ov::test::utils::ReductionType::Mean,
+            ov::test::utils::ReductionType::Sum,
+            ov::test::utils::ReductionType::Prod,
+            ov::test::utils::ReductionType::L1,
+            ov::test::utils::ReductionType::L2,
+    };
+    return reductionTypesArithmetic;
+}
+
+const std::vector<ov::test::utils::ReductionType>& reductionTypesCompare() {
+    static const std::vector<ov::test::utils::ReductionType> reductionTypesCompare = {
+            ov::test::utils::ReductionType::Max,
+            ov::test::utils::ReductionType::Min,
+    };
+    return reductionTypesCompare;
+}
+
 const std::vector<ElementType>& inpOutPrc() {
     static const std::vector<ElementType> inpOutPrc = {ElementType::f32};
     return inpOutPrc;
@@ -254,10 +243,7 @@ const std::vector<std::map<std::string, ov::element::Type>> additionalConfig() {
     static const std::vector<std::map<std::string, ov::element::Type>> additionalConfig = {
         {{ov::hint::inference_precision.name(), ov::element::f32}},
         {{ov::hint::inference_precision.name(), ov::element::bf16}},
-// ARM doesn't support FP16 for now
-#if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64)
         {{ov::hint::inference_precision.name(), ov::element::f16}},
-#endif
     };
     return additionalConfig;
 }
@@ -277,6 +263,13 @@ const std::vector<ov::test::utils::ReductionType>& reductionTypesInt32() {
             ov::test::utils::ReductionType::L1,
     };
     return reductionTypesInt32;
+}
+
+const std::vector<ov::test::utils::ReductionType>& reductionTypesNativeInt32() {
+    static const std::vector<ov::test::utils::ReductionType> reductionTypesNativeInt32 = {
+            ov::test::utils::ReductionType::Prod,
+    };
+    return reductionTypesNativeInt32;
 }
 
 }  // namespace Reduce

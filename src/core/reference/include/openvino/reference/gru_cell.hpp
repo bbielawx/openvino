@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,6 +6,7 @@
 
 #include <cmath>
 
+#include "openvino/op/util/rnn_cell_base.hpp"
 #include "openvino/reference/add.hpp"
 #include "openvino/reference/clamp.hpp"
 #include "openvino/reference/matmul.hpp"
@@ -105,14 +106,12 @@ void gru_cell(const T* X,
                                        reinterpret_cast<char*>(Ht_R_zrh[1].data()),
                                        reinterpret_cast<char*>(Ht_R_zrh[2].data())};
 
-    size_t num_b_splits = linear_before_reset ? 4 : 3;
+    const size_t num_b_splits = linear_before_reset ? 4 : 3;
     std::vector<std::vector<T>> biases_zrh(num_b_splits, std::vector<T>(B_shape[0] / num_b_splits));
-    std::vector<char*> pointers_biases = {reinterpret_cast<char*>(biases_zrh[0].data()),
-                                          reinterpret_cast<char*>(biases_zrh[1].data()),
-                                          reinterpret_cast<char*>(biases_zrh[2].data())};
-    if (linear_before_reset) {
-        pointers_biases.push_back(reinterpret_cast<char*>(biases_zrh[3].data()));
-    }
+    std::vector<char*> pointers_biases(num_b_splits);
+    std::transform(biases_zrh.begin(), biases_zrh.end(), pointers_biases.begin(), [](auto&& vec) {
+        return reinterpret_cast<char*>(vec.data());
+    });
 
     // split on gates
     reference::split(reinterpret_cast<char*>(Xt_W.data()), all_gates_shape, sizeof(T), 1, 3, pointers_XW.data());
@@ -121,7 +120,7 @@ void gru_cell(const T* X,
     reference::split(reinterpret_cast<const char*>(B), B_shape, sizeof(T), 0, num_b_splits, pointers_biases.data());
 
     auto clip_activation = [&clip](std::vector<T>& gate, const std::string& activation) {
-        if (clip > 0.f) {
+        if (op::util::classify_rnn_clip(clip) == op::util::RNNClipMode::CLAMP) {
             reference::clamp(gate.data(), gate.data(), static_cast<T>(-clip), static_cast<T>(clip), gate.size());
         }
         if (activation == "relu") {

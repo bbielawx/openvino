@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,8 +17,8 @@ GPU_DEFINE_PRIMITIVE_TYPE_ID(scatter_elements_update)
 layout scatter_elements_update_inst::calc_output_layout(scatter_elements_update_node const& node, kernel_impl_params const& impl_param) {
     auto desc = impl_param.typed_desc<scatter_elements_update>();
 
-    const int32_t axis = desc->axis;
-    const size_t input_number_of_dims = impl_param.get_input_layout().get_partial_shape().size();
+    const int64_t axis = desc->axis;
+    const int64_t input_number_of_dims = static_cast<int64_t>(impl_param.get_input_layout().get_partial_shape().size());
 
     auto input_layout = impl_param.get_input_layout();
 
@@ -27,11 +27,12 @@ layout scatter_elements_update_inst::calc_output_layout(scatter_elements_update_
     auto output_type = input_layout.data_type;
 
     if (impl_param.has_fused_primitives()) {
-        output_type = impl_param.get_fused_output_layout().data_type;
+        output_type = impl_param.get_output_element_type();
     }
 
-    if (static_cast<size_t>(axis) < 0 || static_cast<size_t>(axis) >= input_number_of_dims)
+    if (axis < 0 || axis >= input_number_of_dims) {
         CLDNN_ERROR_MESSAGE(desc->id, "Incorrect axis value for ScatterElementsUpdate: Axis must be positive and less than the input tensor dimension.");
+    }
 
     return layout{output_shape, output_type, input_format};
 }
@@ -53,23 +54,36 @@ std::string scatter_elements_update_inst::to_string(scatter_elements_update_node
     return primitive_description.str();
 }
 
-scatter_elements_update_inst::typed_primitive_inst(network& network, scatter_elements_update_node const& node) : parent(network, node) {}
-void scatter_elements_update_inst::on_execute() {
-    auto input1_shape = _impl_params->input_layouts[1].get_partial_shape();
-    auto input2_shape = _impl_params->input_layouts[2].get_partial_shape();
+scatter_elements_update_inst::typed_primitive_inst(network& network, scatter_elements_update_node const& node) : parent(network, node) {
+    update_output_memory();
+}
 
-    if ((ov::shape_size(input1_shape.to_shape()) == 0) || (ov::shape_size(input2_shape.to_shape()) == 0))
-        update_output_memory();
+void scatter_elements_update_inst::on_execute() {
+    update_output_memory();
 }
 
 void scatter_elements_update_inst::update_output_memory() {
-    if (_outputs.size() > 0 && static_cast<bool>(_outputs[0])
-        && _network.get_engine().is_the_same_buffer(output_memory(), input_memory()))
+    if (!can_be_optimized() || _impl_params->is_dynamic()) {
         return;
+    }
 
-    if (_node != nullptr)
-        build_deps();
+    if (!_outputs.empty() && static_cast<bool>(_outputs[0])
+        && _network.get_engine().is_the_same_buffer(output_memory(), input_memory())) {
+        return;
+    }
 
+    build_deps();
+
+    if (input_memory_ptr() == nullptr) {
+        return;
+    }
+
+    // Can_be_optimized nodes are allocating from memory_pool too. In this case,
+    // we need release the legacy output memory from memory pool explicitly.
+    if (static_cast<bool>(_outputs[0]) &&
+        get_node().get_program().get_config().get_enable_memory_pool()) {
+        _network.get_memory_pool().release_memory(_outputs[0].get(), get_node().get_unique_id(), get_node().id(), _network.get_id());
+    }
     _outputs = {_network.get_engine().reinterpret_buffer(input_memory(), _impl_params->get_output_layout())};
     _mem_allocated = false;
 }

@@ -1,10 +1,9 @@
-// Copyright (C) 2020-2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
 
-#include "openvino/pass/pattern/op/wrap_type.hpp"
-#include "openvino/pass/graph_rewrite.hpp"
+#include "openvino/pass/matcher_pass.hpp"
 
 /*
  * Description:
@@ -13,7 +12,7 @@
  *     equals to number of groups.
  *
  * Before:
- * 
+ *
  * +--------------+    +---------------+
  * | Input tensor |    | Kernel tensor |
  * +-----------+--+    +-+-------------+
@@ -25,9 +24,9 @@
  *           +------v------+
  *           |   Result    |
  *           +-------------+
- * 
+ *
  * After:
- * 
+ *
  * +--------------+    +--------------+ +---------------+   +--------------+
  * | Input tensor |    | Constant (1) | | Kernel tensor |   | Constant (0) |
  * +-----------+--+    +-+------------+ +-----------+---+   +-+------------+
@@ -53,16 +52,14 @@
  *                         +----------v------------+
  *                         |        Result         |
  *                         +-----------------------+
- * 
+ *
  */
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
-class ConvertGroupConvolution: public ov::pass::MatcherPass {
+class ConvertGroupConvolution : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("ConvertGroupConvolution", "0");
+    OPENVINO_MATCHER_PASS_RTTI("ConvertGroupConvolution");
     ConvertGroupConvolution();
 };
-}  // namespace intel_cpu
-}  // namespace ov
+}  // namespace ov::intel_cpu

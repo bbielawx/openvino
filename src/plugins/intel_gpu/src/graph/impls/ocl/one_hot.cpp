@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,20 +20,21 @@ struct one_hot_impl : typed_primitive_impl_ocl<one_hot> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::one_hot_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<one_hot_impl>(*this);
+        return make_deep_copy<one_hot_impl, kernel_params_t>(*this);
     }
 
     static kernel_params_t get_kernel_params(const kernel_impl_params& impl_param) {
         const auto& primitive = impl_param.typed_desc<one_hot>();
         auto params = get_default_params<kernel_selector::one_hot_params>(impl_param);
 
-        params.one_hot_axis = primitive->one_hot_axis;
+        params.one_hot_axis = static_cast<uint16_t>(primitive->one_hot_axis);
         params.on_value = primitive->on_value;
         params.off_value = primitive->off_value;
+        params.indices_normalize_mode = primitive->indices_normalize_mode;
 
         auto output_sizes = impl_param.get_output_layout().get_dims();
 
-        params.one_hot_limit = output_sizes[params.one_hot_axis];
+        params.one_hot_limit = static_cast<int32_t>(output_sizes[params.one_hot_axis]);
         return params;
     }
 };

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,6 +7,7 @@
 #include <iterator>
 #include <queue>
 
+#include "openvino/core/memory_util.hpp"
 #include "openvino/frontend/exception.hpp"
 #include "openvino/opsets/opset10.hpp"
 #include "openvino/util/log.hpp"
@@ -15,15 +16,45 @@
 
 using namespace ov::frontend::tensorflow;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow_lite {
+namespace {
+std::shared_ptr<ov::frontend::tensorflow_lite::TensorLitePlace> decode_tensor_place(
+    const ov::frontend::tensorflow_lite::TensorMetaInfo& tensor_meta_info,
+    const ov::frontend::InputModel& model) {
+    auto tensor_place = std::make_shared<ov::frontend::tensorflow_lite::TensorLitePlace>(
+        model,
+        tensor_meta_info.m_partial_shape,
+        tensor_meta_info.m_element_type,
+        std::vector<std::string>{tensor_meta_info.m_tensor_name},
+        tensor_meta_info.m_quantization_info,
+        tensor_meta_info.m_sparsity_info,
+        tensor_meta_info.m_tensor_data,
+        tensor_meta_info.m_tensor_data_size);
+    return tensor_place;
+}
+
+std::shared_ptr<ov::frontend::tensorflow_lite::TensorLitePlace> decode_input_tensor(
+    const std::shared_ptr<ov::frontend::tensorflow_lite::DecoderBaseOperation>& decoder,
+    size_t idx,
+    const ov::frontend::InputModel& model) {
+    const auto& tensor_meta_info = decoder->get_input_tensor_info(idx);
+    return decode_tensor_place(tensor_meta_info, model);
+}
+
+std::shared_ptr<ov::frontend::tensorflow_lite::TensorLitePlace> decode_output_tensor(
+    const std::shared_ptr<ov::frontend::tensorflow_lite::DecoderBaseOperation>& decoder,
+    size_t idx,
+    const ov::frontend::InputModel& model) {
+    const auto& tensor_meta_info = decoder->get_output_tensor_info(idx);
+    return decode_tensor_place(tensor_meta_info, model);
+}
+}  // namespace
+
+namespace ov::frontend::tensorflow_lite {
 
 class InputModel::InputModelTFLiteImpl {
 public:
-    InputModelTFLiteImpl(const GraphIteratorFlatBuffer::Ptr& graph_iterator,
-                         const ov::frontend::InputModel& input_model);
-    InputModelTFLiteImpl(const GraphIteratorFlatBuffer::Ptr& graph_iterator,
+    InputModelTFLiteImpl(const GraphIterator::Ptr& graph_iterator, const ov::frontend::InputModel& input_model);
+    InputModelTFLiteImpl(const GraphIterator::Ptr& graph_iterator,
                          const ov::frontend::InputModel& input_model,
                          const std::shared_ptr<TelemetryExtension>& telemetry);
     std::vector<ov::frontend::Place::Ptr> get_inputs() const;
@@ -72,7 +103,7 @@ private:
     std::vector<ov::frontend::Place::Ptr> m_outputs;
     std::map<std::string, Output<Node>> m_tensor_values;
 
-    std::shared_ptr<GraphIteratorFlatBuffer> m_graph_iterator;
+    std::shared_ptr<GraphIterator> m_graph_iterator;
     const ov::frontend::InputModel& m_input_model;
     std::vector<std::shared_ptr<ov::frontend::tensorflow_lite::InputModel>> m_subgraphs;
     std::shared_ptr<TelemetryExtension> m_telemetry;
@@ -85,8 +116,10 @@ void InputModel::InputModelTFLiteImpl::load_model() {
     for (; !m_graph_iterator->is_end(); m_graph_iterator->next()) {
         const auto& decoder = m_graph_iterator->get_decoder();
 
-        if (auto tensor_decoder = std::dynamic_pointer_cast<DecoderFlatBufferTensors>(decoder)) {
-            auto tensor_place = tensor_decoder->decode_tensor(m_input_model);
+        if (auto tensor_decoder = std::dynamic_pointer_cast<DecoderBaseTensor>(decoder)) {
+            auto tensor_place = decode_tensor_place(tensor_decoder->get_tensor_info(), m_input_model);
+            tensor_place->set_input_index(tensor_decoder->get_input_idx());
+            tensor_place->set_output_index(tensor_decoder->get_output_idx());
             FRONT_END_GENERAL_CHECK(tensor_place->is_input() || tensor_place->is_output());
             auto name = tensor_place->get_names()[0];
             if (m_tensor_places.count(name) == 0) {
@@ -104,12 +137,32 @@ void InputModel::InputModelTFLiteImpl::load_model() {
             op_statistics[decoder->get_op_type()]++;
         }
 
-        for (size_t i = 0; i < decoder->get_input_size(); ++i) {
-            auto place = decoder->decode_input_tensor(i, m_input_model);
+        auto operation_decoder = std::dynamic_pointer_cast<DecoderBaseOperation>(decoder);
+        FRONT_END_GENERAL_CHECK(operation_decoder, "Operation decoder is expected");
+        for (size_t i = 0; i < operation_decoder->get_input_size(); ++i) {
+            auto place = decode_input_tensor(operation_decoder, i, m_input_model);
             auto name = place->get_names()[0];
             if (m_tensor_places.count(name) == 0) {
                 m_tensor_places[name] = place;
                 if (auto data = place->get_data()) {
+                    if (place->get_partial_shape().is_static()) {
+                        const auto shape = place->get_partial_shape().to_shape();
+                        const auto required_size_opt = ov::util::get_memory_size_safe(place->get_element_type(), shape);
+                        FRONT_END_GENERAL_CHECK(required_size_opt.has_value(),
+                                                "TensorFlow Lite Frontend: tensor \"",
+                                                name,
+                                                "\" has a shape/type combination that overflows size computation. "
+                                                "The model file may be corrupted.");
+                        const auto buffer_size = place->get_data_size();
+                        FRONT_END_GENERAL_CHECK(buffer_size == 0 || buffer_size >= required_size_opt.value(),
+                                                "TensorFlow Lite Frontend: tensor \"",
+                                                name,
+                                                "\" buffer size (",
+                                                buffer_size,
+                                                " bytes) is smaller than required by its shape and type (",
+                                                required_size_opt.value(),
+                                                " bytes). The model file may be corrupted.");
+                    }
                     auto constant = ov::op::v0::Constant::create(place->get_element_type(),
                                                                  place->get_partial_shape().to_shape(),
                                                                  data);
@@ -127,15 +180,15 @@ void InputModel::InputModelTFLiteImpl::load_model() {
                                             "should be already produced by previous operators: ",
                                             name,
                                             ". Error is encountered while working with operation of type ",
-                                            decoder->get_op_type(),
+                                            operation_decoder->get_op_type(),
                                             " and name ",
-                                            decoder->get_op_name(),
+                                            operation_decoder->get_op_name(),
                                             ".");
                 }
             }
         }
-        for (size_t i = 0; i < decoder->get_output_size(); ++i) {
-            auto place = decoder->decode_output_tensor(i, m_input_model);
+        for (size_t i = 0; i < operation_decoder->get_output_size(); ++i) {
+            auto place = decode_output_tensor(operation_decoder, i, m_input_model);
             auto name = place->get_names()[0];
             if (m_tensor_places.count(name) == 0)
                 m_tensor_places[name] = place;
@@ -183,7 +236,7 @@ void InputModel::InputModelTFLiteImpl::load_model() {
     }
 }
 
-InputModel::InputModelTFLiteImpl::InputModelTFLiteImpl(const GraphIteratorFlatBuffer::Ptr& graph_iterator,
+InputModel::InputModelTFLiteImpl::InputModelTFLiteImpl(const GraphIterator::Ptr& graph_iterator,
                                                        const ov::frontend::InputModel& input_model)
     : m_graph_iterator(graph_iterator),
       m_input_model(input_model) {
@@ -191,7 +244,7 @@ InputModel::InputModelTFLiteImpl::InputModelTFLiteImpl(const GraphIteratorFlatBu
     load_model();
 }
 
-InputModel::InputModelTFLiteImpl::InputModelTFLiteImpl(const GraphIteratorFlatBuffer::Ptr& graph_iterator,
+InputModel::InputModelTFLiteImpl::InputModelTFLiteImpl(const GraphIterator::Ptr& graph_iterator,
                                                        const ov::frontend::InputModel& input_model,
                                                        const std::shared_ptr<TelemetryExtension>& telemetry)
     : m_graph_iterator(graph_iterator),
@@ -343,8 +396,7 @@ InputModel::InputModelTFLiteImpl::get_subgraphs() {
     return m_subgraphs;
 }
 
-InputModel::InputModel(const GraphIteratorFlatBuffer::Ptr& graph_iterator,
-                       const std::shared_ptr<TelemetryExtension>& telemetry)
+InputModel::InputModel(const GraphIterator::Ptr& graph_iterator, const std::shared_ptr<TelemetryExtension>& telemetry)
     : _impl{std::make_shared<InputModelTFLiteImpl>(graph_iterator, *this, telemetry)} {}
 
 std::vector<std::shared_ptr<ov::frontend::tensorflow::OpPlace>> InputModel::get_op_places() const {
@@ -370,6 +422,10 @@ std::vector<ov::frontend::Place::Ptr> InputModel::get_outputs() const {
 
 ov::frontend::Place::Ptr InputModel::get_place_by_tensor_name(const std::string& tensorName) const {
     return _impl->get_place_by_tensor_name(tensorName);
+}
+
+ov::frontend::Place::Ptr InputModel::get_place_by_input_index(size_t input_idx) const {
+    FRONT_END_NOT_IMPLEMENTED(get_place_by_input_index);
 }
 
 void InputModel::set_partial_shape(const Place::Ptr& place, const PartialShape& shape) {
@@ -421,6 +477,4 @@ std::vector<std::shared_ptr<InputModel>> InputModel::get_subgraphs() const {
     return _impl->get_subgraphs();
 }
 
-}  // namespace tensorflow_lite
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow_lite

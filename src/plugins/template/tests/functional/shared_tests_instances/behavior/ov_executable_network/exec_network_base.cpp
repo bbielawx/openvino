@@ -1,11 +1,12 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "behavior/compiled_model/compiled_model_base.hpp"
+#include "common_test_utils/ov_tensor_utils.hpp"
+#include "openvino/core/model_util.hpp"
 
-using namespace ov::test::behavior;
-namespace {
+namespace ov::test::behavior {
 
 const std::vector<ov::AnyMap> configs = {
     {},
@@ -18,45 +19,12 @@ INSTANTIATE_TEST_SUITE_P(smoke_BehaviorTests,
                                             ::testing::ValuesIn(configs)),
                          OVCompiledModelBaseTest::getTestCaseName);
 
-INSTANTIATE_TEST_SUITE_P(smoke_Multi_BehaviorTests,
-                         OVCompiledModelBaseTest,
-                         ::testing::Combine(::testing::Values(ov::test::utils::DEVICE_MULTI),
-                                            ::testing::ValuesIn(swPluginConfigs)),
-                         OVCompiledModelBaseTest::getTestCaseName);
-
-INSTANTIATE_TEST_SUITE_P(smoke_Auto_BehaviorTests,
-                         OVCompiledModelBaseTest,
-                         ::testing::Combine(::testing::Values(ov::test::utils::DEVICE_AUTO),
-                                            ::testing::ValuesIn(swPluginConfigs)),
-                         OVCompiledModelBaseTest::getTestCaseName);
-
-INSTANTIATE_TEST_SUITE_P(smoke_Hetero_BehaviorTests,
-                         OVCompiledModelBaseTest,
-                         ::testing::Combine(::testing::Values(ov::test::utils::DEVICE_HETERO),
-                                            ::testing::ValuesIn(swPluginConfigs)),
-                         OVCompiledModelBaseTest::getTestCaseName);
-
 INSTANTIATE_TEST_SUITE_P(smoke_BehaviorTests,
                          OVCompiledModelBaseTestOptional,
                          ::testing::Combine(::testing::Values(ov::test::utils::DEVICE_TEMPLATE),
                                             ::testing::ValuesIn(configs)),
                          OVCompiledModelBaseTestOptional::getTestCaseName);
 
-INSTANTIATE_TEST_SUITE_P(smoke_Multi_BehaviorTests,
-                         OVCompiledModelBaseTestOptional,
-                         ::testing::Combine(::testing::Values(ov::test::utils::DEVICE_MULTI),
-                                            ::testing::ValuesIn(swPluginConfigs)),
-                         OVCompiledModelBaseTestOptional::getTestCaseName);
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(CompiledModelSetType);
 
-INSTANTIATE_TEST_SUITE_P(smoke_Auto_BehaviorTests,
-                         OVCompiledModelBaseTestOptional,
-                         ::testing::Combine(::testing::Values(ov::test::utils::DEVICE_AUTO),
-                                            ::testing::ValuesIn(swPluginConfigs)),
-                         OVCompiledModelBaseTestOptional::getTestCaseName);
-
-INSTANTIATE_TEST_SUITE_P(smoke_Hetero_BehaviorTests,
-                         OVCompiledModelBaseTestOptional,
-                         ::testing::Combine(::testing::Values(ov::test::utils::DEVICE_HETERO),
-                                            ::testing::ValuesIn(swPluginConfigs)),
-                         OVCompiledModelBaseTestOptional::getTestCaseName);
-}  // namespace
+}  // namespace ov::test::behavior

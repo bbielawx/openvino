@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -24,6 +24,14 @@
 
 using namespace cldnn;
 using namespace ::tests;
+
+TEST(random_generator, stable_string_seed) {
+    EXPECT_EQ(stable_string_seed("stable_seed_smoke"), 7887508638987879372ull);
+    EXPECT_EQ(stable_string_seed("fully_connected_gpu_testcompressed_int4_scale"), 13889489938136785405ull);
+    EXPECT_EQ(stable_string_seed("fully_connected_gpu_testcompressed_int4_scale_dynamic"), 2972366682048250579ull);
+    EXPECT_NE(stable_string_seed("stable_seed_smoke"),
+              stable_string_seed("stable_seed_smoke_cached"));
+}
 
 /* Basic test to show how the program can be build and run within internal tests
    in similar way as it is done in tests utilizing clDNN API */
@@ -95,7 +103,6 @@ TEST(add_intermediate_gpu, test1)
     auto new_reorder = std::make_shared<reorder>("reorder", input_info("nothing"), input->get_layout());
     program::ptr prog = program::build_program(engine, topology, config, false, true);
     prog->add_intermediate(new_reorder, prog->get_node("conv1a"), 0);
-    prog->dump_program("custom_dump", true);
 
     program_wrapper::build(*prog);
 
@@ -156,7 +163,6 @@ TEST(add_intermediate_gpu, test2)
 
     prog->add_intermediate(new_conv, prog->get_node("conv2a"), 0, true, true);
     program_wrapper::add_connection(*prog, prog->get_or_create(weights_node), prog->get_or_create(new_conv));
-    prog->dump_program("custom_dump", true);
 
     program_wrapper::build(*prog);
 
@@ -186,7 +192,7 @@ TEST(processing_order, bfs_order_restoring) {
     ExecutionConfig config = get_test_default_config(engine);
     config.set_property(ov::intel_gpu::optimize_data(true));
 
-    if (config.get_property(ov::intel_gpu::queue_type) != QueueTypes::out_of_order)
+    if (config.get_queue_type() != QueueTypes::out_of_order)
         GTEST_SKIP();
 
     auto input = engine.allocate_memory({ data_types::f32, format::bfyx, { 1, 3, 8, 8 } });

@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,9 +6,11 @@
 #include "common_test_utils/common_utils.hpp"
 #include "snippets/lowered/pass/optimize_domain.hpp"
 #include "snippets/lowered/pass/pass.hpp"
+#include "snippets/op/result.hpp"
 #include "lowered/pass/optimize_domain.hpp"
 #include "subgraph_simple.hpp"
 #include "lowering_utils.hpp"
+#include "openvino/op/add.hpp"
 
 namespace ov {
 namespace test {
@@ -39,15 +41,26 @@ std::string OptimizeDomainTest::getTestCaseName(testing::TestParamInfo<OptimizeD
 
 void OptimizeDomainTest::SetUp() {
     m_domain_opt_params = this->GetParam();
-    m_model = std::make_shared<EltwiseFunction>(m_domain_opt_params.input_shapes)->getOriginal();
+
+    ov::snippets::lowered::Config lir_config;
+    lir_config.m_manual_build_support = true;
+    lir_config.m_enable_domain_optimization = true;
+    lir_config.m_min_parallel_work_amount = m_domain_opt_params.min_parallel_work_amount;
+    lir_config.m_min_kernel_work_amount = m_domain_opt_params.min_jit_work_amount;
+    m_linear_ir = std::make_shared<ov::snippets::lowered::LinearIR>(lir_config, std::make_shared<ov::snippets::IShapeInferSnippetsFactory>());
+
+    const auto precision = ov::element::f32;
+    OPENVINO_ASSERT(m_domain_opt_params.input_shapes.size() == 2);
+    auto param1 = m_linear_ir->push_node<ov::op::v0::Parameter>(precision, m_domain_opt_params.input_shapes[0]);
+    auto param2 = m_linear_ir->push_node<ov::op::v0::Parameter>(precision, m_domain_opt_params.input_shapes[1]);
+    auto add = m_linear_ir->push_node<ov::op::v1::Add>(param1.second, param2.second);
+    auto result = m_linear_ir->push_node<ov::snippets::op::Result>(add.second);
 }
 
 TEST_P(OptimizeDomainTest, DomainOptimization) {
-    auto subgraph = LoweringTests::getTokenizedSubgraph(m_model);
-    auto linear_ir = subgraph->convert_body_to_linear_ir(m_domain_opt_params.min_parallel_work_amount, m_domain_opt_params.min_jit_work_amount);
     size_t loop_depth = 1;
-    ov::snippets::lowered::pass::OptimizeDomain(loop_depth).run(*linear_ir);
-    const auto& master_shape = linear_ir->get_master_shape();
+    ov::snippets::lowered::pass::OptimizeDomain(loop_depth).run(*m_linear_ir);
+    const auto& master_shape = m_linear_ir->get_master_shape();
     EXPECT_EQ(loop_depth, m_domain_opt_params.exp_loop_depth) << "Inconsistent loop depth detected";
     EXPECT_THAT(master_shape, testing::ContainerEq(m_domain_opt_params.exp_master_shape)) << "Inconsistent master_shape detected";
 }

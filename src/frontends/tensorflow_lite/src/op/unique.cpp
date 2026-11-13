@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,20 +8,10 @@
 
 using namespace std;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow_lite {
-namespace op {
+namespace ov::frontend::tensorflow_lite::op {
 
 OutputVector unique(const ov::frontend::tensorflow_lite::NodeContext& node) {
-    const auto& decoder = get_decoder(node);
-    std::map<std::string, ov::Any> attrs{
-        {"out_idx", get_ov_type(decoder->get_attribute(&tflite::UniqueOptions::idx_out_type))},
-    };
-    return attribute_helper(node, attrs, ov::frontend::tensorflow::op::translate_unique_op, "Unique");
+    return indexed_from_named(ov::frontend::tensorflow::op::translate_unique_op(node));
 }
 
-}  // namespace op
-}  // namespace tensorflow_lite
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow_lite::op

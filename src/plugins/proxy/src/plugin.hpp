@@ -1,9 +1,11 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #pragma once
 
+#include <filesystem>
 #include <memory>
+#include <shared_mutex>
 
 #include "openvino/runtime/iplugin.hpp"
 
@@ -25,7 +27,7 @@ public:
     std::shared_ptr<ov::ICompiledModel> compile_model(const std::shared_ptr<const ov::Model>& model,
                                                       const ov::AnyMap& properties) const override;
 
-    std::shared_ptr<ov::ICompiledModel> compile_model(const std::string& model_path,
+    std::shared_ptr<ov::ICompiledModel> compile_model(const std::filesystem::path& model_path,
                                                       const ov::AnyMap& properties) const override;
 
     std::shared_ptr<ov::ICompiledModel> compile_model(const std::shared_ptr<const ov::Model>& model,
@@ -39,6 +41,13 @@ public:
     std::shared_ptr<ov::ICompiledModel> import_model(std::istream& model, const ov::AnyMap& properties) const override;
 
     std::shared_ptr<ov::ICompiledModel> import_model(std::istream& model,
+                                                     const ov::SoPtr<ov::IRemoteContext>& context,
+                                                     const ov::AnyMap& properties) const override;
+
+    std::shared_ptr<ov::ICompiledModel> import_model(const ov::Tensor& model,
+                                                     const ov::AnyMap& properties) const override;
+
+    std::shared_ptr<ov::ICompiledModel> import_model(const ov::Tensor& model,
                                                      const ov::SoPtr<ov::IRemoteContext>& context,
                                                      const ov::AnyMap& properties) const override;
 
@@ -59,9 +68,9 @@ private:
     // Update per device config in get_hidden_devices
     mutable std::unordered_map<std::string, ov::AnyMap> m_configs;
     mutable std::mutex m_plugin_mutex;
-    mutable std::mutex m_init_devs_mutex;
+    mutable std::shared_mutex m_init_devs_mutex;
     mutable std::vector<std::vector<std::string>> m_hidden_devices;
-    mutable bool m_init_devs{false};
+    mutable std::atomic_bool m_init_devs{false};
 };
 
 }  // namespace proxy

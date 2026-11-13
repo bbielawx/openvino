@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -11,19 +11,19 @@ namespace test {
 namespace snippets {
 
 typedef std::tuple<
-        std::vector<ov::Shape>,          // Input shapes
-        std::vector<int64_t>,            // Transpose Order
-        int64_t,                         // Softmax Axis
-        size_t,                          // Expected num nodes
-        size_t,                          // Expected num subgraphs
-        std::string                      // Target Device
+        std::vector<InputShape>,        // Input shapes
+        std::vector<int64_t>,           // Transpose Order
+        int64_t,                        // Softmax Axis
+        size_t,                         // Expected num nodes
+        size_t,                         // Expected num subgraphs
+        std::string                     // Target Device
 > TransposeSoftmaxParams;
 
 
 class TransposeSoftmax : public testing::WithParamInterface<ov::test::snippets::TransposeSoftmaxParams>,
-                         virtual public ov::test::SnippetsTestsCommon {
+                         virtual public SnippetsTestsCommon {
 public:
-    static std::string getTestCaseName(testing::TestParamInfo<ov::test::snippets::TransposeSoftmaxParams> obj);
+    static std::string getTestCaseName(const testing::TestParamInfo<ov::test::snippets::TransposeSoftmaxParams>& obj);
 
 protected:
     void SetUp() override;

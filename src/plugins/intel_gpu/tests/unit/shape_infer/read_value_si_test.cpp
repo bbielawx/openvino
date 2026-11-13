@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -32,7 +32,7 @@ TEST_P(read_value_test, shape_infer) {
 
     auto& engine = get_test_engine();
 
-    const auto variable_layout = p.input_layout;
+    const std::vector<layout> variable_layout = {p.input_layout};
 
     auto input_layout_prim = std::make_shared<input_layout>("input", p.input_layout);
     auto inputs = std::vector<input_info>{ input_info("input") };

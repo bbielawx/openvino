@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <mutex>
 #include <set>
+#include <unordered_set>
 
 #if defined(_WIN32) && !defined(__GNUC__)
 #    define __PRETTY_FUNCTION__ __FUNCSIG__
@@ -48,8 +49,7 @@ void __register ## _ ## op_name ## _ ## op_version() {                          
        });                                                                                          \
 }
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 template<class T>
 struct is_smart_pointer : std::false_type {};
@@ -69,8 +69,8 @@ struct PerfCounter {
     uint64_t realTime_uSec = 0;
     uint64_t cpu_uSec = 0;
     uint32_t num = 0;
-    std::string layerType = "";
-    std::string parentPrimitive = "";
+    std::string layerType;
+    std::string parentPrimitive;
 
     PerfCounter() = default;
 
@@ -80,10 +80,12 @@ struct PerfCounter {
 
 class ProgramBuilder final {
 public:
-    ProgramBuilder(std::shared_ptr<ov::Model> model, cldnn::engine& engine, const ExecutionConfig& config, bool partialBuild = false,
+    ProgramBuilder(std::shared_ptr<ov::Model> model, cldnn::engine& engine, const ExecutionConfig& config,
             std::shared_ptr<ov::threading::IStreamsExecutor> task_executor = nullptr,
             std::shared_ptr<cldnn::ICompilationContext> compilation_context = nullptr,
-            bool innerProgram = false);
+            bool innerProgram = false,
+            ov::internal::WeightSharingCtxPtr weight_sharing_ctx = nullptr);
+    ProgramBuilder(std::shared_ptr<ov::Model> model, cldnn::engine& engine, const ExecutionConfig& config, ov::internal::WeightSharingCtxPtr weight_sharing_ctx);
     ProgramBuilder(cldnn::engine& engine, const ExecutionConfig& config);
 
     static const cldnn::primitive_id m_preProcessTag;
@@ -98,7 +100,8 @@ public:
     std::vector<cldnn::primitive_id> profiling_ids;
 
     std::map<size_t, cldnn::layout> inputLayouts;
-    using BlobCacheKey = std::tuple<const char*, ov::Shape, ov::element::Type>;
+    using IsRemoteWeight = bool;
+    using BlobCacheKey = std::tuple<const char*, ov::Shape, ov::element::Type, IsRemoteWeight>;
     std::map<BlobCacheKey, cldnn::primitive_id> blobMemCache;
 
     std::shared_ptr<cldnn::program> get_compiled_program() const;
@@ -138,14 +141,19 @@ public:
 
     void add_primitive(const ov::Node& op, std::shared_ptr<cldnn::primitive> prim, std::vector<std::string> aliases = {});
 
-    bool use_new_shape_infer() const { return allow_new_shape_infer; }
-    bool requires_new_shape_infer(const std::shared_ptr<ov::Node>& op) const;
+    bool use_new_shape_infer() const { return m_config.get_allow_new_shape_infer(); }
     bool is_inner_program() const { return m_is_inner_program; }
-    bool is_query_mode() { return queryMode; }
+    bool is_query_mode() const { return queryMode; }
 
     std::shared_ptr<ov::threading::IStreamsExecutor> get_task_executor() const { return m_task_executor; }
     std::shared_ptr<cldnn::ICompilationContext> get_compilation_context() const { return m_compilation_context; }
+    std::shared_ptr<ov::Model> get_model() const { return m_model; }
 
+    ov::internal::WeightSharingCtxPtr get_weight_sharing_ctx() const { return m_weight_sharing_ctx; }
+    void register_weight_sharing_source_buffer(std::shared_ptr<ov::AlignedBuffer> source);
+    std::set<std::shared_ptr<ov::AlignedBuffer>> get_weight_sharing_source_buffers() const {
+        return m_weight_sharing_source_buffers;
+    }
 private:
     static factories_map_t factories_map;
     std::shared_ptr<cldnn::program> m_program;
@@ -157,14 +165,14 @@ private:
     std::shared_ptr<cldnn::topology> m_topology;
     CustomLayerMap m_custom_layers;
 
-    bool allow_new_shape_infer = false;
-
     bool queryMode;
 
     std::shared_ptr<ov::threading::IStreamsExecutor> m_task_executor;
     std::shared_ptr<cldnn::ICompilationContext> m_compilation_context;
 
     bool m_is_inner_program = false;
+    ov::internal::WeightSharingCtxPtr m_weight_sharing_ctx;
+    std::set<std::shared_ptr<ov::AlignedBuffer>> m_weight_sharing_source_buffers;
 
     void EnableQueryMode() { queryMode = true; }
     void DisableQueryMode() { queryMode = false; }
@@ -172,8 +180,7 @@ private:
     void prepare_build();
     void cleanup_build();
 
-    // TODO(eunsoo): remove createTopolpgyOnly argument and add another method to create topology from ngraph function
-    std::shared_ptr<cldnn::program> build(const std::vector<std::shared_ptr<ov::Node>>& ops, bool partialBuild = false, bool innerProgram = false);
+    std::shared_ptr<cldnn::program> build(const std::vector<std::shared_ptr<ov::Node>>& ops, bool innerProgram = false);
 
     void CreateSingleLayerPrimitive(const std::shared_ptr<ov::Node>& op);
 };
@@ -190,10 +197,10 @@ void CreateElementwiseOp(ProgramBuilder& p,
 void validate_inputs_count(const std::shared_ptr<ov::Node>& op, std::vector<size_t> possible_inputs_count);
 
 inline bool ends_with(const std::string& value, const std::string& suffix) {
-    if (suffix.size() > value.size())
+    if (suffix.size() > value.size()) {
         return false;
+    }
     return std::equal(suffix.rbegin(), suffix.rend(), value.rbegin());
 }
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

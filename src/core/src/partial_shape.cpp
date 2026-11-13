@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -28,23 +28,25 @@ ov::PartialShape::PartialShape(const Shape& shape)
 
 ov::PartialShape::PartialShape(const std::string& value) {
     auto val = ov::util::trim(value);
-    if (val[0] == '[' && val[val.size() - 1] == ']')
-        val = val.substr(1, val.size() - 2);
-    val = ov::util::trim(val);
-    if (val == "...") {
-        m_rank_is_static = false;
-        m_dimensions = std::vector<Dimension>();
-        return;
+    if (!val.empty() && val[0] == '[' && val[val.size() - 1] == ']') {
+        val.remove_prefix(1);
+        val.remove_suffix(1);
+        val = ov::util::trim(val);
     }
-    m_rank_is_static = true;
-    Dimensions dims;
-    std::stringstream ss(val);
-    std::string field;
-    while (getline(ss, field, ',')) {
-        OPENVINO_ASSERT(!field.empty(), "Cannot get vector of dimensions! \"" + value + "\" is incorrect");
-        dims.insert(dims.end(), Dimension(field));
+
+    if (m_rank_is_static = (val != "..."); m_rank_is_static) {
+        util::view_transform_if(
+            val,
+            std::back_inserter(m_dimensions),
+            ",",
+            [&value](auto&& dim_field) {
+                OPENVINO_ASSERT(!dim_field.empty(), "Cannot get vector of dimensions! \"", value, "\" is incorrect");
+                return true;
+            },
+            [](auto&& dim_field) {
+                return Dimension{dim_field};
+            });
     }
-    m_dimensions = dims;
 }
 
 ov::PartialShape::PartialShape(bool rank_is_static, std::vector<Dimension> dimensions)
@@ -152,16 +154,7 @@ ov::PartialShape ov::operator+(const PartialShape& s1, const PartialShape& s2) {
 
 std::ostream& ov::operator<<(std::ostream& str, const PartialShape& shape) {
     if (shape.m_rank_is_static) {
-        str << "[";
-        bool first = true;
-        for (auto& d : shape.m_dimensions) {
-            if (!first) {
-                str << ",";
-            }
-            str << d;
-            first = false;
-        }
-        return (str << "]");
+        return str << "[" << ov::util::join<std::ostream>(shape.m_dimensions, ",") << "]";
     } else {
         return (str << "[...]");
     }
@@ -314,8 +307,8 @@ bool ov::PartialShape::broadcast_merge_into(PartialShape& dst,
             std::vector<Dimension> dims(new_rank);
             bool success = true;
             for (int64_t i = 0; i < new_rank; i++) {
-                auto dsti = i < (new_rank - dst_rank) ? Dimension(1) : dst[i - (new_rank - dst_rank)];
-                auto srci = i < (new_rank - src_rank) ? Dimension(1) : src[i - (new_rank - src_rank)];
+                const auto& dsti = i < (new_rank - dst_rank) ? Dimension(1) : dst[i - (new_rank - dst_rank)];
+                const auto& srci = i < (new_rank - src_rank) ? Dimension(1) : src[i - (new_rank - src_rank)];
                 success &= Dimension::broadcast_merge(dims[i], dsti, srci);
             }
             dst = PartialShape(std::move(dims));
@@ -378,3 +371,5 @@ ov::Dimension& ov::PartialShape::operator[](std::ptrdiff_t i) {
     m_shape_type = ShapeType::SHAPE_IS_UPDATED;  // We can't guarantee that the shape remains static or dynamic.
     return m_dimensions[util::normalize_shape_index(i, m_dimensions.size())];
 }
+
+ov::AttributeAdapter<ov::PartialShape>::~AttributeAdapter() = default;

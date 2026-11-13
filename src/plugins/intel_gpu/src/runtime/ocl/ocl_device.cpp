@@ -1,52 +1,91 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "ocl_device.hpp"
-#include "ocl_common.hpp"
-#include "intel_gpu/runtime/debug_configuration.hpp"
 
-#include <map>
-#include <string>
-#include <vector>
+#ifdef ENABLE_ONEDNN_FOR_GPU
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include "gpu/intel/jit/generator.hpp"
+#endif
+
 #include <algorithm>
-#include <unordered_map>
-#include <string>
 #include <cassert>
-#include <time.h>
-#include <limits>
 #include <chrono>
+#include <ctime>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <map>
+#include <string>
+#include <unordered_map>
 #include <utility>
+#include <vector>
+
+#include "intel_gpu/runtime/debug_configuration.hpp"
+#include "ocl_common.hpp"
 
 #ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <setupapi.h>
-#include <devguid.h>
-#include <cstring>
-#else
-#include <unistd.h>
-#include <limits.h>
-#include <link.h>
-#include <dlfcn.h>
-#endif
+#    ifndef WIN32_LEAN_AND_MEAN
+#        define WIN32_LEAN_AND_MEAN
+#    endif
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <devguid.h>
+#    include <setupapi.h>
+#    include <windows.h>
 
+#    include <cstring>
+#else
+#    include <dlfcn.h>
+#    include <unistd.h>
+
+#    ifdef __linux__
+#        include <link.h>
+#    endif
+
+#    include <climits>
+#endif
 
 namespace cldnn {
 namespace ocl {
 
 namespace {
+
+#if defined(ENABLE_ONEDNN_FOR_GPU) && defined(OV_GPU_WITH_OCL_RT)
+gpu_arch convert_ngen_arch(ngen::HW gpu_arch) {
+    switch (gpu_arch) {
+    case ngen::HW::Gen9:
+        return gpu_arch::gen9;
+    case ngen::HW::Gen11:
+        return gpu_arch::gen11;
+    case ngen::HW::XeLP:
+        return gpu_arch::xe_lp;
+    case ngen::HW::XeHP:
+        return gpu_arch::xe_hp;
+    case ngen::HW::XeHPG:
+        return gpu_arch::xe_hpg;
+    case ngen::HW::XeHPC:
+        OPENVINO_THROW("[GPU] XeHPC is not supported");
+    case ngen::HW::Xe2:
+        return gpu_arch::xe2;
+    case ngen::HW::Xe3:
+        return gpu_arch::xe3;
+    case ngen::HW::Xe3p:
+        return gpu_arch::xe3p;
+    case ngen::HW::Gen10:
+    case ngen::HW::Unknown:
+        return gpu_arch::unknown;
+    }
+    return gpu_arch::unknown;
+}
+#endif
+
 int driver_dev_id() {
-    const std::vector<int> unused_ids = {
-        0x4905, 0x4906, 0x4907, 0x4908
-    };
+    const std::vector<int> unused_ids = {0x4905, 0x4906, 0x4907, 0x4908};
     std::vector<int> result;
 
 #ifdef _WIN32
@@ -81,7 +120,7 @@ int driver_dev_id() {
     }
 #elif defined(__linux__)
     {
-        std::string dev_base{ "/sys/devices/pci0000:00/0000:00:02.0/" };
+        std::string dev_base{"/sys/devices/pci0000:00/0000:00:02.0/"};
         std::ifstream ifs(dev_base + "vendor");
         if (ifs.good()) {
             int ven_id;
@@ -101,16 +140,17 @@ int driver_dev_id() {
 
     auto id_itr = result.begin();
     while (id_itr != result.end()) {
-        if (std::find(unused_ids.begin(), unused_ids.end(), *id_itr) != unused_ids.end())
+        if (std::find(unused_ids.begin(), unused_ids.end(), *id_itr) != unused_ids.end()) {
             id_itr = result.erase(id_itr);
-        else
+        } else {
             id_itr++;
+        }
     }
 
-    if (result.empty())
+    if (result.empty()) {
         return 0;
-    else
-        return result.back();
+    }
+    return result.back();
 }
 
 device_type get_device_type(const cl::Device& device) {
@@ -119,7 +159,23 @@ device_type get_device_type(const cl::Device& device) {
     return unified_mem ? device_type::integrated_gpu : device_type::discrete_gpu;
 }
 
-gfx_version parse_version(cl_uint ver) {
+gfx_version parse_version(cl_uint gmdid) {
+    union GMDID {
+        uint32_t value;
+        struct {
+            uint32_t revision : 6;
+            uint32_t reserved : 8;
+            uint32_t release : 8;
+            uint32_t architecture : 10;
+        };
+    };
+
+    GMDID gmd_id = {gmdid};
+    if (gmd_id.architecture > 0 && gmd_id.architecture < 100) {
+        // New format
+        return {static_cast<uint16_t>(gmd_id.architecture), static_cast<uint8_t>(gmd_id.release), static_cast<uint8_t>(gmd_id.revision)};
+    }  // Old format
+    cl_uint ver = gmdid;
     uint16_t major = ver >> 16;
     uint8_t minor = (ver >> 8) & 0xFF;
     uint8_t revision = ver & 0xFF;
@@ -130,22 +186,20 @@ gfx_version parse_version(cl_uint ver) {
 bool get_imad_support(const cl::Device& device) {
     std::string dev_name = device.getInfo<CL_DEVICE_NAME>();
 
-    if (dev_name.find("Gen12") != std::string::npos ||
-        dev_name.find("Xe") != std::string::npos)
+    if (dev_name.find("Gen12") != std::string::npos || dev_name.find("Xe") != std::string::npos) {
         return true;
+    }
 
     if (get_device_type(device) == device_type::integrated_gpu) {
-        const std::vector<int> imad_ids = {
-            0x9A40, 0x9A49, 0x9A59, 0x9AD9,
-            0x9A60, 0x9A68, 0x9A70, 0x9A78,
-            0x9A7F, 0x9AF8, 0x9AC0, 0x9AC9
-        };
+        const std::vector<int> imad_ids = {0x9A40, 0x9A49, 0x9A59, 0x9AD9, 0x9A60, 0x9A68, 0x9A70, 0x9A78, 0x9A7F, 0x9AF8, 0x9AC0, 0x9AC9};
         int dev_id = driver_dev_id();
-        if (dev_id == 0)
+        if (dev_id == 0) {
             return false;
+        }
 
-        if (std::find(imad_ids.begin(), imad_ids.end(), dev_id) != imad_ids.end())
+        if (std::find(imad_ids.begin(), imad_ids.end(), dev_id) != imad_ids.end()) {
             return true;
+        }
     } else {
         return true;
     }
@@ -153,13 +207,18 @@ bool get_imad_support(const cl::Device& device) {
     return false;
 }
 
-device_info init_device_info(const cl::Device& device) {
+device_info init_device_info(const cl::Device& device, const cl::Context& context) {
     device_info info = {};
     info.vendor_id = static_cast<uint32_t>(device.getInfo<CL_DEVICE_VENDOR_ID>());
     info.dev_name = device.getInfo<CL_DEVICE_NAME>();
     info.driver_version = device.getInfo<CL_DRIVER_VERSION>();
     info.dev_type = get_device_type(device);
+    info.sub_device_idx = std::numeric_limits<uint32_t>::max();
 
+    info.cacheline_size = device.getInfo<CL_DEVICE_GLOBAL_MEM_CACHELINE_SIZE>();
+    // Alignment requirement (in bits) for sub-buffer offsets, converting to bytes and ensuring at least 1 byte alignment.
+    auto bits = device.getInfo<CL_DEVICE_MEM_BASE_ADDR_ALIGN>();
+    info.sub_buffer_base_alignment = std::max<uint32_t>(1, bits / 8);
     info.execution_units_count = device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
 
     info.gpu_frequency = static_cast<uint32_t>(device.getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>());
@@ -179,8 +238,9 @@ device_info init_device_info(const cl::Device& device) {
     info.max_local_mem_size = static_cast<uint64_t>(device.getInfo<CL_DEVICE_LOCAL_MEM_SIZE>());
     info.max_global_mem_size = static_cast<uint64_t>(device.getInfo<CL_DEVICE_GLOBAL_MEM_SIZE>());
     info.max_alloc_mem_size = static_cast<uint64_t>(device.getInfo<CL_DEVICE_MAX_MEM_ALLOC_SIZE>());
+    info.max_global_cache_size = static_cast<uint64_t>(device.getInfo<CL_DEVICE_GLOBAL_MEM_CACHE_SIZE>());
 
-    info.supports_image = static_cast<uint8_t>(device.getInfo<CL_DEVICE_IMAGE_SUPPORT>());
+    info.supports_image = (static_cast<uint8_t>(device.getInfo<CL_DEVICE_IMAGE_SUPPORT>()) != 0u);
     info.max_image2d_width = static_cast<uint64_t>(device.getInfo<CL_DEVICE_IMAGE2D_MAX_WIDTH>());
     info.max_image2d_height = static_cast<uint64_t>(device.getInfo<CL_DEVICE_IMAGE2D_MAX_HEIGHT>());
 
@@ -205,9 +265,20 @@ device_info init_device_info(const cl::Device& device) {
     info.supports_usm = extensions.find("cl_intel_unified_shared_memory ") != std::string::npos ||
                         extensions.find("cl_intel_unified_shared_memory_preview ") != std::string::npos;
 
-    info.supports_local_block_io = extensions.find("cl_intel_subgroup_local_block_io ") != std::string::npos;
-
     info.supports_queue_families = extensions.find("cl_intel_command_queue_families ") != std::string::npos;
+
+    auto query_device_bool = [&](cl_device_info param) -> bool {
+        cl_bool value = CL_FALSE;
+        try {
+            if (device.getInfo(param, &value) != CL_SUCCESS) {
+                return false;
+            }
+        } catch (const cl::Error&) {
+            return false;
+        }
+        return value == CL_TRUE;
+    };
+    info.supports_work_group_collective_functions = query_device_bool(CL_DEVICE_WORK_GROUP_COLLECTIVE_FUNCTIONS_SUPPORT);
 
     if (info.supports_intel_required_subgroup_size) {
         info.supported_simd_sizes = device.getInfo<CL_DEVICE_SUB_GROUP_SIZES_INTEL>();
@@ -227,10 +298,13 @@ device_info init_device_info(const cl::Device& device) {
         std::fill_n(std::begin(info.uuid.uuid), ov::device::UUID::MAX_UUID_SIZE, 0);
     }
 
+    bool bus_info_supported = extensions.find("cl_khr_pci_bus_info") != std::string::npos;
     bool device_attr_supported = extensions.find("cl_intel_device_attribute_query") != std::string::npos;
     bool nv_device_attr_supported = extensions.find("cl_nv_device_attribute_query") != std::string::npos;
+    info.has_separate_cache = false;
     if (device_attr_supported) {
-        info.gfx_ver = parse_version(device.getInfo<CL_DEVICE_IP_VERSION_INTEL>());
+        info.ip_version = device.getInfo<CL_DEVICE_IP_VERSION_INTEL>();
+        info.gfx_ver = parse_version(info.ip_version);
         info.device_id = device.getInfo<CL_DEVICE_ID_INTEL>();
         info.num_slices = device.getInfo<CL_DEVICE_NUM_SLICES_INTEL>();
         info.num_sub_slices_per_slice = device.getInfo<CL_DEVICE_NUM_SUB_SLICES_PER_SLICE_INTEL>();
@@ -238,11 +312,11 @@ device_info init_device_info(const cl::Device& device) {
         info.num_threads_per_eu = device.getInfo<CL_DEVICE_NUM_THREADS_PER_EU_INTEL>();
         auto features = device.getInfo<CL_DEVICE_FEATURE_CAPABILITIES_INTEL>();
 
-        info.supports_imad = info.supports_imad || (features & CL_DEVICE_FEATURE_FLAG_DP4A_INTEL);
-        info.supports_immad = info.supports_immad || (features & CL_DEVICE_FEATURE_FLAG_DPAS_INTEL);
-        GPU_DEBUG_GET_INSTANCE(debug_config);
-        GPU_DEBUG_IF(debug_config->disable_onednn)
-            info.supports_immad = false;
+        info.supports_imad = info.supports_imad || ((features & CL_DEVICE_FEATURE_FLAG_DP4A_INTEL) != 0u);
+        info.supports_immad = info.supports_immad || ((features & CL_DEVICE_FEATURE_FLAG_DPAS_INTEL) != 0u);
+        if (info.dev_type == device_type::discrete_gpu || info.gfx_ver.major > 12 || (info.gfx_ver.major == 12 && info.gfx_ver.minor >= 70)) {
+            info.has_separate_cache = true;
+        }
     } else if (nv_device_attr_supported) {
         info.gfx_ver = {static_cast<uint16_t>(device.getInfo<CL_DEVICE_COMPUTE_CAPABILITY_MAJOR_NV>()),
                         static_cast<uint8_t>(device.getInfo<CL_DEVICE_COMPUTE_CAPABILITY_MINOR_NV>()),
@@ -254,6 +328,14 @@ device_info init_device_info(const cl::Device& device) {
         info.num_sub_slices_per_slice = 0;
         info.num_eus_per_sub_slice = 0;
         info.num_threads_per_eu = 0;
+    }
+
+    if (bus_info_supported) {
+        auto pci_bus_info = device.getInfo<CL_DEVICE_PCI_BUS_INFO_KHR>();
+        info.pci_info.pci_domain = pci_bus_info.pci_domain;
+        info.pci_info.pci_bus = pci_bus_info.pci_bus;
+        info.pci_info.pci_device = pci_bus_info.pci_device;
+        info.pci_info.pci_function = pci_bus_info.pci_function;
     }
 
     info.num_ccs = 1;
@@ -269,19 +351,81 @@ device_info init_device_info(const cl::Device& device) {
         info.num_ccs = std::max<uint32_t>(num_queues, info.num_ccs);
     }
 
+    info.supports_mutable_command_list = false;
+
+    // Not supported
+    info.timer_resolution = 0;
+    info.kernel_timestamp_valid_bits = 0;
+    info.compute_queue_group_ordinal = 0;
+    info.device_memory_ordinal = 0;
+    info.supports_cp_offload = false;
+    info.supports_counter_based_events = false;
+    info.supports_leo = false;
+
+#if defined(ENABLE_ONEDNN_FOR_GPU) && defined(OV_GPU_WITH_OCL_RT)
+    using namespace dnnl::impl::gpu::intel::jit;
+    if (context.get() != nullptr) {
+        ngen::Product product = ngen::OpenCLCodeGenerator<ngen::HW::Unknown>::detectHWInfo(context.get(), device.get());
+        info.arch = convert_ngen_arch(ngen::getCore(product.family));
+
+        // We change the value of this flag to avoid OneDNN usage for the platforms unknown to OneDNN
+        // This is required to guarantee some level of forward compatibility for the new HW generations
+        // as OneDNN code generators are not generic and typically requires some updates for the new architectures
+        // Ideally, we shouldn't do that as OCL impls sometimes also check this flag, but in order to avoid that
+        // we need to ensure that graph transformations are not relying on this flag as indicator that onednn will be used
+        if (product.family == ngen::ProductFamily::Unknown) {
+            info.supports_immad = false;
+        }
+    }
+#else   // ENABLE_ONEDNN_FOR_GPU
+    info.arch = gpu_arch::unknown;
+#endif  // ENABLE_ONEDNN_FOR_GPU
+    info.supports_bf16 = info.supports_immad;
+
+    auto arch_to_string = [](gpu_arch arch) -> const char* {
+        switch (arch) {
+        case gpu_arch::unknown:
+            return "unknown";
+        case gpu_arch::gen9:
+            return "gen9";
+        case gpu_arch::gen11:
+            return "gen11";
+        case gpu_arch::xe_lp:
+            return "xe_lp";
+        case gpu_arch::xe_hp:
+            return "xe_hp";
+        case gpu_arch::xe_hpg:
+            return "xe_hpg";
+        case gpu_arch::xe_hpc:
+            return "xe_hpc";
+        case gpu_arch::xe2:
+            return "xe2";
+        case gpu_arch::xe3:
+            return "xe3";
+        case gpu_arch::xe3p:
+            return "xe3p";
+        }
+        return "unknown";
+    };
+    GPU_DEBUG_INFO << "GPU architecture: " << arch_to_string(info.arch) << ", version: " << static_cast<int>(info.gfx_ver.major) << "."
+                   << static_cast<int>(info.gfx_ver.minor) << "." << static_cast<int>(info.gfx_ver.revision)
+                   << (info.has_separate_cache ? " with separate cache" : "") << std::endl;
+
     return info;
 }
 
 bool does_device_support(int32_t param, const cl::Device& device) {
     cl_device_unified_shared_memory_capabilities_intel capabilities;
-    auto err = clGetDeviceInfo(device.get(), param, sizeof(cl_device_unified_shared_memory_capabilities_intel), &capabilities, NULL);
-    if (err) throw std::runtime_error("[CLDNN ERROR]. clGetDeviceInfo error " + std::to_string(err));
+    auto err = clGetDeviceInfo(device.get(), param, sizeof(cl_device_unified_shared_memory_capabilities_intel), &capabilities, nullptr);
+    if (err)
+        throw std::runtime_error("[CLDNN ERROR]. clGetDeviceInfo error " + std::to_string(err));
 
     return !((capabilities & CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL) == 0u);
 }
 
 memory_capabilities init_memory_caps(const cl::Device& device, const device_info& info) {
     std::vector<allocation_type> memory_caps;
+    memory_caps.push_back(allocation_type::cl_mem);
     if (info.supports_usm) {
         if (does_device_support(CL_DEVICE_HOST_MEM_CAPABILITIES_INTEL, device)) {
             memory_caps.push_back(allocation_type::usm_host);
@@ -299,20 +443,77 @@ memory_capabilities init_memory_caps(const cl::Device& device, const device_info
 
 }  // namespace
 
+void ocl_device::initialize_context(const cl::Context& ctx) {
+    _context = ctx.get() != nullptr ? ctx : cl::Context(_device);
+    _usm_helper = std::make_unique<cl::UsmHelper>(_context, _device, use_unified_shared_memory());
+    _is_initialized = true;
+}
 
-ocl_device::ocl_device(const cl::Device dev, const cl::Context& ctx, const cl::Platform& platform)
-: _context(ctx)
-, _device(dev)
-, _platform(platform)
-, _info(init_device_info(dev))
-, _mem_caps(init_memory_caps(dev, _info)) { }
+ocl_device::ocl_device(const cl::Device dev, const cl::Context& ctx, const cl::Platform& platform, bool initialize_ctx)
+    : _device(dev),
+      _platform(platform),
+      _info(init_device_info(dev, ctx)),
+      _mem_caps(init_memory_caps(dev, _info)) {
+    if (initialize_ctx) {
+        initialize_context(ctx);
+    }
+}
+
+ocl_device::ocl_device(const ocl_device::ptr other, bool initialize_ctx)
+    : _device(other->_device),
+      _platform(other->_platform),
+      _info(other->_info),
+      _mem_caps(other->_mem_caps) {
+    if (initialize_ctx) {
+        initialize_context(other->_context);
+    }
+}
 
 bool ocl_device::is_same(const device::ptr other) {
-    auto casted = downcast<ocl_device>(other.get());
-    if (!casted)
+    auto* casted = downcast<ocl_device>(other.get());
+    if (!casted) {
         return false;
+    }
 
-    return _device == casted->get_device() && _platform == casted->get_platform();
+    // Short path if cl_device is the same
+    if (_platform == casted->_platform && _device.get() && casted->_device.get() && _device == casted->_device) {
+        return true;
+    }
+    return _info.is_same_device(casted->_info);
+}
+
+void ocl_device::set_mem_caps(const memory_capabilities& memory_capabilities) {
+    _mem_caps = memory_capabilities;
+}
+
+void ocl_device::set_sub_device_idx(uint32_t idx) {
+    _info.sub_device_idx = idx;
+}
+
+void ocl_device::initialize() {
+    if (_is_initialized) {
+        return;
+    }
+
+    ocl::ocl_device_detector detector;
+    auto device_map = detector.get_available_devices(nullptr, nullptr, 0, -1, false);
+
+    bool found = false;
+    for (auto& device : device_map) {
+        if (this->is_same(device.second)) {
+            OPENVINO_ASSERT(!found, "[GPU] Multiple matching devices found for ", this->get_info().dev_name, ". Only one matching device is expected");
+            if (auto* casted = downcast<ocl_device>(device.second.get())) {
+                auto& casted_device = casted->get_device();
+                if (casted->get_context().get() == nullptr) {
+                    casted->set_context(cl::Context(casted_device));
+                }
+                initialize_context(casted->get_context());
+                found = true;
+            }
+        }
+    }
+
+    OPENVINO_ASSERT(found, "[GPU] Unable to initialize the requested device ", this->get_info().dev_name, ". Please ensure the device is available");
 }
 
 }  // namespace ocl

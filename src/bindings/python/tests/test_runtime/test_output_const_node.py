@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-import os
 import pytest
 from copy import copy, deepcopy
 
-import openvino.runtime.opset13 as ops
+import openvino.opset13 as ops
 from openvino import (
     Shape,
     PartialShape,
@@ -14,7 +13,7 @@ from openvino import (
     Core,
     OVAny,
 )
-from openvino.runtime import (
+from openvino import (
     ConstOutput,
     Output,
     RTMap,
@@ -35,7 +34,7 @@ def test_const_output_docs(device):
     model = get_relu_model()
     compiled_model = core.compile_model(model, device)
     node = compiled_model.input(0)
-    exptected_string = "openvino.runtime.ConstOutput represents port/node output."
+    exptected_string = "openvino.ConstOutput represents port/node output."
     assert node.__doc__ == exptected_string
 
 
@@ -109,6 +108,10 @@ def test_const_get_rf_info(device):
     rt_info = output_node.get_rt_info()
     assert isinstance(rt_info, RTMap)
 
+    # ConstOutput ~ Output<const Node>. RTMap is not modifiable.
+    with pytest.raises(AttributeError, match="openvino._pyopenvino.ConstOutput' object has no attribute 'set_rt_info"):
+        output_node.set_rt_info("test_value", "test_key")
+
 
 def test_const_output_runtime_info(device):
     core = Core()
@@ -128,6 +131,11 @@ def test_update_rt_info(device):
     for key, value in output_node.get_rt_info().items():
         assert key == "test12345"
         assert isinstance(value, OVAny)
+
+    output_node.rt_info["test_key"] = "test_value"
+    assert output_node.rt_info["test_key"] == "test_value"
+    output_node.set_rt_info("test_value2", "test_key2")
+    assert output_node.get_rt_info()["test_key2"] == "test_value2"
 
 
 def test_operations():
@@ -157,4 +165,4 @@ def test_deepcopy():
     output_node = node.outputs()[0]
     with pytest.raises(TypeError) as e:
         deepcopy(output_node)
-    assert "cannot deepcopy 'openvino.runtime.Output' object." in str(e)
+    assert "Cannot deepcopy 'openvino.Output' object." in str(e)

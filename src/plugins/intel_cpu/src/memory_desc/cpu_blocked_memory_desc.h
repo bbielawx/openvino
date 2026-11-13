@@ -1,21 +1,32 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "blocked_memory_desc.h"
-#include "utils/general_utils.h"
+#include <cstddef>
+#include <memory>
 
-namespace ov {
-namespace intel_cpu {
+#include "blocked_memory_desc.h"
+#include "cpu_types.h"
+#include "dnnl_extension_utils.h"
+#include "memory_desc/cpu_memory_desc.h"
+#include "openvino/core/type/element_type.hpp"
+
+namespace ov::intel_cpu {
+
+class DnnlBlockedMemoryDesc;
 
 class CpuBlockedMemoryDesc : public BlockedMemoryDesc {
 public:
     CpuBlockedMemoryDesc(ov::element::Type prc, const Shape& shape);
 
-    CpuBlockedMemoryDesc(ov::element::Type prc, const Shape& shape, const VectorDims& blockedDims,
-                         const VectorDims& order, size_t offsetPadding = 0, const VectorDims& offsetPaddingToData = {},
+    CpuBlockedMemoryDesc(ov::element::Type prc,
+                         const Shape& shape,
+                         const VectorDims& blockedDims,
+                         const VectorDims& order,
+                         size_t offsetPadding = 0,
+                         const VectorDims& offsetPaddingToData = {},
                          const VectorDims& strides = {});
 
     MemoryDescPtr clone() const override {
@@ -24,8 +35,8 @@ public:
 
     bool isCompatible(const MemoryDesc& rhs) const override;
     bool isCompatible(const BlockedMemoryDesc& rhs, CmpMask cmpMask) const override;
-    bool isCompatible(const CpuBlockedMemoryDesc &rhs, CmpMask cmpMask = BlockedMemoryDesc::FULL_MASK) const;
-    bool isCompatible(const DnnlBlockedMemoryDesc &rhs, CmpMask cmpMask = BlockedMemoryDesc::FULL_MASK) const;
+    bool isCompatible(const CpuBlockedMemoryDesc& rhs, CmpMask cmpMask = BlockedMemoryDesc::FULL_MASK) const;
+    bool isCompatible(const DnnlBlockedMemoryDesc& rhs, CmpMask cmpMask = BlockedMemoryDesc::FULL_MASK) const;
 
     ov::element::Type getPrecision() const override {
         return precision;
@@ -78,7 +89,7 @@ public:
 
     size_t getPaddedElementsCount() const override;
 
-    MemoryDescPtr cloneWithNewPrecision(const ov::element::Type prec) const override;
+    MemoryDescPtr cloneWithNewPrecision(ov::element::Type prec) const override;
 
 private:
     size_t getElementOffset(size_t elemNumber) const override;
@@ -95,7 +106,6 @@ private:
         precision = prc;
     }
 
-private:
     ov::element::Type precision;
     size_t offsetPadding;
 };
@@ -103,5 +113,4 @@ private:
 using CpuBlockedMemoryDescPtr = std::shared_ptr<CpuBlockedMemoryDesc>;
 using CpuBlockedMemoryDescCPtr = std::shared_ptr<const CpuBlockedMemoryDesc>;
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

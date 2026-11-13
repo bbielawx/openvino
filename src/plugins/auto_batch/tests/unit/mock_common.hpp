@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,7 +6,7 @@
 #include <gmock/gmock.h>
 
 #include <iostream>
-
+#include "common_test_utils/test_assertions.hpp"
 #include "compiled_model.hpp"
 #include "openvino/runtime/make_tensor.hpp"
 #include "plugin.hpp"
@@ -43,6 +43,14 @@ public:
     MOCK_METHOD(std::shared_ptr<ov::ICompiledModel>,
                 import_model,
                 (std::istream&, const ov::SoPtr<ov::IRemoteContext>&, const ov::AnyMap&),
+                (const, override));
+    MOCK_METHOD(std::shared_ptr<ov::ICompiledModel>,
+                import_model,
+                (const ov::Tensor&, const ov::AnyMap&),
+                (const, override));
+    MOCK_METHOD(std::shared_ptr<ov::ICompiledModel>,
+                import_model,
+                (const ov::Tensor&, const ov::SoPtr<ov::IRemoteContext>&, const ov::AnyMap&),
                 (const, override));
     MOCK_METHOD(ov::SupportedOpsMap,
                 query_model,

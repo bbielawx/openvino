@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -21,7 +21,7 @@ struct border_impl : typed_primitive_impl_ocl<border> {
     DECLARE_OBJECT_TYPE_SERIALIZATION(cldnn::ocl::border_impl)
 
     std::unique_ptr<primitive_impl> clone() const override {
-        return make_unique<border_impl>(*this);
+        return make_deep_copy<border_impl, kernel_params_t>(*this);
     }
 
     static kernel_params_t get_kernel_params(const kernel_impl_params& impl_param, bool is_shape_agnostic = false) {
@@ -30,9 +30,6 @@ struct border_impl : typed_primitive_impl_ocl<border> {
 
         size_t rank = impl_param.get_input_layout(0).get_rank();
         format pads_format = format::adjust_to_rank(format::bfyx, rank);
-
-        std::vector<int32_t> begin(primitive->pads_begin.begin(), primitive->pads_begin.end());
-        std::vector<int32_t> end(primitive->pads_end.begin(), primitive->pads_end.end());
 
         size_t input_offset = 1;
         if (!(primitive->non_constant_input_mask & border::PAD_NON_CONST_INPUT::BEGIN)) {
@@ -105,8 +102,13 @@ struct border_impl : typed_primitive_impl_ocl<border> {
     }
 
     void update_dispatch_data(const kernel_impl_params& impl_param) override {
-        auto kernel_params = get_kernel_params(impl_param, true);
-        (_kernel_data.update_dispatch_data_func)(kernel_params, _kernel_data);
+        // If model loaded from cache, params are not initialized, so we create a new object and reuse it in the future
+        if (_kernel_data.params == nullptr) {
+            _kernel_data.params = std::make_shared<kernel_params_t>(get_kernel_params(impl_param, true));
+        }
+
+        update_shapes(*_kernel_data.params, impl_param);
+        (_kernel_data.update_dispatch_data_func)(*_kernel_data.params, _kernel_data);
     }
 
     void save(BinaryOutputBuffer& ob) const override {
@@ -122,7 +124,7 @@ struct border_impl : typed_primitive_impl_ocl<border> {
     void load(BinaryInputBuffer& ib) override {
         parent::load(ib);
         ib >> zero_input;
-        if (is_dynamic()) {
+        if (is_dynamic() && !_kernel_data.kernelName.empty()) {
             auto& kernel_selector = kernel_selector_t::Instance();
             auto kernel_impl = kernel_selector.GetImplementation(_kernel_data.kernelName);
             kernel_impl->GetUpdateDispatchDataFunc(_kernel_data);
@@ -145,24 +147,23 @@ protected:
         return args;
     }
 
-    std::vector<layout> get_internal_buffer_layouts_impl() const override {
-        const auto& prim_params = static_cast<const kernel_selector::border_params&>(*_kernel_data.params);
-        std::vector<layout> layouts;
-
-        if ((_kernel_data.params == nullptr && zero_input) ||
-            (_kernel_data.params != nullptr && prim_params.inputs[0].LogicalSize() == 0)) {
-            layout any_layout = {data_types::u8, format::bfyx, {1, 1, 1, 1}};
-            layouts.push_back(any_layout);
+    std::vector<BufferDescriptor> get_internal_buffer_descs(const kernel_impl_params&) const override {
+        std::vector<BufferDescriptor> internal_buffers;
+        if (_kernel_data.params != nullptr) {
+            const auto& prim_params = static_cast<const kernel_selector::border_params&>(*_kernel_data.params);
+            if (prim_params.inputs[0].LogicalSize() == 0) {
+                internal_buffers.emplace_back(1, ov::element::u8);
+            }
         }
 
-        return layouts;
+        return internal_buffers;
     }
 };
 
 namespace detail {
 
 attach_border_impl::attach_border_impl() {
-    auto types = {data_types::f32, data_types::f16, data_types::i32, data_types::i8, data_types::u8};
+    auto types = {data_types::f32, data_types::f16, data_types::bf16, data_types::i32, data_types::i8, data_types::u8};
 
     auto formats = {
         format::yxfb,

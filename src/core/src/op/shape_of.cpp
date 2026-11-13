@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -68,22 +68,23 @@ bool evaluate_bound(const Node* const node, ov::TensorVector& outputs, const boo
         // use node output type as it can be different than output tensor type
         // e.g. when v3::ShapeOf is converted to v0::ShapeOf then the output tensor will have always i64
         // but node output type is transferred from v3 and can be i32 (dimension inf bound is i32 max)
-        const auto is_out_type_i32 = node->get_output_element_type(0) == element::i32;
-        if (is_out_type_i32 || !is_upper) {
+        if (node->get_output_element_type(0) == element::i32) {
             const auto in_shape_rank = in_shape.size();
-            const auto max_et_val = is_out_type_i32 ? static_cast<int64_t>(std::numeric_limits<int32_t>::max())
-                                                    : std::numeric_limits<int64_t>::max();
+            constexpr int64_t max_et_val = std::numeric_limits<int32_t>::max();
 
-            auto limit_val = is_upper ? max_et_val : static_cast<decltype(max_et_val)>(0);
+            const auto get_val = is_upper ? &Interval::get_max_val : &Interval::get_min_val;
+            const auto limit_val = is_upper ? max_et_val : 0;
 
-            auto dynamic_mask = std::vector<char>(in_shape_rank);
-            std::transform(in_shape.begin(), in_shape.end(), dynamic_mask.begin(), [&](const Dimension& d) {
-                return static_cast<char>(d.get_interval().get_max_val() >= max_et_val);
+            TensorVector inputs{
+                {element::boolean, Shape{in_shape_rank}},  // mask
+                {out_et, Shape{}, &limit_val},             // limit
+                outputs[0]                                 // output
+            };
+            auto& dynamic_mask = inputs[0];
+            std::transform(in_shape.begin(), in_shape.end(), dynamic_mask.data<char>(), [&](const Dimension& d) {
+                return static_cast<char>((d.get_interval().*get_val)() >= max_et_val);
             });
-
-            const auto limit = Tensor(out_et, Shape{}, &limit_val);
-            const auto mask = Tensor(element::boolean, Shape{in_shape_rank}, dynamic_mask.data());
-            eval_status = v1::Select().evaluate(outputs, {mask, limit, outputs[0]});
+            eval_status = v1::Select().evaluate(outputs, inputs);
         }
         return eval_status;
     } else {
@@ -120,7 +121,7 @@ void ShapeOf::validate_and_infer_types() {
                           m_output_type == element::i64 || m_output_type == element::i32,
                           "Output type must be i32 or i64");
     set_input_is_relevant_to_value(0, false);
-    const auto input_partial_shape = get_input_partial_shape(0);
+    const auto& input_partial_shape = get_input_partial_shape(0);
     set_output_type(0, m_output_type, PartialShape{input_partial_shape.rank()});
 }
 
@@ -169,9 +170,13 @@ bool ShapeOf::evaluate_symbol(TensorSymbolVector& output_symbols) const {
     return shape_of::evaluate_symbol(this, output_symbols);
 }
 
+bool ShapeOf::can_constant_fold(const OutputVector& input_values) const {
+    return !is_const_fold_disabled() && input_values[0].get_partial_shape().is_static();
+}
+
 bool ShapeOf::constant_fold(OutputVector& output_values, const OutputVector& input_values) {
     OV_OP_SCOPE(v3_ShapeOf_constant_fold);
-    if (is_const_fold_disabled()) {
+    if (!can_constant_fold(input_values)) {
         return false;
     }
     return shape_of::constant_fold_shape_of(this, output_values[0], input_values[0]);
@@ -223,9 +228,13 @@ bool ShapeOf::has_evaluate() const {
     }
 }
 
+bool ShapeOf::can_constant_fold(const OutputVector& input_values) const {
+    return !is_const_fold_disabled() && input_values[0].get_partial_shape().is_static();
+}
+
 bool ShapeOf::constant_fold(OutputVector& output_values, const OutputVector& input_values) {
     OV_OP_SCOPE(v0_ShapeOf_constant_fold);
-    if (is_const_fold_disabled()) {
+    if (!can_constant_fold(input_values)) {
         return false;
     }
     return shape_of::constant_fold_shape_of(this, output_values[0], input_values[0]);

@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,12 +9,12 @@
 #include "openvino/frontend/paddle/node_context.hpp"
 #include "openvino/frontend/paddle/visibility.hpp"
 
-namespace ov {
-namespace frontend {
-namespace paddle {
+namespace ov::frontend::paddle {
 
-class PADDLE_API ConversionExtension : public ConversionExtensionBase {
+class ConversionExtension : public ConversionExtensionBase {
 public:
+    OPENVINO_RTTI("frontend::paddle::ConversionExtension", "", ConversionExtensionBase);
+
     using Ptr = std::shared_ptr<ConversionExtension>;
 
     ConversionExtension() = delete;
@@ -22,8 +22,6 @@ public:
     ConversionExtension(const std::string& op_type, const ov::frontend::CreatorFunctionNamed& converter)
         : ConversionExtensionBase(op_type),
           m_converter(converter) {}
-
-    ~ConversionExtension() override;
 
     const ov::frontend::CreatorFunctionNamed& get_converter() const {
         return m_converter;
@@ -33,6 +31,4 @@ private:
     ov::frontend::CreatorFunctionNamed m_converter;
 };
 
-}  // namespace paddle
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::paddle

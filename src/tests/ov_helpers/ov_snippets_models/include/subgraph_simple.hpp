@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -28,6 +28,64 @@ protected:
     std::shared_ptr<ov::Model> initOriginal() const override;
     std::shared_ptr<ov::Model> initReference() const override;
 };
+
+/// One unary operation: Exp
+/// Tokenized simply by starting subgraph.
+//    in1
+//    Exp
+//   Result
+class ExpFunction : public SnippetsFunctionBase {
+public:
+    explicit ExpFunction(const std::vector<PartialShape>& inputShapes) : SnippetsFunctionBase(inputShapes) {
+        OPENVINO_ASSERT(input_shapes.size() == 1, "Got invalid number of input shapes");
+    }
+protected:
+    std::shared_ptr<ov::Model> initOriginal() const override;
+};
+
+/// One unary operation: HSigmoid
+/// Tokenized simply by starting subgraph.
+//    in1
+//  HSigmoid
+//   Result
+class HSigmoidFunction : public SnippetsFunctionBase {
+public:
+    explicit HSigmoidFunction(const std::vector<PartialShape>& inputShapes) : SnippetsFunctionBase(inputShapes) {
+        OPENVINO_ASSERT(input_shapes.size() == 1, "Got invalid number of input shapes");
+    }
+protected:
+    std::shared_ptr<ov::Model> initOriginal() const override;
+};
+
+/// One unary operation: SoftSign
+/// Tokenized simply by starting subgraph.
+//    in1
+//  SoftSign
+//   Result
+class SoftSignFunction : public SnippetsFunctionBase {
+public:
+    explicit SoftSignFunction(const std::vector<PartialShape>& inputShapes) : SnippetsFunctionBase(inputShapes) {
+        OPENVINO_ASSERT(input_shapes.size() == 1, "Got invalid number of input shapes");
+    }
+protected:
+    std::shared_ptr<ov::Model> initOriginal() const override;
+};
+
+/// Two unary operations: Exp + Power(x, -1) (aka Reciprocal)
+/// Tokenized simply by starting subgraph.
+//    in1
+//    Exp
+//  Power(x, -1)
+//   Result
+class ExpReciprocalFunction : public SnippetsFunctionBase {
+public:
+    explicit ExpReciprocalFunction(const std::vector<PartialShape>& inputShapes) : SnippetsFunctionBase(inputShapes) {
+        OPENVINO_ASSERT(input_shapes.size() == 1, "Got invalid number of input shapes");
+    }
+protected:
+    std::shared_ptr<ov::Model> initOriginal() const override;
+};
+
 /// Like AddSinh but with a constant second input (and no sinh on in)
 //   in1       in2
 //        Add
@@ -125,7 +183,7 @@ public:
                          "Only 4D input shapes are currently supported by this test");
             // todo:
             //  Note that single-element constant are not supported by the test, since they'll be converted
-            //  to snippets::op::Scalar. So a more comlex logics is required to produce reference function.
+            //  to snippets::op::Scalar. So a more complex logics is required to produce reference function.
             OPENVINO_ASSERT(input_shapes[0][1] == input_shapes[1][1], "Channel dimensions must be equal and != 1");
             OPENVINO_ASSERT(input_shapes[0].is_static() && input_shapes[1].is_static(), "This test supports only static shapes");
     }
@@ -155,8 +213,8 @@ protected:
 /// Also Output tensors have names to check correct copying output names
 //    in1    in2
 //        Add
-//  HSwish   Result
-//  Relu
+//  Relu   Result
+//  HSwish
 //  Result
 class EltwiseTwoResultsFunction : public SnippetsFunctionBase {
 public:

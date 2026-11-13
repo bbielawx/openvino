@@ -1,21 +1,33 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include <gtest/gtest.h>
 
+#include "common_test_utils/test_assertions.hpp"
 #include "openvino/core/type.hpp"
 #include "openvino/core/validation_util.hpp"
-#include "openvino/opsets/opset8.hpp"
+#include "openvino/op/add.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/divide.hpp"
+#include "openvino/op/erf.hpp"
+#include "openvino/op/gather.hpp"
+#include "openvino/op/multiply.hpp"
+#include "openvino/op/parameter.hpp"
+#include "openvino/op/reshape.hpp"
+#include "openvino/op/shape_of.hpp"
+#include "openvino/op/slice.hpp"
+#include "openvino/op/subtract.hpp"
+#include "openvino/op/variadic_split.hpp"
 #include "openvino/util/common_util.hpp"
 
 TEST(get_constant_from_source, invalidation_check) {
-    auto a = ov::opset8::Constant::create(ov::element::i64, {100}, {123});
-    auto b = ov::opset8::Constant::create(ov::element::i64, {1}, {123});
-    auto div = std::make_shared<ov::opset8::Divide>(a, b);
-    auto s = std::make_shared<ov::opset8::ShapeOf>(a);
-    auto r = std::make_shared<ov::opset8::Reshape>(div, s, true);
-    auto tmp_consumer = std::make_shared<ov::opset8::ShapeOf>(s);
+    auto a = ov::op::v0::Constant::create(ov::element::i64, {100}, {123});
+    auto b = ov::op::v0::Constant::create(ov::element::i64, {1}, {123});
+    auto div = std::make_shared<ov::op::v1::Divide>(a, b);
+    auto s = std::make_shared<ov::op::v3::ShapeOf>(a);
+    auto r = std::make_shared<ov::op::v1::Reshape>(div, s, true);
+    auto tmp_consumer = std::make_shared<ov::op::v3::ShapeOf>(s);
 
     ASSERT_TRUE(ov::util::get_constant_from_source(r));
 
@@ -36,11 +48,11 @@ TEST(get_constant_from_source, invalidation_check) {
 }
 
 TEST(get_constant_from_source, extract_static_dim_from_dynamic_shape_check) {
-    auto data = std::make_shared<ov::opset8::Parameter>(ov::element::f32, ov::PartialShape{-1, 1, 128});
-    auto shape = std::make_shared<ov::opset8::ShapeOf>(data);
-    auto one = ov::opset8::Constant::create(ov::element::i64, {1}, {1});
-    auto zero = ov::opset8::Constant::create(ov::element::i64, {1}, {0});
-    const auto extract_static_dimension = std::make_shared<ov::opset8::Gather>(shape, one, zero);
+    auto data = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::PartialShape{-1, 1, 128});
+    auto shape = std::make_shared<ov::op::v3::ShapeOf>(data);
+    auto one = ov::op::v0::Constant::create(ov::element::i64, {1}, {1});
+    auto zero = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
+    const auto extract_static_dimension = std::make_shared<ov::op::v8::Gather>(shape, one, zero);
 
     ASSERT_TRUE(ov::util::get_constant_from_source(extract_static_dimension));
 
@@ -48,18 +60,52 @@ TEST(get_constant_from_source, extract_static_dim_from_dynamic_shape_check) {
     ASSERT_TRUE(extract_static_dimension->get_output_tensor(0).get_upper_value());
 }
 
+TEST(get_constant_from_source, return_nullptr_for_empty_output) {
+    auto res = ov::util::get_constant_from_source(ov::Output<ov::Node>());
+    ASSERT_EQ(res, nullptr);
+}
+
+TEST(is_empty_constant_tensor, returns_true_for_empty_constant) {
+    const auto empty = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{0}, {});
+    ASSERT_TRUE(ov::util::is_empty_constant_tensor(empty));
+}
+
+TEST(is_empty_constant_tensor, returns_false_for_non_empty_constant) {
+    const auto non_empty = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{1}, {1.0f});
+    ASSERT_FALSE(ov::util::is_empty_constant_tensor(non_empty));
+}
+
+TEST(is_empty_constant_tensor, returns_false_for_non_constant_node) {
+    const auto param = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::PartialShape{1});
+    ASSERT_FALSE(ov::util::is_empty_constant_tensor(param));
+}
+
+TEST(is_empty_constant_tensor, returns_false_for_scalar_constant) {
+    const auto scalar = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{}, {1.0f});
+    ASSERT_FALSE(ov::util::is_empty_constant_tensor(scalar));
+}
+
+TEST(is_empty_constant_tensor, returns_true_for_multi_dim_zero_element_constant) {
+    const auto multi_dim_empty = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{5, 1, 0, 5}, {});
+    ASSERT_TRUE(ov::util::is_empty_constant_tensor(multi_dim_empty));
+}
+
+TEST(is_empty_constant_tensor, returns_false_for_empty_output) {
+    ASSERT_FALSE(ov::util::is_empty_constant_tensor(ov::Output<ov::Node>()));
+}
+
 TEST(constantfold_subgraph, split) {
     std::vector<float> input{0, 1, 2, 3, 4, 5, 6, 7, 8};
-    auto constant = ov::opset8::Constant::create(ov::element::f32, ov::Shape{input.size()}, input);
-    auto mul = std::make_shared<ov::opset8::Multiply>(constant,
-                                                      ov::opset8::Constant::create(ov::element::f32, ov::Shape{}, {1}));
-    auto shape = std::make_shared<ov::opset8::ShapeOf>(mul);
+    auto constant = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{input.size()}, input);
+    auto mul = std::make_shared<ov::op::v1::Multiply>(constant,
+                                                      ov::op::v0::Constant::create(ov::element::f32, ov::Shape{}, {1}));
+    auto shape = std::make_shared<ov::op::v3::ShapeOf>(mul);
     auto len_0 =
-        std::make_shared<ov::opset8::Divide>(shape, ov::opset8::Constant::create(ov::element::i64, ov::Shape{}, {2}));
-    auto len_1 = std::make_shared<ov::opset8::Subtract>(shape, len_0);
-    auto lenghts = std::make_shared<ov::opset8::Concat>(ov::OutputVector{len_0, len_1}, 0);
-    auto axis = ov::opset8::Constant::create(ov::element::i64, ov::Shape{}, {0});
-    auto split = std::make_shared<ov::opset8::VariadicSplit>(mul, axis, lenghts);
+        std::make_shared<ov::op::v1::Divide>(shape, ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {2}));
+    auto len_1 = std::make_shared<ov::op::v1::Subtract>(shape, len_0);
+    auto lenghts = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{len_0, len_1}, 0);
+    auto axis = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {0});
+    auto split = std::make_shared<ov::op::v1::VariadicSplit>(mul, axis, lenghts);
     std::vector<float> expected(std::next(input.begin(), input.size() / 2), input.end());
     auto ret = ov::util::constantfold_subgraph(split->output(1));
     ASSERT_NE(ret, nullptr);
@@ -82,3 +128,199 @@ TEST(constantfold_subgraph, shapeof) {
     std::vector<int64_t> expected{3};
     ASSERT_EQ(expected, actual);
 }
+
+namespace ov::test {
+
+using op::v0::Concat, op::v0::Constant, op::v0::Parameter;
+using ov::op::v1::Add, ov::op::v1::Divide, ov::op::v0::Erf;
+
+using testing::HasSubstr, testing::Values, testing::Pointwise, testing::FloatNear;
+
+TEST(constantfold_subgraph, fold_unsupported_precision_multiple_nodes) {
+    auto init = Constant::create(element::f16, Shape{1, 1, 1, 2}, {10.f, 20.f});
+    auto a = Constant::create(element::f16, Shape{1}, {1.5f});
+    auto div = std::make_shared<Divide>(init, a);
+    auto erf = std::make_shared<Erf>(div);
+    auto b = Constant::create(element::f16, Shape{1}, {10.f});
+    auto add = std::make_shared<Add>(erf, b);
+
+    auto folded_node = ov::util::constantfold_subgraph(add);
+    ASSERT_NE(folded_node, nullptr);
+    EXPECT_EQ(folded_node->get_element_type(), ov::element::f16);
+    const auto actual = folded_node->cast_vector<float>();
+    const std::vector<float> expected{11.f, 11.f};
+    EXPECT_THAT(actual, Pointwise(FloatNear(1e-5f), expected));
+}
+
+using NormalizeAxisTest = testing::Test;
+
+TEST_F(NormalizeAxisTest, try_normalize_dynamic_rank) {
+    OV_EXPECT_THROW(util::try_normalize_axis(3, Rank(4, 5)), Exception, testing::_);
+}
+
+TEST_F(NormalizeAxisTest, try_normalize_invalid_axis) {
+    OV_EXPECT_THROW(util::try_normalize_axis(-7, Rank(6)),
+                    Exception,
+                    HasSubstr("Axis -7 out of the tensor rank range [-6, 5]"));
+    OV_EXPECT_THROW(util::try_normalize_axis(6, Rank(6)),
+                    Exception,
+                    HasSubstr("Axis 6 out of the tensor rank range [-6, 5]"));
+}
+
+TEST_F(NormalizeAxisTest, try_normalize_invalid_axis_with_node_description) {
+    auto node = Parameter(element::i32, PartialShape::dynamic(2));
+    node.set_friendly_name("My node");
+    const auto n_rank = node.get_output_partial_shape(0).rank();
+
+    OV_EXPECT_THROW(util::try_normalize_axis(-7, n_rank, node),
+                    Exception,
+                    HasSubstr("My node':\nAxis -7 out of the tensor rank range [-2, 1]"));
+    OV_EXPECT_THROW(util::try_normalize_axis(2, n_rank, node),
+                    Exception,
+                    HasSubstr("My node':\nAxis 2 out of the tensor rank range [-2, 1]"));
+}
+
+TEST_F(NormalizeAxisTest, validate_node_axis) {
+    const auto shape = PartialShape{2, 4, 5, 6};
+    const auto p = std::make_shared<Parameter>(element::i32, shape);
+    const auto node = std::make_shared<Concat>(NodeVector{1, p}, -1);
+
+    OV_EXPECT_THROW(util::validate_axis(-5, shape.rank(), *node.get()),
+                    NodeValidationFailure,
+                    HasSubstr("Axis -5 out of the tensor rank range [-4, 3]"));
+    OV_EXPECT_THROW(util::validate_axis(4, shape.rank(), *node),
+                    NodeValidationFailure,
+                    HasSubstr("Axis 4 out of the tensor rank range [-4, 3]"));
+}
+
+TEST_F(NormalizeAxisTest, validate_axes_correct) {
+    const auto axes = std::vector<int64_t>{-2, 4, 3, 0, -1};
+    const auto node = Parameter(element::i32, PartialShape::dynamic(6));
+
+    OV_ASSERT_NO_THROW(util::validate_axes(axes, Rank(6), node));
+}
+
+TEST_F(NormalizeAxisTest, validate_axes_in_correct) {
+    const auto axes = std::vector<int64_t>{-2, 4, 3, 0, -1};
+    const auto node = Parameter(element::i16, PartialShape::dynamic(4));
+
+    OV_EXPECT_THROW(util::validate_axes(axes, Rank(3), node),
+                    Exception,
+                    HasSubstr("Axis 4 out of the tensor rank range [-3, 2]"));
+}
+
+TEST_F(NormalizeAxisTest, normalize_axes) {
+    auto axes = std::vector<int64_t>{-2, 4, 3, 0, -1};
+    const auto exp_axes = std::vector<int64_t>{4, 4, 3, 0, 5};
+
+    util::normalize_axes(axes, 6);
+
+    EXPECT_EQ(exp_axes, axes);
+}
+
+TEST_F(NormalizeAxisTest, try_normalize_axes) {
+    auto axes = std::vector<int64_t>{-2, 4, 3, 0, -1};
+    const auto exp_axes = std::vector<int64_t>{4, 4, 3, 0, 5};
+    const auto node = Parameter(element::i64, PartialShape::dynamic(6));
+
+    util::try_normalize_axes(axes, Rank(6), node);
+
+    EXPECT_EQ(exp_axes, axes);
+}
+
+TEST_F(NormalizeAxisTest, try_get_normalize_axis_vector) {
+    const auto const_axes = Constant::create(element::i64, Shape{6}, {-2, 1, 0, -3, 2, -1});
+
+    const auto axes = util::try_get_normalized_axis_vector(const_axes->get_tensor_view(), Rank(4), *const_axes);
+
+    EXPECT_EQ(AxisVector({2, 1, 0, 1, 2, 3}), axes);
+}
+
+TEST_F(NormalizeAxisTest, try_get_normalize_axis_vector_fail) {
+    const auto const_axes = Constant::create(element::i64, Shape{6}, {-2, 1, 0, -3, 2, -1});
+
+    OV_EXPECT_THROW(util::try_get_normalized_axis_vector(const_axes->get_tensor_view(), Rank(2), *const_axes),
+                    Exception,
+                    HasSubstr("Axis -3 out of the tensor rank range [-2, 1]"));
+}
+
+TEST_F(NormalizeAxisTest, try_get_normalize_axis_set) {
+    const auto const_axes = Constant::create(element::i64, Shape{6}, {-2, 1, 0, -3, 2, -1});
+
+    const auto axes = util::try_get_normalized_axis_set(const_axes->get_tensor_view(), Rank(4), *const_axes);
+
+    EXPECT_EQ(AxisSet({0, 1, 2, 3}), axes);
+}
+
+TEST_F(NormalizeAxisTest, try_get_normalize_axis_set_fail) {
+    const auto const_axes = Constant::create(element::i32, Shape{6}, {-2, 1, 0, -3, 2, -1});
+
+    OV_EXPECT_THROW(util::try_get_normalized_axis_set(const_axes->get_tensor_view(), Rank(2), *const_axes),
+                    Exception,
+                    HasSubstr("Axis -3 out of the tensor rank range [-2, 1]"));
+}
+
+using NormalizeAxisParam = std::tuple<int64_t,  // axis
+                                      size_t,   // normalized axis
+                                      Rank      // Rank
+                                      >;
+
+class NormalizeAxisTestP : public NormalizeAxisTest, public testing::WithParamInterface<NormalizeAxisParam> {};
+
+INSTANTIATE_TEST_SUITE_P(positive_axis,
+                         NormalizeAxisTestP,
+                         Values(NormalizeAxisParam(0, 0, Rank{0}),
+                                NormalizeAxisParam{0, 0, Rank{5}},
+                                NormalizeAxisParam{3, 3, Rank{5}},
+                                NormalizeAxisParam{4, 4, Rank{5}}),
+                         testing::PrintToStringParamName());
+
+INSTANTIATE_TEST_SUITE_P(negative_axis,
+                         NormalizeAxisTestP,
+                         Values(NormalizeAxisParam{-5, 0, Rank{5}},
+                                NormalizeAxisParam{-3, 2, Rank{5}},
+                                NormalizeAxisParam{-1, 4, Rank{5}},
+                                NormalizeAxisParam{-1, 0, Rank{0}}),
+                         testing::PrintToStringParamName());
+
+TEST_P(NormalizeAxisTestP, is_axis_valid) {
+    const auto& axis = std::get<0>(GetParam());
+    const auto& rank = std::get<2>(GetParam());
+
+    EXPECT_TRUE(util::is_axis_valid(axis, rank.get_length()));
+}
+
+TEST_P(NormalizeAxisTestP, is_axis_valid_scalar_rank) {
+    const auto& axis = std::get<0>(GetParam());
+
+    if (axis == 0 || axis == -1) {
+        EXPECT_TRUE(util::is_axis_valid(axis, 0));
+    } else {
+        EXPECT_FALSE(util::is_axis_valid(axis, 0));
+    }
+}
+
+TEST_P(NormalizeAxisTestP, validate_axis) {
+    const auto& axis = std::get<0>(GetParam());
+    const auto& rank = std::get<2>(GetParam());
+    const auto axes_node = Parameter(element::i64, PartialShape::dynamic(rank));
+
+    EXPECT_NO_THROW(util::validate_axis(axis, axes_node.get_output_partial_shape(0).rank(), axes_node));
+}
+
+TEST_P(NormalizeAxisTestP, normalize_axis_rank) {
+    const auto& axis = std::get<0>(GetParam());
+    const auto& exp_axis = std::get<1>(GetParam());
+    const auto& rank = std::get<2>(GetParam());
+
+    EXPECT_EQ(exp_axis, util::normalize_axis(axis, rank.get_length()));
+}
+
+TEST_P(NormalizeAxisTestP, try_normalize_axis) {
+    const auto& axis = std::get<0>(GetParam());
+    const auto& exp_axis = std::get<1>(GetParam());
+    const auto& rank = std::get<2>(GetParam());
+
+    EXPECT_EQ(exp_axis, util::try_normalize_axis(axis, rank));
+}
+}  // namespace ov::test

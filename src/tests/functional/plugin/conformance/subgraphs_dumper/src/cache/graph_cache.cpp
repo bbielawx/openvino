@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -83,7 +83,7 @@ void GraphCache::update_cache(const std::shared_ptr<ov::Model>& extracted_model,
     if (model_to_update == nullptr) {
         std::string serialized_model_path = "";
         for (const auto& extractor : m_manager.get_extractors()) {
-            auto tmp_serialized_model_path = ov::util::path_join({ m_serialization_dir, m_cache_subdir, extractor.first, graph_name + ".xml" });
+            auto tmp_serialized_model_path = ov::util::path_join({ m_serialization_dir, m_cache_subdir, extractor.first, graph_name + ".xml" }).string();
             if (ov::util::file_exists(tmp_serialized_model_path)) {
                 serialized_model_path = tmp_serialized_model_path;
                 break;
@@ -123,9 +123,8 @@ void GraphCache::update_cache(const std::shared_ptr<ov::Model>& extracted_model,
                                                                        input_info, cached_model.second.get_input_info());
                     // in case if one model is subgraph of other to update model meta info and remove subgraph from cache
                     if (std::get<0>(is_subgraph)) {
-                        std::shared_ptr<ov::Model> graph, subgraph;
-                        std::map<std::string, ov::conformance::InputInfo> graph_in_info, subgraph_in_info;
-                        std::tie(std::ignore, subgraph, graph, subgraph_in_info, graph_in_info) = is_subgraph;
+                        const auto& [_ignore, subgraph, graph, subgraph_in_info, graph_in_info] = is_subgraph;
+                        std::ignore = _ignore;
                         if (subgraph == cached_model.first) {
                             auto meta = m_graph_cache[subgraph];
                             meta.set_input_info(graph_in_info);
@@ -194,7 +193,7 @@ void GraphCache::serialize_cache() {
         auto cache_item = m_graph_cache.begin();
         auto rel_dir = ov::util::path_join({ m_cache_subdir,
                                              ov::util::get_model_type(cache_item->first),
-                                             cache_item->second.get_any_extractor() });
+                                             cache_item->second.get_any_extractor() }).string();
         serialize_model(*cache_item, rel_dir);
         m_graph_cache.erase(cache_item);
     }

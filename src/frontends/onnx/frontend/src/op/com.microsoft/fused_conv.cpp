@@ -1,14 +1,12 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
-
-#include "op/com.microsoft/fused_conv.hpp"
 
 #include <memory>
 #include <vector>
 
+#include "core/operator_set.hpp"
 #include "exceptions.hpp"
-#include "op/conv.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/clamp.hpp"
 #include "openvino/op/constant.hpp"
@@ -18,17 +16,17 @@
 #include "openvino/op/sigmoid.hpp"
 #include "openvino/op/tan.hpp"
 #include "openvino/op/tanh.hpp"
-
 using namespace ov::op;
 using ov::Shape;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx {
+namespace ai_onnx::opset_1 {
+extern ov::OutputVector conv(const ov::frontend::onnx::Node& node);
+}  // namespace ai_onnx::opset_1
+
+namespace com_microsoft::opset_1 {
 ov::OutputVector fused_conv(const ov::frontend::onnx::Node& node) {
-    auto conv_res = conv(node).at(0);
+    auto conv_res = ai_onnx::opset_1::conv(node).at(0);
 
     if (node.get_ov_inputs().size() == 4) {  // Z input provided
         conv_res = std::make_shared<v1::Add>(conv_res, node.get_ov_inputs()[3]);
@@ -61,18 +59,13 @@ ov::OutputVector fused_conv(const ov::frontend::onnx::Node& node) {
         const auto alpha = v0::Constant::create<float>(ov::element::f32, ov::Shape{}, {activation_params[0]});
         const auto beta = v0::Constant::create<float>(ov::element::f32, ov::Shape{}, {activation_params[1]});
         return {std::make_shared<v0::HardSigmoid>(conv_res, alpha, beta)};
+    } else if (activation_type.empty()) {
+        return {conv_res};
     }
-    CHECK_VALID_NODE(node,
-                     !activation_type.empty(),
-                     "Not supported: ",
-                     activation_type,
-                     " activation function was used");
-
+    CHECK_VALID_NODE(node, false, "Not supported: ", activation_type, " activation function was used");
     return {conv_res};
 }
 
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("FusedConv", OPSET_SINCE(1), com_microsoft::opset_1::fused_conv, MICROSOFT_DOMAIN);
+}  // namespace com_microsoft::opset_1
+}  // namespace ov::frontend::onnx

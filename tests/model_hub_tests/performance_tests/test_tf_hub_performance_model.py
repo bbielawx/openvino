@@ -1,4 +1,4 @@
-# Copyright (C) 2023 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 
@@ -62,7 +62,7 @@ class TestTFPerformanceModel(TestModelPerformance):
         return hub.resolve(model_link)
 
     def teardown_method(self):
-        if not const.no_clean_cache_dir:
+        if const.clean_hf_cache_dir:
             utils.cleanup_dir(const.tf_hub_cache_dir)
         # deallocate memory after each test case
         gc.collect()

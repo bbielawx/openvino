@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,14 +6,28 @@
 
 #include "memory.hpp"
 
-#include <memory>
 #include <vector>
+#include <ostream>
 
 namespace cldnn {
 
 struct work_group_sizes {
     std::vector<size_t> global;
     std::vector<size_t> local;
+
+    work_group_sizes() : global({1, 1, 1}), local({1, 1, 1}) {}
+};
+
+inline std::ostream& operator<<(std::ostream& os, const work_group_sizes& wgs) {
+    os << "global: [" << wgs.global[0] << " " <<  wgs.global[1] << " " << wgs.global[2] << "] ";
+    os << "local: [" << wgs.local[0] << " " <<  wgs.local[1] << " " << wgs.local[2] << "]";
+    return os;
+}
+
+enum class kernel_language {
+    OCLC,
+    CM,
+    OCLC_V2,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -52,6 +66,7 @@ struct scalar_desc {
 
 using scalars_desc = std::vector<scalar_desc>;
 
+using local_memory_args_desc = std::vector<size_t>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // ArgumentDescpirtor
@@ -71,7 +86,8 @@ struct argument_desc {
         ACTIVATIONS_ZERO_POINTS,
         COMPENSATION,
         INPUT_OF_FUSED_PRIMITIVE,
-        SHAPE_INFO
+        SHAPE_INFO,
+        LOCAL_MEMORY_SIZE
     };
 
     Types t;
@@ -88,6 +104,7 @@ struct kernel_arguments_desc {
     arguments_desc arguments;
     scalars_desc scalars;
     std::string layerID;
+    local_memory_args_desc local_memory_args;
 };
 
 struct kernel_arguments_data {
@@ -109,6 +126,7 @@ struct kernel_arguments_data {
 
     std::vector<memory::cptr> fused_op_inputs;
     const scalars_desc* scalars = nullptr;
+    const local_memory_args_desc* local_memory_args = nullptr;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -121,8 +139,10 @@ struct kernel_string {
     std::string options;
     std::string entry_point;
     bool batch_compilation;
+    bool has_microkernels;
+    kernel_language language;
 
-    kernel_string() : str(""), jit(""), undefs(""), options(""), entry_point(""), batch_compilation(false) {}
+    kernel_string() : batch_compilation(false), has_microkernels(false), language(kernel_language::OCLC) {}
 
     std::string get_str() const { return str + jit + undefs + options + entry_point; }
     size_t get_hash() const { return std::hash<std::string>()(get_str()); }

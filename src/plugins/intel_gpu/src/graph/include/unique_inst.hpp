@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -42,10 +42,6 @@ struct typed_program_node<unique_gather> : typed_program_node_base<unique_gather
 
     program_node& input() const {
         return get_dependency(0);
-    }
-
-    bool generates_dynamic_output() const override {
-        return true;
     }
 
     std::vector<size_t> get_shape_infer_dependencies() const override {

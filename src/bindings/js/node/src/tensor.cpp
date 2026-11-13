@@ -1,11 +1,15 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
+//
 
 #include "node/include/tensor.hpp"
+
+#include <memory>
 
 #include "node/include/addon.hpp"
 #include "node/include/errors.hpp"
 #include "node/include/helper.hpp"
+#include "node/include/type_validation.hpp"
 #include "openvino/core/shape.hpp"
 #include "openvino/core/type/element_type.hpp"
 
@@ -13,27 +17,31 @@ TensorWrap::TensorWrap(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Tensor
     if (info.Length() == 0) {
         return;
     }
-
-    if (info.Length() == 1 || info.Length() > 3) {
-        reportError(info.Env(), "Invalid number of arguments for Tensor constructor.");
-        return;
-    }
-
     try {
-        const auto type = js_to_cpp<ov::element::Type_t>(info, 0, {napi_string});
-        const auto shape_vec = js_to_cpp<std::vector<size_t>>(info, 1, {napi_int32_array, napi_uint32_array, js_array});
-        const auto& shape = ov::Shape(shape_vec);
+        OPENVINO_ASSERT(info.Length() <= 3, "Invalid number of arguments for Tensor constructor.");
+        if (info.Length() == 1 && info[0].IsExternal()) {
+            // Cross-addon interoperability: Create from Napi::External<ov::Tensor>
+            // This allows sharing tensor data between different native Node.js addons
+            // The External contains a pointer to an ov::Tensor object
+            auto external = info[0].As<Napi::External<ov::Tensor>>();
+            auto tensor_ptr = external.Data();
+            OPENVINO_ASSERT(tensor_ptr, "External tensor pointer is null.");
+            // Copy the ov::Tensor - this is lightweight as it only copies the wrapper
+            // The actual tensor data is shared via ov::Tensor's internal shared_ptr
+            this->_tensor = *tensor_ptr;
+        } else if (info.Length() == 1 && info[0].IsArray()) {
+            this->_tensor = cast_to_tensor(info[0].As<Napi::Array>());
+        } else {
+            const auto type = js_to_cpp<ov::element::Type_t>(info, 0);
+            const auto& shape = js_to_cpp<ov::Shape>(info, 1);
 
-        if (info.Length() == 2) {
-            this->_tensor = ov::Tensor(type, shape);
-        } else if (info.Length() == 3) {
-            if (!info[2].IsTypedArray()) {
-                reportError(info.Env(), "Third argument of a tensor must be of type TypedArray.");
-                return;
+            if (info.Length() == 2) {
+                this->_tensor = ov::Tensor(type, shape);
+            } else if (info.Length() == 3 && info[2].IsTypedArray()) {
+                this->_tensor = cast_to_tensor(info[2].As<Napi::TypedArray>(), shape, type);
+            } else {
+                OPENVINO_THROW("Third argument of a tensor must be TypedArray.");
             }
-
-            const auto data = info[2].As<Napi::TypedArray>();
-            this->_tensor = cast_to_tensor(data, shape, type);
         }
     } catch (std::invalid_argument& e) {
         reportError(info.Env(), std::string("Invalid tensor argument. ") + e.what());
@@ -45,11 +53,15 @@ TensorWrap::TensorWrap(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Tensor
 Napi::Function TensorWrap::get_class(Napi::Env env) {
     return DefineClass(env,
                        "TensorWrap",
-                       {InstanceAccessor<&TensorWrap::get_data>("data"),
+                       {InstanceAccessor("data", &TensorWrap::get_data, &TensorWrap::set_data),
                         InstanceMethod("getData", &TensorWrap::get_data),
                         InstanceMethod("getShape", &TensorWrap::get_shape),
                         InstanceMethod("getElementType", &TensorWrap::get_element_type),
-                        InstanceMethod("getSize", &TensorWrap::get_size)});
+                        InstanceMethod("getSize", &TensorWrap::get_size),
+                        InstanceMethod("isContinuous", &TensorWrap::is_continuous),
+                        InstanceMethod("setShape", &TensorWrap::set_shape),
+                        InstanceMethod("__getExternalTensor", &TensorWrap::get_external_tensor),
+                        InstanceMethod("copyTo", &TensorWrap::copy_to)});
 }
 
 ov::Tensor TensorWrap::get_tensor() const {
@@ -72,6 +84,12 @@ Napi::Object TensorWrap::wrap(Napi::Env env, ov::Tensor tensor) {
 }
 
 Napi::Value TensorWrap::get_data(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() > 0) {
+        reportError(env, "getData() does not accept any arguments.");
+        return env.Undefined();
+    }
+
     auto type = _tensor.get_element_type();
 
     switch (type) {
@@ -125,6 +143,14 @@ Napi::Value TensorWrap::get_data(const Napi::CallbackInfo& info) {
         std::memcpy(arr.Data(), _tensor.data(), _tensor.get_byte_size());
         return arr;
     }
+    case ov::element::string: {
+        auto str_data = Napi::Array::New(info.Env(), _tensor.get_size());
+        const auto data = _tensor.data<std::string>();
+        for (uint32_t i = 0; i < _tensor.get_size(); ++i) {
+            str_data[i] = Napi::String::New(info.Env(), data[i]);
+        }
+        return str_data;
+    }
     default: {
         reportError(info.Env(), "Failed to return tensor data.");
         return info.Env().Null();
@@ -132,8 +158,59 @@ Napi::Value TensorWrap::get_data(const Napi::CallbackInfo& info) {
     }
 }
 
+void TensorWrap::set_data(const Napi::CallbackInfo& info, const Napi::Value& value) {
+    try {
+        if (value.IsTypedArray()) {
+            const auto buf = value.As<Napi::TypedArray>();
+
+            if (_tensor.get_byte_size() != buf.ByteLength()) {
+                OPENVINO_THROW("Passed array must have the same size as the Tensor!");
+            }
+            const auto napi_type = buf.TypedArrayType();
+            std::memcpy(_tensor.data(get_ov_type(napi_type)), buf.ArrayBuffer().Data(), _tensor.get_byte_size());
+        } else if (value.IsArray()) {
+            fill_tensor_from_strings(_tensor, value.As<Napi::Array>());
+        } else {
+            OPENVINO_THROW("Passed argument must be TypedArray, or Array if the tensor type is string.");
+        }
+    } catch (std::exception& e) {
+        reportError(info.Env(), e.what());
+    }
+}
+
 Napi::Value TensorWrap::get_shape(const Napi::CallbackInfo& info) {
+    if (info.Length() > 0) {
+        reportError(info.Env(), "No parameters are allowed for the getShape() method.");
+        return info.Env().Undefined();
+    }
     return cpp_to_js<ov::Shape, Napi::Array>(info, _tensor.get_shape());
+}
+Napi::Value TensorWrap::set_shape(const Napi::CallbackInfo& info) {
+    if (info.Length() == 1) {
+        try {
+            const auto& shape = js_to_cpp<ov::Shape>(info, 0);
+            _tensor.set_shape(shape);
+        } catch (const std::exception& e) {
+            reportError(info.Env(), e.what());
+        }
+    } else {
+        reportError(info.Env(), "Error in setShape(). Wrong number of parameters.");
+    }
+
+    return info.Env().Undefined();
+}
+
+void TensorWrap::copy_to(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    try {
+        OPENVINO_ASSERT(info.Length() == 1, "copyTo() must receive one argument, which is the destination Tensor.");
+        OPENVINO_ASSERT(!info[0].IsUndefined() && !info[0].IsNull(), "The argument must be a Tensor object.");
+        OPENVINO_ASSERT(ov::js::validate_value<TensorWrap>(env, info[0]), "Invalid argument");
+        auto dst_tensor_wrap = Napi::ObjectWrap<TensorWrap>::Unwrap(info[0].ToObject());
+        _tensor.copy_to(dst_tensor_wrap->_tensor);
+    } catch (const std::exception& e) {
+        reportError(env, e.what());
+    }
 }
 
 Napi::Value TensorWrap::get_element_type(const Napi::CallbackInfo& info) {
@@ -148,4 +225,27 @@ Napi::Value TensorWrap::get_size(const Napi::CallbackInfo& info) {
     }
     const auto size = static_cast<double>(_tensor.get_size());
     return Napi::Number::New(env, size);
+}
+
+Napi::Value TensorWrap::is_continuous(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() > 0) {
+        reportError(env, "isContinuous() does not accept any arguments.");
+        return env.Undefined();
+    }
+    return Napi::Boolean::New(env, _tensor.is_continuous());
+}
+
+Napi::Value TensorWrap::get_external_tensor(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() > 0) {
+        reportError(env, "__getExternalTensor() does not accept any arguments.");
+        return env.Undefined();
+    }
+    // Return a pointer to the ov::Tensor object wrapped in Napi::External
+    // This is a service method for cross-addon interoperability
+    // Since ov::Tensor already contains shared_ptr internally, we don't need an extra shared_ptr wrapper
+    return Napi::External<ov::Tensor>::New(env, new ov::Tensor(_tensor), [](Napi::Env /*env*/, ov::Tensor* ov_tensor) {
+        delete ov_tensor;
+    });
 }

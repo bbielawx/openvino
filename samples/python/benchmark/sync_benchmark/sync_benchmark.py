@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Copyright (C) 2022 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import logging as log
@@ -10,8 +10,7 @@ from time import perf_counter
 
 import numpy as np
 import openvino as ov
-from openvino.runtime import get_version
-from openvino.runtime.utils.types import get_dtype
+from openvino.utils.types import get_dtype
 
 
 def fill_tensor_random(tensor):
@@ -29,7 +28,7 @@ def fill_tensor_random(tensor):
 def main():
     log.basicConfig(format='[ %(levelname)s ] %(message)s', level=log.INFO, stream=sys.stdout)
     log.info('OpenVINO:')
-    log.info(f"{'Build ':.<39} {get_version()}")
+    log.info(f"{'Build ':.<39} {ov.__version__}")
     device_name = 'CPU'
     if len(sys.argv) == 3:
         device_name = sys.argv[2]
@@ -43,7 +42,7 @@ def main():
     # Create Core and use it to compile a model.
     # Select the device by providing the name as the second parameter to CLI.
     # Using MULTI device is pointless in sync scenario
-    # because only one instance of openvino.runtime.InferRequest is used
+    # because only one instance of openvino.InferRequest is used
     core = ov.Core()
     compiled_model = core.compile_model(sys.argv[1], device_name, latency)
     ireq = compiled_model.create_infer_request()

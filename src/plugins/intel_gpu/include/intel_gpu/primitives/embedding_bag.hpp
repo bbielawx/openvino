@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -30,9 +30,8 @@ struct embedding_bag : public primitive_base<embedding_bag> {
                   const std::vector<input_info>& inputs,
                   const embedding_bag_type& type,
                   const tensor& output_shape,
-                  const int32_t default_index = -1,
-                  const padding& output_padding = padding())
-        : primitive_base(id, inputs, {output_padding}), type(type), output_shape(output_shape), default_index(default_index) {}
+                  const int32_t default_index = -1)
+        : primitive_base(id, inputs), type(type), output_shape(output_shape), default_index(default_index) {}
 
     /// @brief Type of EmbeddingBag operation
     embedding_bag_type type;
@@ -49,8 +48,9 @@ struct embedding_bag : public primitive_base<embedding_bag> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const embedding_bag>(rhs);
 

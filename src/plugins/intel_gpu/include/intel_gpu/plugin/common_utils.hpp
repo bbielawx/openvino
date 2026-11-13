@@ -1,18 +1,25 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
+#include <memory>
 #include <ostream>
 #include <tuple>
+#include "intel_gpu/runtime/event.hpp"
 #include "intel_gpu/runtime/layout.hpp"
 #include "intel_gpu/runtime/memory.hpp"
-#include "intel_gpu/runtime/optionals.hpp"
+
 #include "intel_gpu/runtime/shape_predictor.hpp"
-#include "openvino/core/layout.hpp"
+#include "intel_gpu/runtime/engine.hpp"
+#include "intel_gpu/runtime/device_info.hpp"
 #include "openvino/core/node.hpp"
 #include "openvino/core/type/element_type.hpp"
+
+namespace cldnn {
+class tensor_conversion;
+}
 
 namespace ov {
 namespace intel_gpu {
@@ -21,6 +28,8 @@ enum class TensorType {
     BT_EMPTY,
     BT_BUF_INTERNAL,
     BT_BUF_SHARED,
+    BT_BUF_SHARED_FROM_HANDLE,
+    BT_CPU_VA,
     BT_USM_SHARED,
     BT_USM_HOST_INTERNAL,
     BT_USM_DEVICE_INTERNAL,
@@ -31,6 +40,26 @@ enum class TensorType {
 
 #define TensorValue(val) static_cast<cldnn::tensor::value_type>(val)
 
+inline bool can_use_usm_host(cldnn::engine& engine, const uint64_t total_output_bytes) {
+    GPU_DEBUG_IF(ExecutionConfig::get_usm_policy() == 1) { return true; }
+    GPU_DEBUG_IF(ExecutionConfig::get_usm_policy() == 2) { return false; }
+
+    auto can_use_usm = engine.use_unified_shared_memory();
+    // When output size is large, it is better not to write to usm_host directly
+    const uint64_t LARGE_OUTPUT_BYTES_THRESHOLD = 4 * 1048576;
+
+    const auto& device_info = engine.get_device_info();
+    if ((device_info.gfx_ver.major >= 20 && device_info.dev_type == cldnn::device_type::discrete_gpu) ||
+        (device_info.dev_type == cldnn::device_type::discrete_gpu && total_output_bytes > LARGE_OUTPUT_BYTES_THRESHOLD)) {
+        // WA: Disable USM host memory for infer request`s tensors for dGPUs, as kernel access
+        // to system memory is slower than using an explicit memcpy (Host <-> Device) call with the copy engine
+        // Driver tickets with additional details: 6155, 10054
+        GPU_DEBUG_TRACE << "Do not use usm_host for performance issue" << std::endl;
+        can_use_usm = false;
+    }
+
+    return can_use_usm;
+}
 inline cldnn::tensor tensor_from_dims(const ov::Shape& dims, int def = 1) {
     switch (dims.size()) {
     case 0: return cldnn::tensor(cldnn::batch(def), cldnn::feature(def), cldnn::spatial(def, def));
@@ -63,27 +92,22 @@ inline cldnn::layout make_layout(const ov::element::Type type, const ov::Shape& 
 inline ov::element::Type convert_to_supported_device_type(ov::element::Type et) {
     switch (et) {
         case ov::element::f64:
-        case ov::element::i16:
-        case ov::element::u16:
             return ov::element::f32;
         case ov::element::u64:
-        case ov::element::u32:
             return ov::element::i32;
         default: return et;
     }
 }
 
+bool is_supported(ov::element::Type_t et);
+bool data_types_are_supported(const ov::Node* node);
+
 using PrecisionMap = std::map<ov::element::Type_t, ov::element::Type>;
 
 std::vector<cldnn::optional_data_type> get_output_data_types(const ov::Node* op, PrecisionMap precision_map = {});
-std::vector<cldnn::padding> get_output_paddings(const ov::Node* op);
 
 inline std::vector<cldnn::optional_data_type> get_output_data_types(const std::shared_ptr<ov::Node>& op, PrecisionMap precision_map = {}) {
     return get_output_data_types(op.get(), precision_map);
-}
-
-inline std::vector<cldnn::padding> get_output_paddings(const std::shared_ptr<ov::Node>& op) {
-    return get_output_paddings(op.get());
 }
 
 inline ov::Shape get_tensor_shape(const ov::PartialShape& pshape) {
@@ -119,10 +143,42 @@ inline void ForceExit() {
     std::_Exit(-1);
 }
 
-void convert_and_copy(const ov::ITensor* src, cldnn::memory::ptr dst, cldnn::stream& stream);
-void convert_and_copy(const cldnn::memory::ptr src, ov::ITensor const* dst, const cldnn::stream& stream);
-void convert_and_copy(const ov::ITensor* src, ov::ITensor const* dst, const cldnn::stream& stream);
+struct PendingConversion {
+    PendingConversion() = default;
+    PendingConversion(const PendingConversion&) = delete;
+    PendingConversion& operator=(const PendingConversion&) = delete;
+
+    void wait();
+    // Call only after GPU completion has been confirmed.
+    void clear_after_completion() noexcept;
+
+    cldnn::memory::ptr staging;
+    cldnn::event::ptr done;
+};
+
+// Returns false before submission for unsupported inputs; true means submitted, not completed.
+// Pass an empty pending object; wait or drain and clear before reuse. No destructor waits automatically.
+// Keep destination, conversion, and engine/context alive until pending completes or the stream is drained.
+// Errors propagate; a failed stream drain retains the pending resources.
+bool convert_and_copy_async(
+    const ov::ITensor* src,
+    const cldnn::memory::ptr& dst,
+    cldnn::stream& stream,
+    const cldnn::layout& src_layout,
+    const std::shared_ptr<cldnn::tensor_conversion>& conversion,
+    PendingConversion& pending,
+    bool transpose = false);
+
+void convert_and_copy(
+    const ov::ITensor* src,
+    cldnn::memory::ptr dst,
+    cldnn::stream& stream,
+    const cldnn::layout& src_layout = cldnn::layout({}, ov::element::dynamic, cldnn::format::bfyx, cldnn::padding()),
+    bool transpose = false);
+void convert_and_copy(const cldnn::memory::ptr src, ov::ITensor* dst, const cldnn::stream& stream);
+void convert_and_copy(const ov::ITensor* src, ov::ITensor* dst, const cldnn::stream& stream);
 void convert_and_copy(const cldnn::memory::ptr src, cldnn::memory::ptr dst, cldnn::stream& stream);
+void convert_and_copy(const void* src_ptr, ov::element::Type src_et, void* dst_ptr, ov::element::Type dst_et, size_t size, const cldnn::layout& layout);
 
 }  // namespace intel_gpu
 

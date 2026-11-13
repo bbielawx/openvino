@@ -1,33 +1,57 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "memory_state.h"
 
 #include <nodes/common/cpu_convert.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "cpu_memory.h"
-#include "memory_desc/cpu_blocked_memory_desc.h"
-#include "dnnl_extension_utils.h"
+#include "cpu_parallel.hpp"
 #include "cpu_tensor.h"
-#include "utils/plain_tensor.hpp"
-#include "openvino/core/parallel.hpp"
-#include "nodes/common/cpu_convert.h"
+#include "cpu_types.h"
+#include "dnnl_extension_utils.h"
+#include "memory_desc/blocked_memory_desc.h"
+#include "memory_desc/cpu_blocked_memory_desc.h"
+#include "memory_desc/cpu_memory_desc.h"
+#include "memory_desc/cpu_memory_desc_utils.h"
 #include "nodes/kernels/scaled_attn/attn_quant.hpp"
+#include "nodes/kernels/scaled_attn/cache_spec.hpp"
+#include "nodes/kernels/sparse_attn/sparse_sdpa_kernel.hpp"
+#include "openvino/core/except.hpp"
+#include "openvino/core/parallel.hpp"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/runtime/intel_cpu/properties.hpp"
+#include "openvino/runtime/internal_properties.hpp"
+#include "openvino/runtime/itensor.hpp"
+#include "openvino/runtime/so_ptr.hpp"
+#include "utils/general_utils.h"
+#include "utils/plain_tensor.hpp"
 
 using namespace ov::Extensions::Cpu::XARCH;
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
-VariableStateBase::VariableStateBase(const std::string& name, const MemoryDescPtr& external_desc) :
-    IVariableState{name} , m_external_desc{external_desc} {}
+VariableStateBase::VariableStateBase(const std::string& name, MemoryDescPtr external_desc)
+    : IVariableState{name},
+      m_external_desc{std::move(external_desc)} {}
 
 MemoryDescPtr VariableStateBase::to_static(const MemoryDescPtr& desc) {
     if (!desc->isDefined()) {
         auto&& current_dims = desc->getShape().getDims();
         VectorDims new_dims(current_dims.size());
         std::transform(current_dims.begin(), current_dims.end(), new_dims.begin(), [](Dim x) {
-            return x == Shape::UNDEFINED_DIM ? 0 : x; });
+            return x == Shape::UNDEFINED_DIM ? 0 : x;
+        });
 
         return desc->cloneWithNewDims(new_dims, true);
     }
@@ -49,10 +73,10 @@ void VariableStateBase::set_state_impl(const ov::SoPtr<ov::ITensor>& state) {
         input_mem()->redefineDesc(new_desc);
     }
 
-    auto src = state->data();
+    auto* src = state->data();
 
     Memory mem(get_engine(), state_desc, src);
-    input_mem()->load(mem);
+    input_mem()->load(mem, true, false);
     reset_state_flag = false;
 }
 
@@ -70,23 +94,28 @@ ov::SoPtr<ov::ITensor> VariableStateBase::get_state() const {
         return std::make_shared<Tensor>(internal_state_mem());
     }
 
-    //test precision
+    // test precision
     {
         auto internal_prc = current_internal_desc->getPrecision();
         auto tmp_desc = current_ext_desc->cloneWithNewPrecision(internal_prc);
         if (tmp_desc->isCompatible(*current_internal_desc)) {
             auto mem = std::make_shared<Memory>(get_engine(), current_ext_desc);
-            size_t elements_to_convert = internal_state_mem()->getDescWithType<BlockedMemoryDesc>()->getPaddedElementsCount();
+            size_t elements_to_convert =
+                internal_state_mem()->getDescWithType<BlockedMemoryDesc>()->getPaddedElementsCount();
             auto external_prc = current_ext_desc->getPrecision();
 
-            cpu_convert(internal_state_mem()->getData(), mem->getData(), internal_prc, external_prc, elements_to_convert);
+            cpu_parallel_convert(internal_state_mem()->getData(),
+                                 mem->getData(),
+                                 internal_prc,
+                                 external_prc,
+                                 elements_to_convert);
             return std::make_shared<Tensor>(mem);
         }
     }
 
-    //reorder
+    // reorder
     auto mem = std::make_shared<Memory>(get_engine(), current_ext_desc);
-    mem->load(*(internal_state_mem()));
+    mem->load(*(internal_state_mem()), true, false);
     return std::make_shared<Tensor>(mem);
 }
 
@@ -107,19 +136,19 @@ void VariableStateBase::commit() {
 VariableStateDoubleBuffer::VariableStateDoubleBuffer(const std::string& name,
                                                      const MemoryPtr& first_buffer,
                                                      const MemoryPtr& second_buffer,
-                                                     const MemoryDescPtr& external_desc) :
-    VariableStateBase(name, external_desc) {
+                                                     const MemoryDescPtr& external_desc)
+    : VariableStateBase(name, external_desc) {
     OPENVINO_ASSERT(first_buffer && second_buffer);
     reset_prime_mem(first_buffer);
     reset_second_mem(second_buffer);
     m_internal_desc = prime_mem()->getDescPtr();
     auto&& shape = m_internal_desc->getShape();
-    //TODO what if by some reason we already have internal static state while the node is dynamic, is it even possible?
+    // TODO what if by some reason we already have internal static state while the node is dynamic, is it even possible?
 
     if (shape.isStatic()) {
         prime_mem()->nullify();
     } else {
-        //in the case of the original desc has dynamic shape we create an empty tensor
+        // in the case of the original desc has dynamic shape we create an empty tensor
         auto new_desc = to_static(m_internal_desc);
         prime_mem()->redefineDesc(new_desc);
     }
@@ -155,17 +184,65 @@ MemoryPtr VariableStateDoubleBuffer::internal_state_mem() const {
     return prime_mem();
 }
 
-VariableStateKVcache::VariableStateKVcache(
-    const std::string& name,
-    const MemoryDescPtr& external_desc,
-    const BlockedMemoryDescPtr& dense_internal_desc) :
-    VariableStateBase(name, external_desc), m_dense_internal_desc(dense_internal_desc) {
-    auto&& shape = external_desc->getShape();
+VariableStateSingleBuffer::VariableStateSingleBuffer(const std::string& name,
+                                                     MemoryPtr external_buffer,
+                                                     MemoryDescPtr external_desc)
+    : VariableStateBase(name, std::move(external_desc)),
+      m_internal_mem(std::move(external_buffer)),
+      m_internal_desc(m_internal_mem->getDescPtr()) {
+    OPENVINO_ASSERT(m_internal_mem);
+    auto&& shape = m_internal_desc->getShape();
 
+    if (shape.isStatic()) {
+        m_internal_mem->nullify();
+    } else {
+        // in the case of the original desc has dynamic shape we create an empty tensor
+        auto new_desc = to_static(m_internal_desc);
+        m_internal_mem->redefineDesc(new_desc);
+    }
+}
+MemoryPtr VariableStateSingleBuffer::input_mem() {
+    return m_internal_mem;
+}
+MemoryPtr VariableStateSingleBuffer::output_mem() {
+    return m_internal_mem;
+}
+MemoryDescPtr VariableStateSingleBuffer::internal_desc() const {
+    return m_internal_desc;
+}
+
+void VariableStateSingleBuffer::reset_impl() {
+    auto new_desc = to_static(m_internal_desc);
+    if (m_internal_mem) {
+        m_internal_mem->redefineDesc(new_desc);
+        m_internal_mem->nullify();
+    }
+}
+
+MemoryPtr VariableStateSingleBuffer::internal_state_mem() const {
+    return m_internal_mem;
+}
+
+void VariableStateSingleBuffer::commit_impl() {
+    // nothing to do
+}
+
+VariableStateKVcache::VariableStateKVcache(const std::string& name,
+                                           MemoryDescPtr external_desc,
+                                           BlockedMemoryDescPtr dense_internal_desc,
+                                           ov::Extensions::Cpu::CacheSpec spec)
+    : VariableStateBase(name, std::move(external_desc)),
+      m_dense_internal_desc(std::move(dense_internal_desc)),
+      m_spec(spec) {
+    auto&& shape = get_external_desc()->getShape();
     OPENVINO_ASSERT(shape.isDynamic(), "VariableStateKVcache is unexpectedly initalized with a static tensor");
 }
 
 ov::SoPtr<ov::ITensor> VariableStateKVcache::get_state() const {
+    OPENVINO_ASSERT(m_spec.alg != ov::internal::CacheQuantAlgorithm::TURBO,
+                    "get_state() is not supported for KV cache with TURBO quantization. "
+                    "TURBO stores packed bits and per-token norm in separate metadata; "
+                    "scalar dequant path cannot reconstruct the original tensor.");
     if (!m_internal_mem || !m_hidden_state || is_reset_state()) {
         auto new_desc = to_static(get_external_desc());
         auto external_mem = std::make_shared<Memory>(get_engine(), new_desc);
@@ -183,46 +260,58 @@ ov::SoPtr<ov::ITensor> VariableStateKVcache::get_state() const {
     OPENVINO_ASSERT(actual_external_desc->getShape().getRank() == 4);
 
     auto&& actual_internal_order = actual_internal_desc->getOrder();
-    //sanity check
+    // sanity check
     OPENVINO_ASSERT(actual_internal_order == m_dense_internal_desc->getOrder());
 
-    PlainTensor output, pastkv, beam_table;
+    PlainTensor output;
+    PlainTensor pastkv;
+    PlainTensor beam_table;
     output.reset(external_mem);
     beam_table.reset(m_hidden_state);
     pastkv.reset(m_internal_mem);
     output = output.permute(actual_internal_order);
     pastkv = pastkv.permute(actual_internal_order);
     // S should be always the last dimension
-    OPENVINO_ASSERT(pastkv.stride(3) == 1 && output.stride(3) == 1);
-    auto B = pastkv.size(0);
-    auto H = pastkv.size(1);
-    auto L0 = pastkv.size(2);
+    OPENVINO_ASSERT(all_of(1U, pastkv.stride(3), output.stride(3)));
+    auto L0 = pastkv.size(0);
+    auto B = pastkv.size(1);
+    auto H = pastkv.size(2);
     auto S = pastkv.size(3);
     if (pastkv.get_precision() == element::u8) {
         auto nthr = parallel_get_max_threads();
         std::vector<PlainTensor> buffers(nthr);
-        parallel_for3d(B, H, L0, [&](size_t ithr, size_t b, size_t h, size_t m) {
-            auto b_kv = static_cast<size_t>(beam_table.at<int32_t>({b, m}));
-            buffers[ithr].resize<float>({S});
-            attn_dequant_u8(pastkv.ptr<uint8_t>(b_kv, h, m),
-                            buffers[ithr].ptr<float>(),
-                            S,
-                            m_scale_zp.ptr<float>(b_kv, h, m)[0],
-                            m_scale_zp.ptr<float>(b_kv, h, m)[1]);
-            cpu_convert(buffers[ithr].ptr<float>(),
-                        output.ptr_v(b, h, m),
-                        element::f32,
-                        output.m_dt,
-                        S);
-        });
+        if (m_spec.by_channel) {
+            parallel_for3d(L0, B, H, [&](size_t ithr, size_t m, size_t b, size_t h) {
+                auto b_kv = static_cast<size_t>(beam_table.at<int32_t>({b, m}));
+                size_t group_id = m / m_spec.group_size;
+                buffers[ithr].resize<float>({S});
+                attn_dequant_by_channel_u8(pastkv.ptr<uint8_t>(m, b_kv, h),
+                                           buffers[ithr].ptr<float>(),
+                                           1,
+                                           S,
+                                           pastkv.m_strides[2],
+                                           S,
+                                           m_scale_zp.ptr<float>(group_id * 2, b_kv, h),
+                                           m_scale_zp.ptr<float>(group_id * 2 + 1, b_kv, h));
+                cpu_parallel_convert(buffers[ithr].ptr<float>(), output.ptr_v(m, b, h), element::f32, output.m_dt, S);
+            });
+        } else {
+            parallel_for3d(L0, B, H, [&](size_t ithr, size_t m, size_t b, size_t h) {
+                auto b_kv = static_cast<size_t>(beam_table.at<int32_t>({b, m}));
+                buffers[ithr].resize<float>({S});
+                for (size_t group_id = 0; group_id < S / m_spec.group_size; group_id++) {
+                    attn_dequant_u8(pastkv.ptr<uint8_t>(m, b_kv, h, group_id * m_spec.group_size),
+                                    buffers[ithr].ptr<float>() + group_id * m_spec.group_size,
+                                    m_spec.group_size,
+                                    m_scale_zp.ptr<float>(m, b_kv, h, group_id * 2));
+                }
+                cpu_parallel_convert(buffers[ithr].ptr<float>(), output.ptr_v(m, b, h), element::f32, output.m_dt, S);
+            });
+        }
     } else {
-        parallel_for3d(B, H, L0, [&](size_t b, size_t h, size_t m) {
+        parallel_for3d(L0, B, H, [&](size_t m, size_t b, size_t h) {
             auto b_kv = static_cast<size_t>(beam_table.at<int32_t>({b, m}));
-            cpu_convert(pastkv.ptr_v(b_kv, h, m),
-                        output.ptr_v(b, h, m),
-                        pastkv.m_dt,
-                        output.m_dt,
-                        S);
+            cpu_parallel_convert(pastkv.ptr_v(m, b_kv, h), output.ptr_v(m, b, h), pastkv.m_dt, output.m_dt, S);
         });
     }
 
@@ -230,60 +319,92 @@ ov::SoPtr<ov::ITensor> VariableStateKVcache::get_state() const {
 }
 
 void VariableStateKVcache::set_state_impl(const ov::SoPtr<ov::ITensor>& state) {
-    //1. reset the memory object
-    m_state = state; // simply to extend the lifetime
+    OPENVINO_ASSERT(m_spec.alg != ov::internal::CacheQuantAlgorithm::TURBO,
+                    "set_state() is not supported for KV cache with TURBO quantization. "
+                    "TURBO requires rotation+codebook encoding plus per-token norm metadata "
+                    "owned by the SDPA node; external state cannot be injected directly.");
+    // 1. reset the memory object
+    m_state = state;  // simply to extend the lifetime
     auto state_desc = MemoryDescUtils::generateCpuBlockedMemoryDesc(m_state);
 
-    //May be optimized by reusing the state tensor underlining memory pointer, but corner cases should be considered
+    // May be optimized by reusing the state tensor underlining memory pointer, but corner cases should be considered
     auto dense_internal_desc = m_dense_internal_desc->cloneWithNewDims(state_desc->getShape().getStaticDims());
 
     m_internal_mem = std::make_shared<Memory>(get_engine(), dense_internal_desc);
     Memory external_mem(get_engine(), state_desc, m_state->data());
 
-    if (dense_internal_desc->getPrecision() == element::u8) {
-        PlainTensor external, internal;
+    if (dense_internal_desc->getPrecision() == element::u8 || dense_internal_desc->getPrecision() == element::u4) {
+        PlainTensor external;
+        PlainTensor internal;
         auto&& actual_internal_order = m_dense_internal_desc->getOrder();
-        external.resize(external_mem.getStaticDims(), state_desc->getPrecision().size(), state_desc->getPrecision(), m_state->data());
+        external.resize(external_mem.getStaticDims(),
+                        state_desc->getPrecision().size(),
+                        state_desc->getPrecision(),
+                        m_state->data());
         internal.reset(m_internal_mem);
         external = external.permute(actual_internal_order);
         internal = internal.permute(actual_internal_order);
-        auto B = internal.size(0);
-        auto H = internal.size(1);
-        auto L0 = internal.size(2);
+        auto L0 = internal.size(0);
+        auto B = internal.size(1);
+        auto H = internal.size(2);
         auto S = internal.size(3);
         auto nthr = parallel_get_max_threads();
         std::vector<PlainTensor> buffers(nthr);
-        parallel_for3d(B, H, L0, [&](size_t ithr, size_t b, size_t h, size_t m) {
-            buffers[ithr].resize<float>({S});
-            cpu_convert(external.ptr_v(b, h, m),
-                        buffers[ithr].ptr<float>(),
-                        external.m_dt,
-                        element::f32,
-                        S);
-            attn_quant_u8(buffers[ithr].ptr<float>(),
-                          internal.ptr<uint8_t>(b, h, m),
-                          S,
-                          m_scale_zp.at<float>({b, h, m, size_t{0}}),
-                          m_scale_zp.at<float>({b, h, m, size_t{1}}));
-        });
+        if (m_spec.by_channel) {
+            size_t group_nums = div_up(L0, m_spec.group_size);
+            m_scale_zp.resize<float>({group_nums * 2, B, H, S});
+            parallel_for3d(group_nums, B, H, [&](size_t ithr, size_t group_id, size_t b, size_t h) {
+                size_t valid_seq = std::min(m_spec.group_size, L0 - group_id * m_spec.group_size);
+                buffers[ithr].resize<float>({valid_seq, S});
+                cpu_parallel_convert(external.ptr_v(valid_seq, b, h),
+                                     buffers[ithr].ptr<float>(),
+                                     external.m_dt,
+                                     element::f32,
+                                     valid_seq * S);
+                attn_quant_by_channel_u8(buffers[ithr].ptr<float>(),
+                                         internal.ptr<uint8_t>(group_id * m_spec.group_size, b, h),
+                                         valid_seq,
+                                         S,
+                                         S,
+                                         internal.m_strides[0],
+                                         m_scale_zp.ptr<float>(group_id * 2, b, h),
+                                         m_scale_zp.ptr<float>(group_id * 2 + 1, b, h));
+            });
+        } else {
+            m_scale_zp.resize<float>({L0, B, H, 2 * S / m_spec.group_size});
+            parallel_for3d(B, H, L0, [&](size_t ithr, size_t b, size_t h, size_t m) {
+                buffers[ithr].resize<float>({S});
+                cpu_parallel_convert(external.ptr_v(m, b, h),
+                                     buffers[ithr].ptr<float>(),
+                                     external.m_dt,
+                                     element::f32,
+                                     S);
+                for (size_t group_id = 0; group_id < S / m_spec.group_size; group_id++) {
+                    attn_quant_u8(buffers[ithr].ptr<float>() + group_id * m_spec.group_size,
+                                  internal.ptr<uint8_t>(m, b, h, group_id * m_spec.group_size),
+                                  m_spec.group_size,
+                                  m_scale_zp.at<float>({m, b, h, group_id * 2}),
+                                  m_scale_zp.at<float>({m, b, h, group_id * 2 + 1}));
+                }
+            });
+        }
     } else {
-        m_internal_mem->load(external_mem);
+        m_internal_mem->load(external_mem, true, false);
     }
 
-    //2. Reset the beam search table
+    // 2. Reset the beam search table
     auto&& state_dims = dense_internal_desc->getShape().getStaticDims();
     auto&& order = m_dense_internal_desc->getOrder();
 
-    const size_t size_B = state_dims[order.at(0)];
-    const size_t size_L = state_dims[order.at(2)];
-    auto mem_desc =
-        std::make_shared<CpuBlockedMemoryDesc>(ov::element::i32, Shape{size_B, size_L});
+    const size_t size_B = state_dims[order.at(1)];
+    const size_t size_L = state_dims[order.at(0)];
+    auto mem_desc = std::make_shared<CpuBlockedMemoryDesc>(ov::element::i32, Shape{size_B, size_L});
 
     m_hidden_state = std::make_shared<Memory>(get_engine(), mem_desc);
-    auto buff = m_hidden_state->getDataAs<int>();
+    auto* buff = m_hidden_state->getDataAs<int>();
     for (size_t i = 0; i < size_B; ++i) {
         for (size_t j = 0; j < size_L; ++j) {
-            buff[i * size_L + j] = i;
+            buff[i * size_L + j] = static_cast<int>(i);
         }
     }
     m_internal_mem_max_size = dense_internal_desc->getCurrentMemSize() / dense_internal_desc->getPrecision().size();
@@ -291,11 +412,11 @@ void VariableStateKVcache::set_state_impl(const ov::SoPtr<ov::ITensor>& state) {
 }
 
 void VariableStateKVcache::reset_impl() {
-    //nothing to do
+    // nothing to do
 }
 
 void VariableStateKVcache::commit_impl() {
-    //nothing to do
+    // nothing to do
 }
 
 MemoryPtr VariableStateKVcache::input_mem() {
@@ -307,7 +428,7 @@ MemoryPtr VariableStateKVcache::output_mem() {
 }
 
 MemoryDescPtr VariableStateKVcache::internal_desc() const {
-    return m_dense_internal_desc; //since we don't store initial one
+    return m_dense_internal_desc;  // since we don't store initial one
 }
 
 MemoryPtr VariableStateKVcache::internal_state_mem() const {
@@ -325,5 +446,105 @@ MemoryPtr VariableStateKVcache::hidden_state_mem() const {
 void VariableStateKVcache::assign_hidden_state(const MemoryPtr& mem) {
     m_hidden_state = mem;
 }
-}  // namespace intel_cpu
-}  // namespace ov
+
+namespace {
+bool is_quantized_bhls(const ov::Extensions::Cpu::CacheSpec& spec) {
+    return spec.precision == ov::element::u8 || spec.precision == ov::element::u4;
+}
+}  // namespace
+
+ov::SoPtr<ov::ITensor> VariableStateKVcacheBHLS::get_state() const {
+    auto mem = internal_state_mem();
+    if (!mem || is_reset_state()) {
+        auto new_desc = to_static(get_external_desc());
+        auto external_mem = std::make_shared<Memory>(get_engine(), new_desc);
+        return std::make_shared<Tensor>(external_mem);
+    }
+
+    auto&& dims = mem->getStaticDims();
+    OPENVINO_ASSERT(dims.size() == 4, "BHLS KV cache state is expected to be 4D");
+    auto actual_external_desc = get_external_desc()->cloneWithNewDims(dims);
+    auto external_mem = std::make_shared<Memory>(get_engine(), actual_external_desc);
+
+    PlainTensor src;
+    PlainTensor dst;
+    src.reset(mem);
+    dst.reset(external_mem);
+    const auto B = src.size(0);
+    const auto H = src.size(1);
+    const auto L = src.size(2);
+    const auto S = src.size(3);
+    // rows along L are contiguous in both the cache (capacity strides) and the dense external tensor
+    OPENVINO_ASSERT(all_of(1U, src.stride(3), dst.stride(3)) && dst.stride(2) == S);
+    if (is_quantized_bhls(get_spec())) {
+        // dequantize into f32 rows and convert them to the external precision
+        auto& scale_zp = const_cast<VariableStateKVcacheBHLS*>(this)->get_scale_zp();
+        const ov::Extensions::Cpu::SparseKVQuant quant{get_spec().precision,
+                                                       get_spec().group_size,
+                                                       get_spec().by_channel,
+                                                       &scale_zp};
+        parallel_for2d(B, H, [&](size_t b, size_t h) {
+            std::vector<float> rows(L * S);
+            ov::Extensions::Cpu::XARCH::sparse_kv_dequantize_rows(src, quant, b, h, L, S, rows.data());
+            cpu_convert(rows.data(), dst.ptr_v(b, h, 0), ov::element::f32, dst.m_dt, L * S);
+        });
+        return std::make_shared<Tensor>(external_mem);
+    }
+    OPENVINO_ASSERT(src.stride(2) == S);
+    parallel_for2d(B, H, [&](size_t b, size_t h) {
+        cpu_convert(src.ptr_v(b, h, 0), dst.ptr_v(b, h, 0), src.m_dt, dst.m_dt, L * S);
+    });
+    return std::make_shared<Tensor>(external_mem);
+}
+
+void VariableStateKVcacheBHLS::set_state_impl(const ov::SoPtr<ov::ITensor>& state) {
+    m_state = state;  // simply to extend the lifetime
+    auto state_desc = MemoryDescUtils::generateCpuBlockedMemoryDesc(m_state);
+
+    auto dense_internal_desc = internal_desc()->cloneWithNewDims(state_desc->getShape().getStaticDims());
+    auto internal_mem = std::make_shared<Memory>(get_engine(), dense_internal_desc);
+    Memory external_mem(get_engine(), state_desc, m_state->data());
+    if (is_quantized_bhls(get_spec())) {
+        static const auto cpu_parallel = std::make_shared<CpuParallel>(ov::intel_cpu::TbbPartitioner::STATIC);
+        auto&& dims = state_desc->getShape().getStaticDims();
+        OPENVINO_ASSERT(dims.size() == 4, "BHLS KV cache state is expected to be 4D");
+        PlainTensor external;
+        PlainTensor internal;
+        external.resize(dims, state_desc->getPrecision().size(), state_desc->getPrecision(), m_state->data());
+        internal.reset(internal_mem);
+        PlainTensor scale_zp;
+        const auto group_size = get_spec().group_size;
+        if (get_spec().by_channel) {
+            // [2 * groups of tokens, B, H, S]
+            scale_zp.resize<float>({2 * ((dims[2] + group_size - 1) / group_size), dims[0], dims[1], dims[3]});
+            if (dims[2] > 0) {
+                ov::Extensions::Cpu::XARCH::attn_quant_by_channel(external,
+                                                                  internal,
+                                                                  scale_zp,
+                                                                  0,
+                                                                  group_size,
+                                                                  cpu_parallel);
+            }
+        } else {
+            // [L, B, H, 2 * groups of the row]
+            scale_zp.resize<float>({dims[2], dims[0], dims[1], 2 * dims[3] / group_size});
+            if (dims[2] > 0) {
+                ov::Extensions::Cpu::XARCH::attn_quant_by_token(external,
+                                                                internal,
+                                                                scale_zp,
+                                                                0,
+                                                                group_size,
+                                                                cpu_parallel);
+            }
+        }
+        set_scale_zp(scale_zp);
+    } else {
+        internal_mem->load(external_mem, true, false);
+    }
+
+    assign_internal_state(internal_mem);
+    assign_internal_state_max_size(dense_internal_desc->getCurrentMemSize() /
+                                   dense_internal_desc->getPrecision().size());
+}
+
+}  // namespace ov::intel_cpu

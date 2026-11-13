@@ -1,23 +1,32 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "intel_gpu/runtime/internal_properties.hpp"
+#include "openvino/core/rt_info/weightless_caching_attributes.hpp"
+#include "openvino/core/weights_prefetch.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/split.hpp"
 #include "openvino/op/variadic_split.hpp"
 #include "openvino/op/lstm_cell.hpp"
+#include "openvino/op/lstm_sequence.hpp"
 #include "openvino/op/loop.hpp"
+#include "openvino/runtime/properties.hpp"
 
+#include "intel_gpu/plugin/common_utils.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
+#include "intel_gpu/primitives/data.hpp"
 #include "intel_gpu/runtime/itt.hpp"
 #include "intel_gpu/runtime/debug_configuration.hpp"
 #include "intel_gpu/primitives/mutable_data.hpp"
 #include "intel_gpu/primitives/data.hpp"
 #include "intel_gpu/op/fully_connected_compressed.hpp"
 #include "intel_gpu/op/placeholder.hpp"
+#include "openvino/util/pp.hpp"
+#include "transformations/symbolic_transformations/symbolic_optimizations.hpp"
 
-#ifdef __linux__
-# include <dlfcn.h>
+#if defined(__linux__) || defined(__APPLE__)
+#    include <dlfcn.h>
 #endif
 
 #if defined(__unix__) && !defined(__ANDROID__)
@@ -25,8 +34,7 @@
 #endif
 
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 const cldnn::primitive_id ProgramBuilder::m_preProcessTag("_cldnn_input_preprocess");
 const cldnn::primitive_id ProgramBuilder::m_preCustomLayerTag("_cldnn_custom_preprocess");
@@ -53,11 +61,16 @@ std::string layer_type_name_ID(const std::shared_ptr<ov::Node>& op) {
     return layer_type_name_ID(op.get());
 }
 
+
+ProgramBuilder::ProgramBuilder(std::shared_ptr<ov::Model> model, cldnn::engine& engine, const ExecutionConfig& config, ov::internal::WeightSharingCtxPtr weight_sharing_ctx) :
+    ProgramBuilder(model, engine, config, nullptr, nullptr, false, weight_sharing_ctx) {
+}
+
 ProgramBuilder::ProgramBuilder(std::shared_ptr<ov::Model> model, cldnn::engine& engine, const ExecutionConfig& config,
-                               bool partial_build,
                                std::shared_ptr<ov::threading::IStreamsExecutor> task_executor,
                                std::shared_ptr<cldnn::ICompilationContext> compilation_context,
-                               bool is_inner_program)
+                               bool is_inner_program,
+                               ov::internal::WeightSharingCtxPtr weight_sharing_ctx)
     : m_model(model)
     , m_config(config)
     , m_engine(engine)
@@ -65,8 +78,15 @@ ProgramBuilder::ProgramBuilder(std::shared_ptr<ov::Model> model, cldnn::engine& 
     , m_task_executor(task_executor)
     , m_compilation_context(compilation_context)
     , m_is_inner_program(is_inner_program) {
-    if (m_task_executor == nullptr)
+    // Remember weight sharing context for the program builder, so that it can be used to share weights across multiple compiled models
+    m_weight_sharing_ctx = weight_sharing_ctx;
+
+    // Constant GPU uploads use the engine before cldnn::program ctor syncs config to the engine.
+    m_engine.set_enable_large_allocations(m_config.get_enable_large_allocations());
+
+    if (m_task_executor == nullptr) {
         m_task_executor = cldnn::program::make_task_executor(m_config);
+    }
 
     if (m_compilation_context == nullptr) {
         m_compilation_context = cldnn::program::make_compilation_context(m_config);
@@ -80,7 +100,7 @@ ProgramBuilder::ProgramBuilder(std::shared_ptr<ov::Model> model, cldnn::engine& 
         (LPCSTR)CustomLayer::LoadFromFile,
         &nModule);
     GetModuleFileName(nModule, mpath, sizeof(mpath));
-#elif __linux__
+#elif defined(__linux__) || defined(__APPLE__)
     Dl_info dl_info;
     dladdr(reinterpret_cast<void *>(CustomLayer::LoadFromFile), &dl_info);
     const char* mpath = dl_info.dli_fname;
@@ -98,12 +118,16 @@ ProgramBuilder::ProgramBuilder(std::shared_ptr<ov::Model> model, cldnn::engine& 
     config_path += "/cldnn_global_custom_kernels/cldnn_global_custom_kernels.xml";
 
     CustomLayer::LoadFromFile(config_path, m_custom_layers, true);
-    auto custom_layers_config = m_config.get_property(ov::intel_gpu::config_file);
+    auto custom_layers_config = m_config.get_config_file();
     CustomLayer::LoadFromFile(custom_layers_config, m_custom_layers, custom_layers_config.empty());
+
+    // Run symbolic shape propagation because GPU plugin relies on this information. (currently, for binary_mul_inplace)
+    ov::pass::SymbolicPropagation().run_on_model(model);
 
     auto ops = model->get_ordered_ops();
 
-    m_program = build(ops, partial_build, is_inner_program);
+    GPU_DEBUG_LOG << "Build model name: " << m_model->get_name() << " friendly name: " << m_model->get_friendly_name() << std::endl;
+    m_program = build(ops, is_inner_program);
 }
 
 ProgramBuilder::ProgramBuilder(cldnn::engine& engine, const ExecutionConfig& config)
@@ -123,40 +147,34 @@ void ProgramBuilder::prepare_build() {
 
 void ProgramBuilder::cleanup_build() {
     m_topology.reset();
-    #if defined(__unix__) && !defined(__ANDROID__)
+#if defined(OPENVINO_GNU_LIBC) && !defined(__ANDROID__)
     //  NOTE: In linux, without malloc_trim, an amount of the memory used by compilation is not being returned to system thought they are freed.
     //  (It is at least 500 MB when we perform parallel compilation)
     //  It is observed that freeing the memory manually with malloc_trim saves significant amount of the memory.
     //  Also, this is not happening in Windows.
     //  So, added malloc_trim for linux build until we figure out a better solution.
     malloc_trim(0);
-    #endif
+#endif
 }
 
-std::shared_ptr<cldnn::program> ProgramBuilder::build(const std::vector<std::shared_ptr<ov::Node>>& ops, bool partial_build, bool is_inner_program) {
+std::shared_ptr<cldnn::program> ProgramBuilder::build(const std::vector<std::shared_ptr<ov::Node>>& ops, bool is_inner_program) {
     OV_ITT_SCOPED_TASK(itt::domains::intel_gpu_plugin, "ProgramBuilder::build");
-    // In the case of inner program, allow_new_shape_infer flag is setted by outside of program.
-    // So, do not check allow_new_shape_infer for inner program build
-    for (const auto& op : ops) {
-        if (requires_new_shape_infer(op)) {
-            allow_new_shape_infer = true;
-            break;
-        }
-    }
-
-    if (is_inner_program) {
-        allow_new_shape_infer = (m_config.get_property(ov::intel_gpu::allow_new_shape_infer) || allow_new_shape_infer);
-    }
-
-    m_config.set_property(ov::intel_gpu::partial_build_program(partial_build));
-    m_config.set_property(ov::intel_gpu::optimize_data(true));
-    m_config.set_property(ov::intel_gpu::allow_new_shape_infer(allow_new_shape_infer));
 
     prepare_build();
     {
         GPU_DEBUG_DEFINE_MEM_LOGGER("CreateSingleLayerPrimitives");
+        const std::vector<std::shared_ptr<ov::Node>> no_ops;
+#ifdef _WIN32
+        // TODO: CVS-198510 enable on Windows once prefetch shows a compile-time gain there.
+        const bool use_prefetch = false;
+#else
+        const bool use_prefetch = m_config.get_offload_ratio() == 0;
+#endif
+        ov::util::OrderedPrefetchScheduler weights_prefetch(use_prefetch ? ops : no_ops);
         for (const auto& op : ops) {
+            weights_prefetch.acquire(*op);
             CreateSingleLayerPrimitive(op);
+            weights_prefetch.release(*op);
         }
     }
 
@@ -193,7 +211,10 @@ bool ProgramBuilder::is_op_supported(const std::shared_ptr<ov::Node>& op) {
         // 2. We also check parameters of each operation, which means we have more
         //    reliable results of QueryNetwork call.
         prepare_build();
-        allow_new_shape_infer = requires_new_shape_infer(op);
+        if (!data_types_are_supported(op.get())) {
+            return false;
+        }
+
         CreateSingleLayerPrimitive(op);
         cleanup_build();
         DisableQueryMode();
@@ -245,15 +266,21 @@ std::vector<cldnn::input_info> ProgramBuilder::GetInputInfo(const std::shared_pt
     // So the output index of the dependency is not processed
     std::vector<cldnn::input_info> inputInfo;
     for (size_t i = 0; i < op->get_input_size(); i++) {
-        auto prevOp = op->get_input_node_ptr(i);
+        auto* prevOp = op->get_input_node_ptr(i);
         std::string prevName = layer_type_name_ID(prevOp);
         // Note: Currently Split/Variadic Split are divided to multiple crops
         // LSTMCell contains its own body network, and each output has a unique pid
         // But there is no need to maintain output port index for the next node e.g. Result
-        bool is_legacy_multiple_outputs = !allow_new_shape_infer
+        bool is_legacy_multiple_outputs = !use_new_shape_infer()
                                           || ov::is_type<ov::op::v1::Split>(prevOp)
                                           || ov::is_type<ov::op::v1::VariadicSplit>(prevOp)
                                           || ov::is_type<ov::op::v4::LSTMCell>(prevOp);
+
+        // Custom op need to maintain output port index for multiple outputs.
+        if (m_custom_layers.find(prevOp->get_type_name()) != m_custom_layers.end()) {
+            is_legacy_multiple_outputs = false;
+        }
+
         if (prevOp->get_output_size() > 1 && is_legacy_multiple_outputs) {
             prevName += ".out" + std::to_string(op->get_input_source_output(i).get_index());
         }
@@ -290,6 +317,23 @@ void ProgramBuilder::add_primitive(const ov::Node& op, std::shared_ptr<cldnn::pr
 
     prim->origin_op_name = op.get_friendly_name();
     prim->origin_op_type_name = op.get_type_name();
+    prim->is_shape_of_subgraph_root = op.get_rt_info().count("gpu_shape_of_subgraph_root") != 0;
+
+    if (this->m_config.get_enable_weightless()) {
+        if (auto* data_prim = dynamic_cast<cldnn::data*>(prim.get())) {
+            auto rt_info = op.get_rt_info();
+
+            auto weightless_cache_attr = rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static());
+            if (weightless_cache_attr != rt_info.end()) {
+                auto& attr = weightless_cache_attr->second.as<ov::WeightlessCacheAttribute>();
+                data_prim->cache_info->set_constant_info(attr.bin_offset,
+                                                         attr.original_size,
+                                                         attr.original_dtype,
+                                                         op.get_output_element_type(0),
+                                                         op.get_output_shape(0));
+            }
+        }
+    }
 
     bool should_profile = prim->type != cldnn::mutable_data::type_id() &&
                           prim->type != cldnn::data::type_id();
@@ -302,11 +346,12 @@ void ProgramBuilder::add_primitive(const ov::Node& op, std::shared_ptr<cldnn::pr
     if (id != prim_id) {
         primitive_ids[prim_id] = prim_id;
 
-        if (!multi_output_case)
+        if (!multi_output_case) {
             prim->origin_op_type_name = prim->type_string();
+        }
     }
 
-    if (this->m_config.get_property(ov::enable_profiling) && should_profile) {
+    if (this->m_config.get_enable_profiling() && should_profile) {
         profiling_ids.push_back(prim_id);
         init_profile_info(*prim);
     }
@@ -316,40 +361,6 @@ void ProgramBuilder::add_primitive(const ov::Node& op, std::shared_ptr<cldnn::pr
     }
 
     m_topology->add_primitive(prim);
-}
-
-bool ProgramBuilder::requires_new_shape_infer(const std::shared_ptr<ov::Node>& op) const {
-    if (op->is_dynamic()) {
-        return true;
-    }
-
-    if (ov::is_type<ov::op::v5::Loop>(op)) {
-        const auto body_function = std::static_pointer_cast<ov::op::v5::Loop>(op)->get_function();
-        if (body_function->is_dynamic())
-            return true;
-    }
-    // When input node has dynamic shape with 4 dimension, this function return false
-    // because op.is_dynamic() which only checks input shapes return false.
-    // So, in the case of input data, we need to check output shape.
-    for (size_t i = 0; i < op->get_output_size(); i++) {
-        if (op->get_output_partial_shape(i).is_dynamic())
-            return true;
-    }
-
-    if (ov::is_type<op::FullyConnectedCompressed>(op))
-        return true;
-
-    for (size_t i = 0; i < op->get_output_size(); i++) {
-        if (op->get_output_partial_shape(i).size() > 6)
-            return true;
-    }
-
-    for (size_t i = 0; i < op->get_input_size(); i++) {
-        if (op->get_input_partial_shape(i).size() > 6)
-            return true;
-    }
-
-    return false;
 }
 
 int64_t ProgramBuilder::get_parameter_index(const std::shared_ptr<ov::op::v0::Parameter>& parameter) const {
@@ -364,6 +375,10 @@ int64_t ProgramBuilder::get_result_index(const ov::Output<const ov::Node>& value
     return m_model->get_result_index(value);
 }
 
+void ProgramBuilder::register_weight_sharing_source_buffer(std::shared_ptr<ov::AlignedBuffer> source) {
+    m_weight_sharing_source_buffers.insert(source);
+}
+
 void validate_inputs_count(const std::shared_ptr<ov::Node>& op, std::vector<size_t> valid_inputs_count) {
     for (auto ic : valid_inputs_count) {
         if (op->get_input_size() == ic) {
@@ -371,10 +386,9 @@ void validate_inputs_count(const std::shared_ptr<ov::Node>& op, std::vector<size
         }
     }
 
-    OPENVINO_THROW("Invalid inputs count (", op->get_input_size(), ") in )",
+    OPENVINO_THROW("Invalid inputs count (", op->get_input_size(), ") in ",
                    op->get_friendly_name(), " (", op->get_type_name(),
                    " ", op->get_type_info().version_id, ")");
 }
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

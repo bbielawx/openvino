@@ -1,21 +1,30 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "dnnl_memory_desc.h"
-#include "blocked_memory_desc.h"
-#include "openvino/util/util.hpp"
-#include "cpu_memory.h"
+#include <oneapi/dnnl/dnnl_types.h>
+
+#include <cstddef>
+#include <memory>
+#include <oneapi/dnnl/dnnl.hpp>
+#include <string>
+
+#include "cpu_types.h"
 #include "dnnl_extension_utils.h"
-#include <common/memory_desc_wrapper.hpp>
+#include "dnnl_memory_desc.h"
+#include "memory_desc/blocked_memory_desc.h"
+#include "memory_desc/cpu_memory_desc.h"
+#include "openvino/core/type/element_type.hpp"
+#include "openvino/util/util.hpp"
 
-namespace ov {
-namespace intel_cpu {
+namespace ov::intel_cpu {
 
-OPENVINO_DISABLE_WARNING_MSVC_BEGIN(4250)  // Visual Studio warns us about inheritance via dominance but it's done intentionally
-                                           // so turn it off
+class CpuBlockedMemoryDesc;
+
+OPENVINO_DISABLE_WARNING_MSVC_BEGIN(4250)  // Visual Studio warns us about inheritance via dominance but it's done
+                                           // intentionally so turn it off
 class DnnlBlockedMemoryDesc : public BlockedMemoryDesc, public DnnlMemoryDesc {
 public:
     // Creates planar DnnlBlockedMemoryDesc
@@ -29,8 +38,8 @@ public:
 
     bool isCompatible(const MemoryDesc& rhs) const override;
     bool isCompatible(const BlockedMemoryDesc& rhs, CmpMask cmpMask) const override;
-    bool isCompatible(const CpuBlockedMemoryDesc &rhs, CmpMask cmpMask = FULL_MASK) const;
-    bool isCompatible(const DnnlBlockedMemoryDesc &rhs, CmpMask cmpMask = FULL_MASK) const;
+    bool isCompatible(const CpuBlockedMemoryDesc& rhs, CmpMask cmpMask = FULL_MASK) const;
+    bool isCompatible(const DnnlBlockedMemoryDesc& rhs, CmpMask cmpMask = FULL_MASK) const;
 
     const VectorDims& getBlockDims() const override {
         return blockedDims;
@@ -60,19 +69,24 @@ public:
 
     size_t getPaddedElementsCount() const override;
 
-    MemoryDescPtr cloneWithNewPrecision(const ov::element::Type prec) const override;
+    MemoryDescPtr cloneWithNewPrecision(ov::element::Type prec) const override;
 
-    using DnnlMemoryDesc::setPrecision;
     using DnnlMemoryDesc::getPrecision;
+    using DnnlMemoryDesc::setPrecision;
 
 private:
-    DnnlBlockedMemoryDesc(ov::element::Type prc, const Shape& shape, const VectorDims& blockedDims,
-                          const VectorDims& order, size_t offsetPadding = 0, const VectorDims& offsetPaddingToData = {},
+    DnnlBlockedMemoryDesc(ov::element::Type prc,
+                          const Shape& shape,
+                          const VectorDims& blockedDims,
+                          const VectorDims& order,
+                          size_t offsetPadding = 0,
+                          const VectorDims& offsetPaddingToData = {},
                           const VectorDims& strides = {});
 
-    // Creates DnnlBlockedMemoryDesc using the shape parameter as a true shape but all other params (layout, blocks, etc.) are used from the mdesc, but
-    // the mdesc own shape is ignored. The main purpose of this constructor is making dynamic descriptor from some dummy mdesc, which stores info about
-    // layout, blocking, strides, etc., and the provided dynamic shape.
+    // Creates DnnlBlockedMemoryDesc using the shape parameter as a true shape but all other params (layout, blocks,
+    // etc.) are used from the mdesc, but the mdesc own shape is ignored. The main purpose of this constructor is making
+    // dynamic descriptor from some dummy mdesc, which stores info about layout, blocking, strides, etc., and the
+    // provided dynamic shape.
     DnnlBlockedMemoryDesc(const dnnl::memory::desc& mdesc, const Shape& shape);
 
     explicit DnnlBlockedMemoryDesc(const_dnnl_memory_desc_t cdesc);
@@ -83,7 +97,8 @@ private:
     bool isBlockedCFormat(size_t blk_size = UNREACHABLE_DIM) const;
     bool isTailCFormat() const;
 
-    // WA: we need to initialize blocked params into ctor to avoid bugs when we calculate these params in throughput mode
+    // WA: we need to initialize blocked params into ctor to avoid bugs when we calculate these params in throughput
+    // mode
     // TODO [DS]: should be reimplemented to avoid useless calculation
     void initBlockedParams() {
         initBlockDims();
@@ -98,7 +113,8 @@ private:
     void recomputeDefaultStrides();
 
     friend DnnlMemoryDescPtr DnnlExtensionUtils::makeDescriptor(const_dnnl_memory_desc_t desc);
-    friend std::shared_ptr<DnnlBlockedMemoryDesc> DnnlExtensionUtils::makeUndefinedDesc(const dnnl::memory::desc &desc, const Shape& shape);
+    friend std::shared_ptr<DnnlBlockedMemoryDesc> DnnlExtensionUtils::makeUndefinedDesc(const dnnl::memory::desc& desc,
+                                                                                        const Shape& shape);
     friend class MemoryDescUtils;
 };
 OPENVINO_DISABLE_WARNING_MSVC_END(4250)
@@ -106,5 +122,4 @@ OPENVINO_DISABLE_WARNING_MSVC_END(4250)
 using DnnlBlockedMemoryDescPtr = std::shared_ptr<DnnlBlockedMemoryDesc>;
 using DnnlBlockedMemoryDescCPtr = std::shared_ptr<const DnnlBlockedMemoryDesc>;
 
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu

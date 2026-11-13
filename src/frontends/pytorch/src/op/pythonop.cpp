@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,13 +6,15 @@
 #include "pt_framework_node.hpp"
 #include "translate_session.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 OutputVector translate_pythonop(const NodeContext& context) {
     auto decoder = context.get_decoder();
+    if (decoder->has_converter()) {
+        // If the node has a custom converter, use it
+        // A custom converter is defined for in-model definition of a custom operation.
+        return decoder->convert(&context);
+    }
     PYTORCH_OP_CONVERSION_CHECK(decoder->get_subgraph_size() == 1,
                                 "PythonOp must have 1 subgraph to be able to translate it to OV.");
     auto body = context.convert_subgraph(0);
@@ -39,7 +41,4 @@ OutputVector translate_pythonop(const NodeContext& context) {
     return outputs;
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

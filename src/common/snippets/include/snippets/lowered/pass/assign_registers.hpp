@@ -1,16 +1,19 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "pass.hpp"
-#include "snippets/generator.hpp"
+#include <map>
+#include <set>
 
-namespace ov {
-namespace snippets {
-namespace lowered {
-namespace pass {
+#include "openvino/core/rtti.hpp"
+#include "pass.hpp"
+#include "snippets/emitter.hpp"
+#include "snippets/lowered/linear_ir.hpp"
+#include "snippets/lowered/reg_manager.hpp"
+
+namespace ov::snippets::lowered::pass {
 
 /**
  * @interface AssignRegisters
@@ -20,18 +23,15 @@ namespace pass {
  */
 class AssignRegisters : public Pass {
 public:
-    OPENVINO_RTTI("AssignRegisters", "Pass")
-    explicit AssignRegisters(const std::function<RegType(const ov::Output<Node>& out)>& mapper) : m_reg_type_mapper(mapper) {}
+    OPENVINO_RTTI("AssignRegisters", "0", Pass)
+    explicit AssignRegisters(RegManager& reg_manager) : m_reg_manager(reg_manager) {}
     bool run(LinearIR& linear_ir) override;
 
 private:
-    void set_reg_types(LinearIR& linear_ir);
+    using RegMap = std::map<Reg, Reg>;
+    static RegMap assign_regs_manually(const LinearIR& linear_ir, std::set<Reg>& gpr_pool, std::set<Reg>& vec_pool);
 
-    std::function<RegType(const ov::Output<Node>& out)> m_reg_type_mapper;
-    static constexpr size_t reg_count = 16lu;
+    RegManager& m_reg_manager;
 };
 
-} // namespace pass
-} // namespace lowered
-} // namespace snippets
-} // namespace ov
+}  // namespace ov::snippets::lowered::pass

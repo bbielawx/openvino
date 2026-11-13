@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -17,6 +17,8 @@ struct layout_test_params {
     std::vector<tensor::value_type> size;
     std::vector<tensor::value_type> expected_aligned_size;
     std::vector<size_t> expected_order;
+    padding padd;
+    std::vector<tensor::value_type> expected_pitches;
 };
 
 class data_layout_test : public testing::TestWithParam<layout_test_params> { };
@@ -33,11 +35,11 @@ TEST_P(data_layout_test, size_check) {
 
     ASSERT_FALSE(format::is_weights_format(p.fmt));
 
-    auto l = layout(p.dt, p.fmt, tensor{default_fmt, p.size});
+    auto l = layout(p.dt, p.fmt, tensor{default_fmt, p.size}, p.padd);
 
-    size_t expected_count = std::accumulate(p.size.begin(), p.size.end(), 1, std::multiplies<int>());
-    size_t expected_bytes_count = std::accumulate(p.expected_aligned_size.begin(), p.expected_aligned_size.end(), 1, std::multiplies<int>()) *
-                                  data_type_traits::size_of(p.dt);
+    size_t expected_count = std::accumulate(p.size.begin(), p.size.end(), static_cast<size_t>(1), std::multiplies<ov::Dimension::value_type>());
+    size_t expected_bytes_count = std::accumulate(p.expected_aligned_size.begin(), p.expected_aligned_size.end(), static_cast<size_t>(1),
+                                                  std::multiplies<ov::Dimension::value_type>()) * data_type_traits::size_of(p.dt);
 
     ASSERT_EQ(l.bytes_count(), expected_bytes_count);
     ASSERT_EQ(l.count(), expected_count);
@@ -77,23 +79,32 @@ TEST_P(data_layout_test, size_check) {
         ASSERT_EQ(ordered_dims[i], dims[p.expected_order[i]]);
         ASSERT_EQ(ordered_dims[i], p.size[p.expected_order[i]]);
     }
+
+    ASSERT_EQ(l.get_pitches(), p.expected_pitches);
 }
 
 INSTANTIATE_TEST_SUITE_P(smoke, data_layout_test,
     testing::ValuesIn(std::vector<layout_test_params>{
-        {data_types::f32, format::bfyx, {2, 33, 3, 5}, {2, 33, 3, 5}, {0, 1, 2, 3}},
-        {data_types::f16, format::bfzyx, {2, 33, 3, 5, 4}, {2, 33, 3, 5, 4}, {0, 1, 2, 3, 4}},
-        {data_types::i8, format::bfwzyx, {2, 33, 3, 5, 4, 6}, {2, 33, 3, 5, 4, 6}, {0, 1, 2, 3, 4, 5}},
-        {data_types::u8, format::yxfb, {2, 33, 3, 5}, {2, 33, 3, 5}, {2, 3, 1, 0}},
-        {data_types::f32, format::byxf, {2, 33, 3, 5}, {2, 33, 3, 5}, {0, 2, 3, 1}},
-        {data_types::f32, format::fyxb, {2, 33, 3, 5}, {2, 33, 3, 5}, {1, 2, 3, 0}},
-        {data_types::f32, format::b_fs_yx_fsv16, {2, 33, 3, 5}, {2, 48, 3, 5}, {0, 1, 2, 3}},
-        {data_types::f32, format::b_fs_yx_fsv32, {2, 33, 3, 5}, {2, 64, 3, 5}, {0, 1, 2, 3}},
-        {data_types::f32, format::b_fs_zyx_fsv16, {2, 33, 3, 5, 6}, {2, 48, 3, 5, 6}, {0, 1, 2, 3, 4}},
-        {data_types::f32, format::b_fs_zyx_fsv32, {2, 33, 3, 5, 6}, {2, 64, 3, 5, 6}, {0, 1, 2, 3, 4}},
-        {data_types::f32, format::bs_fs_zyx_bsv16_fsv16, {2, 33, 3, 5, 6}, {16, 48, 3, 5, 6}, {0, 1, 2, 3, 4}},
-        {data_types::f32, format::bs_fs_yx_bsv16_fsv16, {2, 33, 3, 5}, {16, 48, 3, 5}, {0, 1, 2, 3}},
-        {data_types::f32, format::bs_fs_yx_bsv4_fsv4, {2, 33, 3, 5}, {4, 36, 3, 5}, {0, 1, 2, 3}},
+        {data_types::f32, format::bfyx, {1, 15, 5, 5}, {1, 17, 11, 9}, {0, 1, 2, 3}, padding{{0, 1, 3, 2}, 0}/*padding in shape order*/, {1683, 99, 9, 1} /*expected pitches in shape order*/},
+        {data_types::f32, format::bfyx, {1, 15, 5, 5}, {1, 15, 5, 5}, {0, 1, 2, 3}, {}, {375, 25, 5, 1}},
+        {data_types::f32, format::byxf, {1, 15, 5, 5}, {1, 17, 11, 9}, {0, 2, 3, 1}, padding{{0, 1, 3, 2}, 0}/*padding in shape order*/, {1683, 1, 153, 17} /*expected pitches in shape order*/},
+        {data_types::f32, format::byxf, {1, 15, 5, 5}, {1, 15, 5, 5}, {0, 2, 3, 1}, {}, {375, 1, 75, 15}},
+        {data_types::f32, format::bfyx, {2, 33, 3, 5}, {2, 33, 3, 5}, {0, 1, 2, 3}, {}, {495, 15, 5, 1}},
+        {data_types::f16, format::bfzyx, {2, 33, 3, 5, 4}, {2, 33, 3, 5, 4}, {0, 1, 2, 3, 4}, {}, {1980, 60, 20, 4, 1}},
+        {data_types::i8, format::bfwzyx, {2, 33, 3, 5, 4, 6}, {2, 33, 3, 5, 4, 6}, {0, 1, 2, 3, 4, 5}, {}, {11880, 360, 120, 24, 6, 1}},
+        {data_types::u8, format::yxfb, {2, 33, 3, 5}, {2, 33, 3, 5}, {2, 3, 1, 0}, {}, {1, 2, 330, 66}},
+        {data_types::f32, format::byxf, {2, 33, 3, 5}, {2, 33, 3, 5}, {0, 2, 3, 1}, {}, {495, 1, 165, 33}},
+        {data_types::f32, format::fyxb, {2, 33, 3, 5}, {2, 33, 3, 5}, {1, 2, 3, 0}, {}, {1, 30, 10, 2}},
+        {data_types::f32, format::b_fs_yx_fsv16, {2, 33, 3, 5}, {2, 48, 3, 5}, {0, 1, 2, 3}, {}, {495, 15, 5, 1}},
+        {data_types::f32, format::b_fs_yx_fsv32, {2, 33, 3, 5}, {2, 64, 3, 5}, {0, 1, 2, 3}, {}, {495, 15, 5, 1}},
+        {data_types::f32, format::b_fs_zyx_fsv16, {2, 33, 3, 5, 6}, {2, 48, 3, 5, 6}, {0, 1, 2, 3, 4}, {}, {2970, 90, 30, 6, 1}},
+        {data_types::f32, format::b_fs_zyx_fsv32, {2, 33, 3, 5, 6}, {2, 64, 3, 5, 6}, {0, 1, 2, 3, 4}, {}, {2970, 90, 30, 6, 1}},
+        {data_types::f32, format::bs_fs_zyx_bsv16_fsv16, {2, 33, 3, 5, 6}, {16, 48, 3, 5, 6}, {0, 1, 2, 3, 4}, {}, {2970, 90, 30, 6, 1}},
+        {data_types::f32, format::bs_fs_yx_bsv16_fsv16, {2, 33, 3, 5}, {16, 48, 3, 5}, {0, 1, 2, 3}, {}, {495, 15, 5, 1}},
+        {data_types::f32, format::bs_fs_yx_bsv4_fsv4, {2, 33, 3, 5}, {4, 36, 3, 5}, {0, 1, 2, 3}, {}, {495, 15, 5, 1}},
+        {data_types::f32, format::bfzyx, {3, 2, 2, 2, 2}, {3, 2, 2, 2, 2}, {0, 1, 2, 3, 4}, {}, {16, 8, 4, 2, 1}},
+        {data_types::f32, format::bzyxf, {3, 2, 2, 2, 2}, {3, 2, 2, 2, 2}, {0, 2, 3, 4, 1}, {}, {16, 1, 8, 4, 2}},
+        {data_types::u8, format::bfyx, {2150615040, 1, 1, 1}, {2150615040, 1, 1, 1}, {0, 1, 2, 3}, {}, {1, 1, 1, 1}},
     }));
 
 class weights_layout_test : public testing::TestWithParam<layout_test_params> { };
@@ -116,7 +127,7 @@ TEST_P(weights_layout_test, size_check) {
         }
     }
 
-    auto l = layout(p.dt, p.fmt, tensor{default_fmt, p.size});
+    auto l = layout(p.dt, p.fmt, tensor{default_fmt, p.size}, p.padd);
 
     size_t expected_count = std::accumulate(p.size.begin(), p.size.end(), 1, std::multiplies<tensor::value_type>());
     size_t expected_bytes_count = std::accumulate(p.expected_aligned_size.begin(),
@@ -170,16 +181,22 @@ TEST_P(weights_layout_test, size_check) {
         ASSERT_EQ(ordered_dims[i], dims[p.expected_order[i]]);
         ASSERT_EQ(ordered_dims[i], p.size[p.expected_order[i]]);
     }
+
+    if (!p.expected_pitches.empty())
+        ASSERT_EQ(l.get_pitches(), p.expected_pitches);
+    else {
+        l.get_pitches();
+    }
 }
 
 INSTANTIATE_TEST_SUITE_P(smoke, weights_layout_test,
     testing::ValuesIn(std::vector<layout_test_params>{
-        {data_types::f32, format::oiyx, {2, 15, 3, 5}, {2, 15, 3, 5}, {0, 1, 2, 3}},
-        {data_types::f32, format::ioyx, {2, 15, 3, 5}, {2, 15, 3, 5}, {1, 0, 2, 3}},
-        {data_types::f32, format::yxio, {2, 15, 3, 5}, {2, 15, 3, 5}, {2, 3, 1, 0}},
-        {data_types::f32, format::goiyx, {4, 2, 15, 3, 5}, {4, 2, 15, 3, 5}, {0, 1, 2, 3, 4}},
-        {data_types::f32, format::goizyx, {4, 2, 15, 3, 5, 6}, {4, 2, 15, 3, 5, 6}, {0, 1, 2, 3, 4, 5}},
-        {data_types::f32, format::giozyx, {4, 2, 15, 3, 5, 6}, {4, 2, 15, 3, 5, 6}, {0, 2, 1, 3, 4, 5}},
+        {data_types::f32, format::oiyx, {2, 15, 3, 5}, {2, 15, 3, 5}, {0, 1, 2, 3}, {}, {225, 15, 5, 1}},
+        {data_types::f32, format::ioyx, {2, 15, 3, 5}, {2, 15, 3, 5}, {1, 0, 2, 3}, {}, {15, 30, 5, 1}},
+        {data_types::f32, format::yxio, {2, 15, 3, 5}, {2, 15, 3, 5}, {2, 3, 1, 0}, {}, {1, 2, 150, 30}},
+        {data_types::f32, format::goiyx, {4, 2, 15, 3, 5}, {4, 2, 15, 3, 5}, {0, 1, 2, 3, 4}, {}, {450, 225, 15, 5, 1}},
+        {data_types::f32, format::goizyx, {4, 2, 15, 3, 5, 6}, {4, 2, 15, 3, 5, 6}, {0, 1, 2, 3, 4, 5}, {}, {2700, 1350, 90, 30, 6, 1}},
+        {data_types::f32, format::giozyx, {4, 2, 15, 3, 5, 6}, {4, 2, 15, 3, 5, 6}, {0, 2, 1, 3, 4, 5}, {}, {2700, 90, 180, 30, 6, 1}},
     }));
 
 
@@ -191,6 +208,14 @@ struct layouts_cmp_test_params {
 };
 
 class layout_cmp_test : public testing::TestWithParam<layouts_cmp_test_params> { };
+
+TEST(layout_test, to_short_string_contains_padding_details) {
+    const auto l = layout{ov::PartialShape{1, 2, 3, 4}, data_types::f32, format::bfyx, padding{{1, 2, 3, 4}, {5, 6, 7, 8}}};
+    const auto str = l.to_short_string();
+
+    EXPECT_NE(str.find(":pad_l[1,2,3,4]"), std::string::npos);
+    EXPECT_NE(str.find(":pad_u[5,6,7,8]"), std::string::npos);
+}
 
 TEST_P(layout_cmp_test, basic) {
     auto p = GetParam();
@@ -209,16 +234,24 @@ INSTANTIATE_TEST_SUITE_P(smoke, layout_cmp_test,
          layout{ov::PartialShape{1, 2, 3, 4}, data_types::f16, format::bfyx}, false, false},
         {layout{ov::PartialShape{1, 2, 3, 4}, data_types::f16, format::bfyx},
          layout{ov::PartialShape{1, 2, 1, 3, 4}, data_types::f16, format::bfzyx}, false, true},
+        {layout{ov::PartialShape{3, 2, 2, 2, 2}, data_types::f16, format::bzyxf},
+         layout{ov::PartialShape{3, 2, 2, 2, 2}, data_types::f16, format::bfzyx}, false, false},
         {layout{ov::PartialShape{1, 2, 3, 4}, data_types::f16, format::bfyx},
          layout{ov::PartialShape{1, 2, 3, 4, 1, 1}, data_types::f16, format::bfwzyx}, false, true},
         {layout{ov::PartialShape{1, 2, 3, 4, 1, 1}, data_types::f16, format::bfwzyx},
          layout{ov::PartialShape{1, 2, 3, 4}, data_types::f16, format::bfyx}, false, true},
         {layout{ov::PartialShape{1, 2, 3, 4}, data_types::f16, format::bfyx},
          layout{ov::PartialShape{1, 2, 1, 1, 3, 4}, data_types::f16, format::bfwzyx}, false, true},
+        {layout{ov::PartialShape{2, 32, 1, 1}, data_types::f16, format::bfyx, padding({0, 0, 0, 0}, 0)},
+         layout{ov::PartialShape{2, 32, 1, 1}, data_types::f16, format::b_fs_yx_fsv16, padding({0, 0, 0, 0}, 0)}, false, true},
+        {layout{ov::PartialShape{2, 32, 1, 1}, data_types::f16, format::b_fs_yx_fsv16, padding({0, 0, 0, 0}, 0)},
+         layout{ov::PartialShape{2, 32, 1, 1}, data_types::f16, format::b_fs_yx_fsv32, padding({0, 0, 0, 0}, 0)}, false, true},
         {layout{ov::PartialShape{1, 32, 4, 4}, data_types::f32, format::b_fs_yx_fsv32, padding({0, 0, 1, 1}, 0)},
          layout{ov::PartialShape{1, 32, 4, 4}, data_types::f32, format::b_fs_yx_fsv32, padding({0, 0, 0, 0}, 0)}, false, false},
         {layout{ov::PartialShape{1, 32, 4, 4}, data_types::f32, format::b_fs_yx_fsv32, padding({0, 0, 1, 1}, 0)},
          layout{ov::PartialShape{1, 32, 4, 4}, data_types::f32, format::b_fs_yx_fsv32, padding({0, 0, 1, 1}, 0)}, true, true},
+        {layout{ov::PartialShape{1, 2, 4, 3}, data_types::f16, format::bfyx, padding({0, 0, 2, 1}, 0)},
+         layout{ov::PartialShape{1, 2, 6, 7}, data_types::f16, format::bfyx, padding({0, 0, 0, 0}, 0)}, false, false},
         {layout{ov::PartialShape{10, 20}, data_types::f16, format::bfyx},
          layout{ov::PartialShape{10, 20}, data_types::f16, format::os_iyx_osv16}, false, false},
         {layout{ov::PartialShape{1, 16, 1, 1}, data_types::f16, format::bfyx},
@@ -237,6 +270,10 @@ INSTANTIATE_TEST_SUITE_P(smoke, layout_cmp_test,
          layout{ov::PartialShape{4, 2, 3, 4, 5}, data_types::f16, format::is_os_zyx_isv16_osv16}, false, false},
         {layout{ov::PartialShape{4, 2, 3, 4, 5}, data_types::f16, format::goiyx},
          layout{ov::PartialShape{4, 2, 3, 4, 5}, data_types::f16, format::gioyx}, false, false},
+        {layout{ov::PartialShape{4, 1, 16, 16}, data_types::f16, format::bfyx},
+         layout{ov::PartialShape{4, 1, 16, 16}, data_types::f16, format::byxf}, false, true},
+        {layout{ov::PartialShape{2, 1, 2, 4}, data_types::f16, format::bfyx, padding({0, 0, 1, 0}, {0, 0, 1, 0})},
+         layout{ov::PartialShape{2, 1, 2, 4}, data_types::f16, format::bfyx, padding({0, 1, 0, 0}, {0, 0, 0, 0})}, false, false},
     }));
 
 struct layouts_transform_test_params {
@@ -266,6 +303,7 @@ INSTANTIATE_TEST_SUITE_P(smoke, layout_transform_test,
         {format::bfyx, format::bfwzyx, ov::PartialShape{1, 2, 3, 4}, ov::PartialShape{1, 2, 1, 1, 3, 4}},
         {format::bfyx, format::bfuwzyx, ov::PartialShape{1, 2, 3, 4}, ov::PartialShape{1, 2, 1, 1, 1, 3, 4}},
         {format::bfyx, format::bfvuwzyx, ov::PartialShape{1, 2, 3, 4}, ov::PartialShape{1, 2, 1, 1, 1, 1, 3, 4}},
+        {format::bfyx, format::bfvuwzyx, ov::PartialShape{1, 2, 3}, ov::PartialShape{1, 2, 1, 1, 1, 1, 3, 1}},
 
         {format::b_fs_yx_fsv16, format::bfyx, ov::PartialShape{1, 2, 3, 4}, ov::PartialShape{1, 2, 3, 4}},
         {format::b_fs_yx_fsv16, format::bfzyx, ov::PartialShape{1, 2, 3, 4}, ov::PartialShape{1, 2, 1, 3, 4}},
@@ -391,19 +429,19 @@ INSTANTIATE_TEST_SUITE_P(smoke, custom_layout_test,
         {
             {16, 16, 8, 8},
             format_traits{
-                "custom", 1, 1, 2, 0, {0, 1, 2, 3}, "oiyx", "oixy?", {{1, 16}, {0, 16}}
+                "custom", 1, 1, 2, 0, {0, 1, 2, 3}, "oiyx", "oixy?", {{1, 16}, {0, 16}}, {{1, 16}, {0, 16}}, 16384
             },
             format_traits{
-                "custom", 1, 1, 2, 0, {0, 1, 2, 3}, "oiyx", "oixy?", {{0, 2}, {1, 8}, {0, 8}, {1, 2}}
+                "custom", 1, 1, 2, 0, {0, 1, 2, 3}, "oiyx", "oixy?", {{0, 2}, {1, 8}, {0, 8}, {1, 2}}, {{0, 2}, {1, 8}}, 16384
             }
         },
         {
             {32, 32, 8, 8},
             format_traits{
-                "custom", 1, 1, 2, 0, {0, 1, 2, 3}, "oiyx", "oixy?", {{1, 4}, {0, 8}, {1, 8}, {0, 4}}
+                "custom", 1, 1, 2, 0, {0, 1, 2, 3}, "oiyx", "oixy?", {{1, 4}, {0, 8}, {1, 8}, {0, 4}}, {{1, 4}, {0, 8}}, 65536
             },
             format_traits{
-                "custom", 1, 1, 2, 0, {0, 1, 2, 3}, "oiyx", "oixy?", {{0, 2}, {1, 8}, {0, 8}, {1, 2}}
+                "custom", 1, 1, 2, 0, {0, 1, 2, 3}, "oiyx", "oixy?", {{0, 2}, {1, 8}, {0, 8}, {1, 2}}, {{0, 2}, {1, 8}}, 65536
             }
         },
     }));

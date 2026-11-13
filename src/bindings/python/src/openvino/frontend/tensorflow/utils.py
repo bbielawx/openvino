@@ -1,17 +1,17 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 # flake8: noqa
 # mypy: ignore-errors
 
 
+import importlib
 import logging as log
-import sys
-from packaging.version import parse, Version
-from typing import List, Dict, Union
-
 import numpy as np
-from openvino.runtime import PartialShape, Dimension
+import sys
+from openvino import PartialShape, Dimension, Type
+from packaging.version import parse, Version
+from typing import Union
 
 
 # TODO: reuse this method in ovc and remove duplication
@@ -89,9 +89,7 @@ def get_environment_setup(framework):
     env_setup['python_version'] = python_version
     try:
         if framework == 'tf':
-            exec("import tensorflow")
-            env_setup['tensorflow'] = get_imported_module_version(sys.modules["tensorflow"])
-            exec("del tensorflow")
+            env_setup['tensorflow'] = get_imported_module_version(importlib.import_module("tensorflow"))
     except (AttributeError, ImportError):
         pass
     env_setup['sys_platform'] = sys.platform
@@ -106,13 +104,32 @@ def trace_tf_model_if_needed(input_model, placeholder_shapes, placeholder_data_t
     return trace_tf_model(input_model, placeholder_shapes, placeholder_data_types, example_input)
 
 
-def get_input_spec_from_model(model):
+def partial_shape_to_list(partial_shape: PartialShape):
+    if partial_shape.rank.is_dynamic:
+        return None
+    res_list = []
+    for dim in partial_shape:
+        if dim.is_static:
+            res_list.append(dim.get_length())
+        else:
+            res_list.append(None)
+    return res_list
+
+
+def get_input_spec_from_model(model, input_shapes=None):
     import tensorflow as tf
     if hasattr(model, "_build_input_shape") and model._build_input_shape is not None:
         if isinstance(model._build_input_shape, list):
             input_spec = [[tf.TensorSpec(shape) for shape in model._build_input_shape]]
         else:
             input_spec = [tf.TensorSpec(model._build_input_shape)]
+    elif input_shapes and isinstance(input_shapes, list) and len(input_shapes) > 0:
+        input_spec = []
+        for input_shape in input_shapes:
+            if isinstance(input_shape, PartialShape):
+                input_spec.append(tf.TensorSpec(partial_shape_to_list(input_shape)))
+            else:
+                input_spec.append(tf.TensorSpec(None))
     else:
         input_spec = [tf.TensorSpec(None)]
     return input_spec
@@ -152,9 +169,26 @@ def get_concrete_func(tf_function, example_input, input_needs_packing, error_mes
 
 
 def get_signature_from_input(keras_model):
+    import tensorflow as tf
     if not hasattr(keras_model, 'input') or getattr(keras_model, 'input') is None:
         return None
-    return getattr(keras_model, 'input')
+    keras_input_signature = getattr(keras_model, 'input')
+    # align input names for the signature
+    if hasattr(keras_model, 'input_spec') and getattr(keras_model, 'input_spec') is not None:
+        input_spec = getattr(keras_model, 'input_spec')
+        input_names = [spec.name for spec in input_spec]
+        if not isinstance(keras_input_signature, (dict, list)):
+            # scalar case
+            keras_input_signature = [keras_input_signature]
+        if len(keras_input_signature) == len(input_names) and isinstance(keras_input_signature, list):
+            new_keras_input_signature = []
+            for idx, elem in enumerate(keras_input_signature):
+                new_keras_input_signature.append(tf.TensorSpec(
+                    shape=elem.shape,
+                    dtype=elem.dtype,
+                    name=input_names[idx]))
+            return new_keras_input_signature
+    return keras_input_signature
 
 
 def get_signature_from_input_signature(keras_model):
@@ -199,10 +233,13 @@ def create_generic_function_from_keras_model(keras_model):
     if tf_input_signature is not None:
         @tf.function(input_signature=tf_input_signature)
         def wrapper_function_dict(*args):
-            input_dict = {}
-            for ind, tensor_spec in enumerate(tf_input_signature):
-                input_dict[tensor_spec.name] = args[ind]
-            outputs = keras_model(input_dict)
+            if isinstance(keras_input_signature, list):
+                outputs = keras_model(args)
+            else:
+                input_dict = {}
+                for ind, tensor_spec in enumerate(tf_input_signature):
+                    input_dict[tensor_spec.name] = args[ind]
+                outputs = keras_model(input_dict)
             # need to wrap the output into dictionary
             # it helps to preserve original keras tensor names
             post_outputs = {}
@@ -254,7 +291,7 @@ def trace_tf_model(model, input_shapes, input_types, example_input):
 
         input_needs_packing = True
 
-    def are_shapes_defined(shape: Union[List, Dict]):
+    def are_shapes_defined(shape: Union[list, dict]):
         if shape is None:
             return False
         assert hasattr(shape, '__len__')
@@ -276,7 +313,7 @@ def trace_tf_model(model, input_shapes, input_types, example_input):
                                               "Could not trace the TF model with the following error: {}",
                                               use_example_input=False)
         else:
-            input_spec = get_input_spec_from_model(model)
+            input_spec = get_input_spec_from_model(model, input_shapes)
             concrete_func = get_concrete_func(tf_function, input_spec, input_needs_packing,
                                               "Could not trace the TF model with the following error: {}.\n"
                                               "Please provide 'example_input'.")
@@ -435,3 +472,26 @@ def model_is_graph_iterator(model):
     except:
         return False
     return isinstance(model, GraphIteratorTFGraph)
+
+
+def tf_type_to_ov_type(val):
+    import tensorflow as tf  # pylint: disable=import-error
+    if not isinstance(val, tf.dtypes.DType):
+        raise Exception("The provided type is not a TF type {}.".format(val))
+
+    tf_to_ov_type = {
+        tf.float32: Type.f32,
+        tf.float16: Type.f16,
+        tf.float64: Type.f64,
+        tf.bfloat16: Type.bf16,
+        tf.uint8: Type.u8,
+        tf.int8: Type.i8,
+        tf.int16: Type.i16,
+        tf.int32: Type.i32,
+        tf.int64: Type.i64,
+        tf.bool: Type.boolean,
+        tf.string: Type.string
+    }
+    if val not in tf_to_ov_type:
+        raise Exception("The provided data type is not supported by OpenVino {}.".format(val))
+    return tf_to_ov_type[val]

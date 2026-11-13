@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -16,14 +16,16 @@
 #include "transformations/smart_reshape/proposal_scales_stridedslice.hpp"
 #include "transformations/smart_reshape/reshape_sinking.hpp"
 #include "transformations/smart_reshape/reshape_to_1D.hpp"
+#include "transformations/smart_reshape/restore_traced_batch.hpp"
 #include "transformations/smart_reshape/shape_of_const_folding.hpp"
 #include "transformations/smart_reshape/strided_slice_squeeze.hpp"
 
 bool ov::pass::SmartReshape::run_on_model(const std::shared_ptr<ov::Model>& f) {
     RUN_ON_FUNCTION_SCOPE(SmartReshape);
-    ov::pass::Manager static_manager;
+    ov::pass::Manager static_manager("SmartReshape:static");
     // This pass must be called first in pipeline
     static_manager.register_pass<ov::pass::InitNodeInfo>();
+    static_manager.register_pass<ov::pass::RestoreTracedBatch>();
     static_manager.register_pass<ov::pass::ReshapeTo1D>();
     static_manager.register_pass<ov::pass::Proposal1Scales>();
     static_manager.register_pass<ov::pass::Proposal4Scales>();
@@ -37,7 +39,7 @@ bool ov::pass::SmartReshape::run_on_model(const std::shared_ptr<ov::Model>& f) {
     static_manager.register_pass<ov::pass::ReshapeSinkingMatMul>();
     static_manager.run_passes(f);
 
-    ov::pass::Manager dynamic_manager;
+    ov::pass::Manager dynamic_manager("SmartReshape:dynamic");
     // function revalidation will cause "fake" dynamism due to ShapeOf ops insertions
     // we turn it off to have access to originally static shapes
     dynamic_manager.set_per_pass_validation(false);

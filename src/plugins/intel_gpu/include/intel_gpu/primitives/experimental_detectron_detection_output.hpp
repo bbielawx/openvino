@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -46,11 +46,9 @@ struct experimental_detectron_detection_output : public primitive_base<experimen
                                             int max_detections_per_image,
                                             bool class_agnostic_box_regression,
                                             float max_delta_log_wh,
-                                            std::vector<float> deltas_weights,
-                                            const padding& output_padding = {})
+                                            std::vector<float> deltas_weights)
         : primitive_base{id,
-                         {input_rois, input_deltas, input_scores, input_im_info, output_classes, output_scores},
-                         {output_padding}},
+                         {input_rois, input_deltas, input_scores, input_im_info, output_classes, output_scores}},
           output_classes{output_classes.pid},
           output_scores{output_scores.pid},
           score_threshold{score_threshold},
@@ -62,8 +60,32 @@ struct experimental_detectron_detection_output : public primitive_base<experimen
           max_delta_log_wh{max_delta_log_wh},
           deltas_weights{std::move(deltas_weights)} {}
 
-    primitive_id output_classes;
-    primitive_id output_scores;
+        experimental_detectron_detection_output(const primitive_id& id,
+                                            const input_info& input_rois,
+                                            const input_info& input_deltas,
+                                            const input_info& input_scores,
+                                            const input_info& input_im_info,
+                                            float score_threshold,
+                                            float nms_threshold,
+                                            int num_classes,
+                                            int post_nms_count,
+                                            int max_detections_per_image,
+                                            bool class_agnostic_box_regression,
+                                            float max_delta_log_wh,
+                                            std::vector<float> deltas_weights)
+        : primitive_base{id,
+                         {input_rois, input_deltas, input_scores, input_im_info}},
+          score_threshold{score_threshold},
+          nms_threshold{nms_threshold},
+          num_classes{num_classes},
+          post_nms_count{post_nms_count},
+          max_detections_per_image{max_detections_per_image},
+          class_agnostic_box_regression{class_agnostic_box_regression},
+          max_delta_log_wh{max_delta_log_wh},
+          deltas_weights{std::move(deltas_weights)} {}
+
+    input_info output_classes;
+    input_info output_scores;
     float score_threshold = 0.0f;
     float nms_threshold = 0.0f;
     int num_classes = 0;
@@ -83,14 +105,15 @@ struct experimental_detectron_detection_output : public primitive_base<experimen
         seed = hash_combine(seed, class_agnostic_box_regression);
         seed = hash_combine(seed, max_delta_log_wh);
         seed = hash_range(seed, deltas_weights.begin(), deltas_weights.end());
-        seed = hash_combine(seed, output_classes.empty());
-        seed = hash_combine(seed, output_scores.empty());
+        seed = hash_combine(seed, output_classes.is_valid());
+        seed = hash_combine(seed, output_scores.is_valid());
         return seed;
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const experimental_detectron_detection_output>(rhs);
 
@@ -103,8 +126,8 @@ struct experimental_detectron_detection_output : public primitive_base<experimen
                cmp_fields(class_agnostic_box_regression) &&
                cmp_fields(max_delta_log_wh) &&
                cmp_fields(deltas_weights) &&
-               cmp_fields(output_classes.empty()) &&
-               cmp_fields(output_scores.empty());
+               cmp_fields(output_classes.is_valid()) &&
+               cmp_fields(output_scores.is_valid());
         #undef cmp_fields
     }
 
@@ -137,13 +160,17 @@ struct experimental_detectron_detection_output : public primitive_base<experimen
     }
 
 protected:
-    std::vector<input_info> get_dependencies() const override {
-        std::vector<input_info> ret;
-        if (!output_classes.empty())
-            ret.emplace_back(output_classes);
+    std::map<size_t, const input_info*> get_dependencies_map() const override {
+        auto ret = std::map<size_t, const input_info*>{};
+        auto idx = input.size();
 
-        if (!output_scores.empty())
-            ret.emplace_back(output_scores);
+        if (output_classes.is_valid()) {
+            ret[idx++] = &output_classes;
+        }
+
+        if (output_scores.is_valid()) {
+            ret[idx++] = &output_scores;
+        }
 
         return ret;
     }

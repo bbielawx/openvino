@@ -1,7 +1,8 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import numpy as np
 import os
 import platform
 import shutil
@@ -9,81 +10,58 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
-
 logger = logging.getLogger(__name__)
 
 
 def generate_ir(coverage=False, **kwargs):
-    from openvino.tools.mo import mo
-    mo_path = Path(mo.__file__).parent
-    mo_runner = mo_path.joinpath('main.py').as_posix()
+    from openvino.tools.ovc import ovc
+    # Get OVC file directory
+    ovc_path = Path(ovc.__file__).parent
+
+    ovc_runner = ovc_path.joinpath('main.py').as_posix()
     if coverage:
-        params = [sys.executable, '-m', 'coverage', 'run', '-p', '--source={}'.format(mo_path.parent),
-                  '--omit=*_test.py', mo_runner]
+        params = [sys.executable, '-m', 'coverage', 'run', '-p', '--source={}'.format(ovc_runner.parent),
+                  '--omit=*_test.py', ovc_runner]
     else:
-        params = [sys.executable, mo_runner]
+        params = [sys.executable, ovc_runner]
     for key, value in kwargs.items():
-        if key == "batch":
-            params.extend(("-b", str(value)))
-        elif key == "k":
-            params.extend(("-k", str(value)))
-        # for FP32 set explicitly compress_to_fp16=False,
-        # if we omit this argument for FP32, it will be set implicitly to True as the default
+        if key == 'input_model':
+            params.append((str(value)))
         elif key == 'compress_to_fp16':
             params.append("--{}={}".format(key, value))
-        elif isinstance(value, bool) and value:
-            params.append("--{}".format(key))
-        elif isinstance(value, bool) and not value:
-            continue
-        elif (isinstance(value, tuple) and value) or (isinstance(value, str)):
-            params.extend(("--{}".format(key), str('"{}"'.format(value))))
-        elif key == "mean_values" and (' ' in value or '(' in value):
-            params.extend(("--{}".format(key), str('"{}"'.format(value))))
         else:
             params.extend(("--{}".format(key), str(value)))
     exit_code, stdout, stderr = shell(params)
-    logger.info("Model Optimizer out:\n{}".format(stdout))
-    logger.error(stderr)
     return exit_code, stderr
 
 
 def generate_ir_python_api(coverage=False, **kwargs):
     out_dir = kwargs['output_dir'] + os.sep + "model.xml"
-    if 'use_legacy_frontend' in kwargs and kwargs['use_legacy_frontend']:
-        from openvino.runtime import serialize
-        from openvino.tools.mo import convert_model
+    from openvino import convert_model, save_model
 
-        ov_model = convert_model(**kwargs)
-        serialize(ov_model, out_dir)
-    else:
-        from openvino import convert_model, save_model
-        try:
-            # noinspection PyUnresolvedReferences
-            import openvino_tokenizers  # do not delete, needed for validation of OpenVINO tokenizers extensions
-        except:
-            # TODO 132908: add build OpenVINO Tokenizers in GHA for MacOS and ARM64
-            # TODO 132909: add build OpenVINO Tokenizers in Jenkins for layer_ubuntu20_release tests
-            assert platform.system() in ('Linux', 'Darwin') or platform.machine() in ('arm', 'armv7l',
-                                                                                      'aarch64',
-                                                                                      'arm64', 'ARM64')
-            # CI Jenkins job and ARM64 has no openvino_tokenizers available
-            pass
+    # cleanup parameters for convert
+    if 'output_dir' in kwargs:
+        del kwargs['output_dir']
 
-        # cleanup parameters for convert
-        if 'output_dir' in kwargs:
-            del kwargs['output_dir']
+    compress_to_fp16 = True
+    if 'compress_to_fp16' in kwargs:
+        compress_to_fp16 = kwargs['compress_to_fp16']
+        del kwargs['compress_to_fp16']
 
-        compress_to_fp16 = False
-        if 'compress_to_fp16' in kwargs:
-            # TODO 132871: fix error with no tensor name in case of compression
-            # compress_to_fp16 = kwargs['compress_to_fp16']
-            del kwargs['compress_to_fp16']
-
-        ov_model = convert_model(**kwargs)
-        save_model(ov_model, out_dir, compress_to_fp16)
+    ov_model = convert_model(**kwargs)
+    save_model(ov_model, out_dir, compress_to_fp16)
 
     return 0, ""
+
+
+def generate_ir_ovc(input_model, opts):
+    params = ['ovc', input_model]
+    for key, value in opts.items():
+        # handle optional arguments
+        # both key and values are of string type
+        params.extend(("--{}".format(key), value))
+    exit_code, stdout, stderr = shell(params)
+    return exit_code, stdout, stderr
 
 
 def shell(cmd, env=None, cwd=None, out_format="plain"):

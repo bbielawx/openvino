@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include "openvino/op/convert.hpp"
 
 using namespace CPUTestUtils;
 
@@ -16,14 +17,8 @@ namespace test {
 using namespace ov::test::utils;
 
 std::string EltwiseChainTest::getTestCaseName(const testing::TestParamInfo<EltwiseChainTuple> &obj) {
-    std::vector<InputShape> inputShapes;
-    InputLayerType secondaryInputType;
-    std::vector<ElementType> inputPrecisions;
-    std::vector<EltwiseTypes> eltwiseOpTypes;
-    bool withQuantization;
-    ov::element::Type conversion;
-    std::string targetName;
-    std::tie(inputShapes, secondaryInputType, inputPrecisions, eltwiseOpTypes, withQuantization, conversion, targetName) = obj.param;
+    const auto& [inputShapes, secondaryInputType, inputPrecisions, eltwiseOpTypes, postNode, conversion,
+                 targetName] = obj.param;
     std::ostringstream results;
 
     results << "IS=(";
@@ -43,8 +38,8 @@ std::string EltwiseChainTest::getTestCaseName(const testing::TestParamInfo<Eltwi
         results << "Op" << std::to_string(i) << "=" << eltwiseOpTypes[i] << "_";
     }
     results << "secondaryInputType=" << secondaryInputType << "_";
-    results << "WithQuant=" << withQuantization << "_";
-    if (conversion != ov::element::undefined) {
+    results << "PostNode=" << postNode << "_";
+    if (conversion != ov::element::dynamic) {
         results << "Conversion=" << conversion << "_";
     }
     results << "targetDevice=" << targetName;
@@ -83,18 +78,28 @@ void EltwiseChainTest::generate_inputs(const std::vector<ov::Shape>& targetInput
     }
 }
 
+namespace {
+std::shared_ptr<ov::Node> make_chain_op(const ov::Output<ov::Node>& lhs,
+                                        const ov::Output<ov::Node>& rhs,
+                                        const EltwiseChainOp& op) {
+    if (const auto* comparison = std::get_if<ComparisonTypes>(&op)) {
+        return make_comparison(lhs, rhs, *comparison);
+    }
+    return make_eltwise(lhs, rhs, std::get<EltwiseTypes>(op));
+}
+}  // namespace
+
 void EltwiseChainTest::SetUp() {
     abs_threshold = 0.1f;
-
-    std::vector<InputShape> inputShapes;
-    InputLayerType secondaryInputType;
-    std::vector<ElementType> inputPrecisions;
-    std::vector<EltwiseTypes> eltwiseOpTypes;
-    bool withQuantization;
-    ov::element::Type conversion;
-    std::tie(inputShapes, secondaryInputType, inputPrecisions, eltwiseOpTypes, withQuantization, conversion, targetDevice) = this->GetParam();
-
+    const auto& [inputShapes, secondaryInputType, inputPrecisions, eltwiseOpTypes, postNode, conversion,
+                 _targetDevice] = this->GetParam();
+    targetDevice = _targetDevice;
     init_input_shapes(inputShapes);
+    for (size_t i = 0; i < eltwiseOpTypes.size(); i++) {
+        const bool lastOp = i == eltwiseOpTypes.size() - 1 && postNode != PostNode::SOFTSIGN;
+        OPENVINO_ASSERT(lastOp || std::holds_alternative<EltwiseTypes>(eltwiseOpTypes[i]),
+                        "A comparison can only be the last operation of the chain");
+    }
 
     ov::ParameterVector paramVec;
     std::vector<std::shared_ptr<ov::Node>> inputNodes1;
@@ -104,9 +109,10 @@ void EltwiseChainTest::SetUp() {
             const auto param = std::make_shared<ov::op::v0::Parameter>(inputPrecisions[i], inputDynamicShapes[i]);
             paramVec.push_back(param);
 
-            const auto inputNode = (conversion == ov::element::undefined) ?
-                param :
-                std::dynamic_pointer_cast<ov::Node>(std::make_shared<ov::op::v0::Convert>(param, conversion));
+            const auto inputNode =
+                (conversion == ov::element::dynamic)
+                    ? param
+                    : std::dynamic_pointer_cast<ov::Node>(std::make_shared<ov::op::v0::Convert>(param, conversion));
             if (inputNodes1.empty()) {
                 inputNodes1.push_back(inputNode);
             }
@@ -114,26 +120,25 @@ void EltwiseChainTest::SetUp() {
         }
     } else {
         paramVec = ov::ParameterVector {std::make_shared<ov::op::v0::Parameter>(inputPrecisions[0], inputDynamicShapes.front())};
-        inputNodes1.push_back(
-                conversion == ov::element::undefined ?
-                paramVec.front() :
-                std::dynamic_pointer_cast<ov::Node>(std::make_shared<ov::op::v0::Convert>(paramVec.front(), conversion)));
+        inputNodes1.push_back(conversion == ov::element::dynamic
+                                  ? paramVec.front()
+                                  : std::dynamic_pointer_cast<ov::Node>(
+                                        std::make_shared<ov::op::v0::Convert>(paramVec.front(), conversion)));
 
         for (size_t i = 1; i < inputPrecisions.size(); i++) {
             std::vector<float> input1Data(ov::shape_size(targetStaticShapes[0][i]));
-            inputNodes2.push_back(ov::test::utils::deprecated::make_constant(
-                conversion == ov::element::undefined ? static_cast<ov::element::Type>(inputPrecisions[i]) : conversion,
-                targetStaticShapes[0][i],
-                input1Data,
-                true));
+            inputNodes2.push_back(ov::test::utils::make_constant(
+                conversion == ov::element::dynamic ? static_cast<ov::element::Type>(inputPrecisions[i]) : conversion,
+                targetStaticShapes[0][i]));
         }
     }
 
-    if (withQuantization) {
-        std::vector<std::shared_ptr<ov::Node>> eltwiseOps;
-        eltwiseOps.push_back(make_eltwise(inputNodes1[0], inputNodes2[0], eltwiseOpTypes[0]));
+    std::vector<std::shared_ptr<ov::Node>> eltwiseOps;
+    eltwiseOps.push_back(make_chain_op(inputNodes1[0], inputNodes2[0], eltwiseOpTypes[0]));
+
+    if (postNode == PostNode::QUANTIZE) {
         for (size_t i = 1; i < eltwiseOpTypes.size() - 1; i++) {
-            eltwiseOps.push_back(make_eltwise(eltwiseOps[eltwiseOps.size() - 1], inputNodes2[i], eltwiseOpTypes[i]));
+            eltwiseOps.push_back(make_chain_op(eltwiseOps[eltwiseOps.size() - 1], inputNodes2[i], eltwiseOpTypes[i]));
         }
 
         std::vector<size_t> constShape(targetStaticShapes[0][0].size(), 1);
@@ -143,19 +148,30 @@ void EltwiseChainTest::SetUp() {
                                                     256,
                                                     constShape);
 
-        eltwiseOps.push_back(make_eltwise(fq, inputNodes2[eltwiseOpTypes.size() - 1], eltwiseOpTypes[eltwiseOpTypes.size() - 1]));
+        eltwiseOps.push_back(make_chain_op(fq, inputNodes2[eltwiseOpTypes.size() - 1], eltwiseOpTypes[eltwiseOpTypes.size() - 1]));
 
         ov::ResultVector results{std::make_shared<ov::op::v0::Result>(eltwiseOps[eltwiseOps.size() - 1])};
         function = std::make_shared<ov::Model>(results, paramVec, "eltwise_chain_fq");
-    } else {
-        std::vector<std::shared_ptr<ov::Node>> eltwiseOps;
-        eltwiseOps.push_back(make_eltwise(inputNodes1[0], inputNodes2[0], eltwiseOpTypes[0]));
+    } else if (postNode == PostNode::SOFTSIGN) {
         for (size_t i = 1; i < eltwiseOpTypes.size(); i++) {
-            eltwiseOps.push_back(make_eltwise(eltwiseOps[eltwiseOps.size() - 1], inputNodes2[i], eltwiseOpTypes[i]));
+            eltwiseOps.push_back(make_chain_op(eltwiseOps[eltwiseOps.size() - 1], inputNodes2[i], eltwiseOpTypes[i]));
+        }
+
+        auto softsign = ov::test::utils::make_activation(eltwiseOps[eltwiseOps.size() - 1], ElementType::i32, ActivationTypes::SoftSign);
+        eltwiseOps.push_back(softsign);
+
+        ov::ResultVector results{std::make_shared<ov::op::v0::Result>(eltwiseOps[eltwiseOps.size() - 1])};
+
+        function = std::make_shared<ov::Model>(results, paramVec, "eltwise_chain_softsign");
+    } else if (postNode == PostNode::EMPTY) {
+        for (size_t i = 1; i < eltwiseOpTypes.size(); i++) {
+            eltwiseOps.push_back(make_chain_op(eltwiseOps[eltwiseOps.size() - 1], inputNodes2[i], eltwiseOpTypes[i]));
         }
 
         ov::ResultVector results{std::make_shared<ov::op::v0::Result>(eltwiseOps[eltwiseOps.size() - 1])};
         function = std::make_shared<ov::Model>(results, paramVec, "eltwise_chain");
+    } else {
+        OPENVINO_THROW("Post node of type '", postNode, "' is not supported");
     }
 }
 
@@ -185,7 +201,7 @@ std::vector<std::vector<ElementType>> inputPrecisions() {
     };
 }
 
-std::vector<std::vector<EltwiseTypes>> eltwiseOps() {
+std::vector<std::vector<EltwiseChainOp>> eltwiseOps() {
     return {
             {EltwiseTypes::ADD,    EltwiseTypes::MULTIPLY,     EltwiseTypes::SUBTRACT},
             {EltwiseTypes::DIVIDE, EltwiseTypes::SQUARED_DIFF, EltwiseTypes::ADD}
@@ -198,7 +214,7 @@ std::vector<std::vector<ov::Shape>> inputShapesConvert() {
     };
 }
 
-std::vector<std::vector<EltwiseTypes>> eltwiseOpsConvert() {
+std::vector<std::vector<EltwiseChainOp>> eltwiseOpsConvert() {
     return {
             {EltwiseTypes::MULTIPLY},
             {EltwiseTypes::ADD},

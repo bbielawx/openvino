@@ -1,10 +1,12 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "openvino/op/lstm_sequence.hpp"
 
 #include <gtest/gtest.h>
+
+#include <limits>
 
 #include "base_reference_test.hpp"
 
@@ -176,8 +178,11 @@ struct LSTMSequenceV1Params {
 class ReferenceLSTMSequenceTest : public testing::TestWithParam<LSTMSequenceParams>, public CommonReferenceTest {
 public:
     void SetUp() override {
-        legacy_compare = true;
-        auto params = GetParam();
+        const auto& params = GetParam();
+        if (params.iType == element::Type_t::f64) {
+            // Refs were generated in f32; saturated gates make the near-zero outputs relatively sensitive.
+            abs_threshold = std::numeric_limits<float>::epsilon();
+        }
         function = CreateFunction(params);
         inputData = {params.X.data,
                      params.H_t.data,
@@ -190,7 +195,7 @@ public:
     }
 
     static std::string getTestCaseName(const testing::TestParamInfo<LSTMSequenceParams>& obj) {
-        auto param = obj.param;
+        const auto& param = obj.param;
         std::ostringstream result;
         result << "iType=" << param.iType << "_";
         result << "xShape=" << param.X.shape << "_";
@@ -241,87 +246,7 @@ private:
     }
 };
 
-class ReferenceLSTMSequenceV1Test : public testing::TestWithParam<LSTMSequenceV1Params>, public CommonReferenceTest {
-public:
-    void SetUp() override {
-        legacy_compare = true;
-        auto params = GetParam();
-        function = CreateFunction(params);
-        inputData = {params.X.data,
-                     params.H_t.data,
-                     params.C_t.data,
-                     params.S_t.data,
-                     params.W.data,
-                     params.R.data,
-                     params.B.data,
-                     params.P.data};
-        refOutData = {params.Y.data, params.Ho.data, params.Co.data};
-    }
-
-    static std::string getTestCaseName(const testing::TestParamInfo<LSTMSequenceV1Params>& obj) {
-        auto param = obj.param;
-        std::ostringstream result;
-        result << "iType=" << param.iType << "_";
-        result << "xShape=" << param.X.shape << "_";
-        result << "htShape=" << param.H_t.shape << "_";
-        result << "ctShape=" << param.C_t.shape << "_";
-        result << "stShape=" << param.S_t.shape << "_";
-        result << "wShape=" << param.W.shape << "_";
-        result << "rShape=" << param.R.shape << "_";
-        result << "bShape=" << param.B.shape << "_";
-        result << "pShape=" << param.P.shape << "_";
-        result << "YShape=" << param.Y.shape << "_";
-        result << "hoShape=" << param.Ho.shape << "_";
-        result << "coShape=" << param.Co.shape << "_";
-        result << "clip=" << param.clip << "_";
-        result << "input_forget=" << param.input_forget << "_";
-        result << "LSTMdirection=" << param.lstm_direction;
-        if (!param.testcaseName.empty())
-            result << "_" << param.testcaseName;
-
-        return result.str();
-    }
-
-private:
-    static std::shared_ptr<Model> CreateFunction(const LSTMSequenceV1Params& params) {
-        const auto X = std::make_shared<op::v0::Parameter>(params.X.type, params.X.shape);
-        const auto H_t = std::make_shared<op::v0::Parameter>(params.H_t.type, params.H_t.shape);
-        const auto C_t = std::make_shared<op::v0::Parameter>(params.C_t.type, params.C_t.shape);
-        const auto S_t = std::make_shared<op::v0::Parameter>(params.S_t.type, params.S_t.shape);
-        const auto W = std::make_shared<op::v0::Parameter>(params.W.type, params.W.shape);
-        const auto R = std::make_shared<op::v0::Parameter>(params.R.type, params.R.shape);
-        const auto B = std::make_shared<op::v0::Parameter>(params.B.type, params.B.shape);
-        const auto P = std::make_shared<op::v0::Parameter>(params.P.type, params.P.shape);
-
-        const auto lstm_sequence =
-            std::make_shared<op::v0::LSTMSequence>(X,
-                                                   H_t,
-                                                   C_t,
-                                                   S_t,
-                                                   W,
-                                                   R,
-                                                   B,
-                                                   P,
-                                                   params.hiddenSize,
-                                                   params.lstm_direction,
-                                                   ov::op::LSTMWeightsFormat::FICO,
-                                                   std::vector<float>{},
-                                                   std::vector<float>{},
-                                                   std::vector<std::string>{"sigmoid", "tanh", "tanh"},
-                                                   params.clip,
-                                                   params.input_forget);
-
-        auto function =
-            std::make_shared<Model>(lstm_sequence->outputs(), ParameterVector{X, H_t, C_t, S_t, W, R, B, P});
-        return function;
-    }
-};
-
 TEST_P(ReferenceLSTMSequenceTest, CompareWithRefs) {
-    Exec();
-}
-
-TEST_P(ReferenceLSTMSequenceV1Test, CompareWithRefs) {
     Exec();
 }
 
@@ -3462,29 +3387,8 @@ std::vector<LSTMSequenceParams> generateCombinedParams() {
     return combinedParams;
 }
 
-std::vector<LSTMSequenceV1Params> generateV1CombinedParams() {
-    const std::vector<std::vector<LSTMSequenceV1Params>> generatedParams{
-        generateV1Params<element::Type_t::f64>(),
-        generateV1Params<element::Type_t::f32>(),
-        generateV1Params<element::Type_t::f16>(),
-        generateV1ParamsBF16<element::Type_t::bf16>(),
-    };
-    std::vector<LSTMSequenceV1Params> combinedParams;
-
-    for (const auto& params : generatedParams) {
-        combinedParams.insert(combinedParams.end(), params.begin(), params.end());
-    }
-    return combinedParams;
-}
-
 INSTANTIATE_TEST_SUITE_P(smoke_LSTMSequence_With_Hardcoded_Refs,
                          ReferenceLSTMSequenceTest,
                          testing::ValuesIn(generateCombinedParams()),
                          ReferenceLSTMSequenceTest::getTestCaseName);
-
-INSTANTIATE_TEST_SUITE_P(smoke_LSTMSequence_With_Hardcoded_Refs,
-                         ReferenceLSTMSequenceV1Test,
-                         testing::ValuesIn(generateV1CombinedParams()),
-                         ReferenceLSTMSequenceV1Test::getTestCaseName);
-
 }  // namespace

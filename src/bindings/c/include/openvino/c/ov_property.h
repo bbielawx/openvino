@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -99,12 +99,22 @@ ov_property_key_cache_dir;
 
 /**
  * @brief Read-write property<string> to select the cache mode between optimize_size and optimize_speed.
- * If optimize_size is selected, smaller cache files will be created.
- * And if optimize_speed is selected, loading time will decrease but the cache file size will increase.
+ * If optimize_size is selected(default), smaller cache files will be created.
+ * If optimize_speed is selected, loading time will decrease but the cache file size will increase.
+ * This is only supported from GPU.
  * @ingroup ov_property_c_api
  */
 OPENVINO_C_VAR(const char*)
 ov_property_key_cache_mode;
+
+/**
+ * @brief Write-only property<ov_encryption_callbacks*> to set encryption and decryption function for model cache.
+ * If ov_property_key_cache_encryption_callbacks is set, model topology will be encrypted when saving to the cache and
+ * decrypted when loading from the cache. This property is set in ov_core_compile_model_* only
+ * @ingroup ov_property_c_api
+ */
+OPENVINO_C_VAR(const char*)
+ov_property_key_cache_encryption_callbacks;
 
 /**
  * @brief Read-write property<uint32_t string> to set/get the number of executor logical partitions.
@@ -112,13 +122,6 @@ ov_property_key_cache_mode;
  */
 OPENVINO_C_VAR(const char*)
 ov_property_key_num_streams;
-
-/**
- * @brief Read-write property to set/get the name for setting CPU affinity per thread option.
- * @ingroup ov_property_c_api
- */
-OPENVINO_C_VAR(const char*)
-ov_property_key_affinity;
 
 /**
  * @brief Read-write property<int32_t string> to set/get the maximum number of threads that can be used
@@ -236,3 +239,45 @@ ov_property_key_enable_mmap;
  */
 OPENVINO_C_VAR(const char*)
 ov_property_key_auto_batch_timeout;
+
+/**
+ * @brief Read-write property to configure config file for GPU
+ * @ingroup ov_property_c_api
+ */
+OPENVINO_C_VAR(const char*)
+ov_property_key_intel_gpu_config_file;
+
+/**
+ * @struct ov_property_t
+ * @ingroup ov_property_c_api
+ * @brief A key/value property pair for use with the non-variadic @c _props API.
+ *
+ * The @c value field is a @c const void* that holds any property value. The library
+ * interprets the value based on the @c key — string-valued properties pass a @c const char*,
+ * GPU/OCL handle properties pass the raw handle pointer, and cache-encryption callbacks pass
+ * a pointer to an @c ov_encryption_callbacks struct. This mirrors the existing variadic API where
+ * the key determines the expected argument type. The struct size is exactly two pointers (16 bytes
+ * on 64-bit) and will never change, making it fully ABI-stable across library versions.
+ *
+ * In C all pointer types implicitly convert to @c const void*, so no casts are needed:
+ * @code
+ *   ov_encryption_callbacks cb = {my_encrypt, my_decrypt};
+ *   ov_property_t props[] = {
+ *       {ov_property_key_hint_performance_mode, "LATENCY"},          // const char* → const void*
+ *       {ov_property_key_num_streams,           "4"},
+ *       {ov_property_key_cache_encryption_callbacks, &cb},           // struct pointer → const void*
+ *   };
+ *   ov_core_compile_model_from_file_props(core, "model.xml", "CPU", 3, props, &cm);
+ *
+ *   // GPU context with a raw OCL handle (any pointer → const void*):
+ *   ov_property_t ctx_props[] = {
+ *       {ov_property_key_intel_gpu_context_type, "OCL"},
+ *       {ov_property_key_intel_gpu_ocl_context,  ocl_context_ptr},
+ *   };
+ *   ov_core_create_context_props(core, "GPU", 2, ctx_props, &ctx);
+ * @endcode
+ */
+typedef struct {
+    const char* key;   /*!< Property key string (see @c ov_property_key_xxx constants). */
+    const void* value; /*!< Property value: @c const char* string, GPU/OCL handle, or @c ov_encryption_callbacks*. */
+} ov_property_t;

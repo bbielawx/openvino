@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -32,6 +32,35 @@ public:
     void TearDown() override {
         ov_capi_test_base::TearDown();
     }
+};
+
+class ov_core_test_gpu : public ov_capi_test_base {
+public:
+    void SetUp() override {
+        core = nullptr;
+        OV_EXPECT_OK(ov_core_create(&core));
+        EXPECT_NE(nullptr, core);
+
+        // Check gpu plugin and hardware available.
+        bool gpu_device_available = false;
+        char* info = nullptr;
+        const char* key = ov_property_key_available_devices;
+        if (ov_core_get_property(core, "GPU", key, &info) == ov_status_e::OK) {
+            if (strlen(info) > 0) {
+                gpu_device_available = true;
+            }
+        }
+        ov_free(info);
+        if (!gpu_device_available) {
+            GTEST_SKIP();
+        }
+    }
+
+    void TearDown() override {
+        ov_core_free(core);
+    }
+
+    ov_core_t* core;
 };
 
 INSTANTIATE_TEST_SUITE_P(ov_core, ov_core_test, ::testing::Values("CPU"));
@@ -126,12 +155,16 @@ TEST_P(ov_core_test, ov_core_compile_model) {
     ov_core_free(core);
 }
 
-#ifdef OPENVINO_ARCH_ARM64
-// Ticket: 126283
-TEST_P(ov_core_test, DISABLED_ov_core_compile_model_with_property) {
-#else
+TEST_P(ov_core_test, ov_core_add_extension) {
+    ov_core_t* core = nullptr;
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    OV_EXPECT_OK(ov_core_add_extension(core, extension_file_path.c_str()));
+    ov_core_free(core);
+}
+
 TEST_P(ov_core_test, ov_core_compile_model_with_property) {
-#endif
     auto device_name = GetParam();
     ov_core_t* core = nullptr;
     OV_EXPECT_OK(ov_core_create(&core));
@@ -149,12 +182,7 @@ TEST_P(ov_core_test, ov_core_compile_model_with_property) {
 
     char* property_value = nullptr;
     OV_EXPECT_OK(ov_compiled_model_get_property(compiled_model, key, &property_value));
-#if defined(OPENVINO_ARCH_ARM) || defined(OPENVINO_ARCH_ARM64)
-    // TODO: fix once ARM plugin supports multi-stream
-    EXPECT_STREQ(property_value, "1");
-#else
     EXPECT_STREQ(property_value, "2");
-#endif
     ov_free(property_value);
 
     ov_compiled_model_free(compiled_model);
@@ -584,6 +612,140 @@ TEST_P(ov_core_test, ov_core_import_model) {
     ov_core_free(core);
 }
 
+static const char codec_key[] = {0x30, 0x60, 0x70, 0x02, 0x04, 0x08, 0x3F, 0x6F, 0x72, 0x74, 0x78, 0x7F};
+
+static void codec_xor(const char* in, const size_t in_size, char* out, size_t* out_size) {
+    if (!out || *out_size < in_size) {
+        *out_size = in_size;
+        return;
+    }
+    size_t key_size = sizeof(codec_key);
+    for (size_t i = 0; i < in_size; i++) {
+        out[i] = in[i] ^ codec_key[i % key_size];
+    }
+    *out_size = in_size;
+}
+
+TEST_P(ov_core_test, ov_core_import_model_with_encryption) {
+    auto device_name = GetParam();
+    ov_core_t* core = nullptr;
+
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    char* optimization_capabilites = NULL;
+    ov_core_get_property(core, device_name.c_str(), "OPTIMIZATION_CAPABILITIES", &optimization_capabilites);
+    if (std::string(optimization_capabilites).find("EXPORT_IMPORT") == std::string::npos) {
+        GTEST_SKIP() << "Skip this test, cause no EXPORT_IMPORT supported";
+    }
+
+    const char* key = ov_property_key_cache_encryption_callbacks;
+    ov_encryption_callbacks encryption_callbacks{codec_xor, codec_xor};
+
+    ov_compiled_model_t* compiled_model = nullptr;
+    OV_EXPECT_OK(ov_core_compile_model_from_file(core,
+                                                 xml_file_name.c_str(),
+                                                 device_name.c_str(),
+                                                 2,
+                                                 &compiled_model,
+                                                 key,
+                                                 &encryption_callbacks));
+    EXPECT_NE(nullptr, compiled_model);
+
+    std::string export_path = TestDataHelpers::get_exported_blob_file_name();
+    OV_EXPECT_OK(ov_compiled_model_export_model(compiled_model, export_path.c_str()));
+    ov_compiled_model_free(compiled_model);
+
+    std::vector<uint8_t> buffer(content_from_file(export_path.c_str(), true));
+    ov_compiled_model_t* compiled_model_imported = nullptr;
+    OV_EXPECT_OK(ov_core_import_model(core,
+                                      reinterpret_cast<const char*>(buffer.data()),
+                                      buffer.size(),
+                                      device_name.c_str(),
+                                      &compiled_model_imported));
+    EXPECT_NE(nullptr, compiled_model_imported);
+    ov_compiled_model_free(compiled_model_imported);
+    ov_core_free(core);
+}
+
+// Demonstrates passing ov_encryption_callbacks via ov_property_t — the library dispatches
+// by key, so the same _props function handles strings, callbacks, and GPU handles.
+TEST_P(ov_core_test, ov_core_compile_model_from_file_props_with_encryption) {
+    auto device_name = GetParam();
+    ov_core_t* core = nullptr;
+
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    char* optimization_capabilites = NULL;
+    ov_core_get_property(core, device_name.c_str(), "OPTIMIZATION_CAPABILITIES", &optimization_capabilites);
+    bool supports_export_import = std::string(optimization_capabilites).find("EXPORT_IMPORT") != std::string::npos;
+    ov_free(optimization_capabilites);
+    if (!supports_export_import) {
+        GTEST_SKIP() << "Skip this test, cause no EXPORT_IMPORT supported";
+    }
+
+    ov_encryption_callbacks encryption_callbacks{codec_xor, codec_xor};
+    ov_property_t props[] = {
+        {ov_property_key_cache_encryption_callbacks, &encryption_callbacks},
+    };
+    ov_compiled_model_t* compiled_model = nullptr;
+    OV_EXPECT_OK(ov_core_compile_model_from_file_props(core,
+                                                       xml_file_name.c_str(),
+                                                       device_name.c_str(),
+                                                       1,
+                                                       props,
+                                                       &compiled_model));
+    EXPECT_NE(nullptr, compiled_model);
+
+    std::string export_path = TestDataHelpers::get_exported_blob_file_name();
+    OV_EXPECT_OK(ov_compiled_model_export_model(compiled_model, export_path.c_str()));
+    ov_compiled_model_free(compiled_model);
+
+    std::vector<uint8_t> buffer(content_from_file(export_path.c_str(), true));
+    ov_compiled_model_t* compiled_model_imported = nullptr;
+    OV_EXPECT_OK(ov_core_import_model(core,
+                                      reinterpret_cast<const char*>(buffer.data()),
+                                      buffer.size(),
+                                      device_name.c_str(),
+                                      &compiled_model_imported));
+    EXPECT_NE(nullptr, compiled_model_imported);
+    ov_compiled_model_free(compiled_model_imported);
+    ov_core_free(core);
+}
+
+// Demonstrates mixing string property and encryption callback in one ov_property_t array.
+TEST_P(ov_core_test, ov_core_compile_model_props_with_encryption) {
+    auto device_name = GetParam();
+    ov_core_t* core = nullptr;
+    ov_model_t* model = nullptr;
+
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    char* optimization_capabilites = NULL;
+    ov_core_get_property(core, device_name.c_str(), "OPTIMIZATION_CAPABILITIES", &optimization_capabilites);
+    bool supports_export_import = std::string(optimization_capabilites).find("EXPORT_IMPORT") != std::string::npos;
+    ov_free(optimization_capabilites);
+    if (!supports_export_import) {
+        GTEST_SKIP() << "Skip this test, cause no EXPORT_IMPORT supported";
+    }
+
+    OV_EXPECT_OK(ov_core_read_model(core, xml_file_name.c_str(), nullptr, &model));
+    EXPECT_NE(nullptr, model);
+
+    ov_encryption_callbacks encryption_callbacks{codec_xor, codec_xor};
+    ov_property_t props[] = {
+        {ov_property_key_cache_encryption_callbacks, &encryption_callbacks},
+    };
+    ov_compiled_model_t* compiled_model = nullptr;
+    OV_EXPECT_OK(ov_core_compile_model_props(core, model, device_name.c_str(), 1, props, &compiled_model));
+    EXPECT_NE(nullptr, compiled_model);
+    ov_compiled_model_free(compiled_model);
+    ov_model_free(model);
+    ov_core_free(core);
+}
+
 TEST_P(ov_core_test, ov_core_get_versions_by_device_name) {
     auto device_name = GetParam();
     ov_core_t* core = nullptr;
@@ -675,6 +837,25 @@ TEST_P(ov_core_test, ov_core_compile_model_from_file_unicode) {
 }
 #endif
 
+INSTANTIATE_TEST_SUITE_P(ov_core_gpu, ov_core_test_gpu, ::testing::Values("GPU"));
+
+TEST_P(ov_core_test_gpu, ov_core_set_get_property_gpu) {
+    auto device_name = GetParam();
+    ov_core_t* core = nullptr;
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    const char* key_config = ov_property_key_intel_gpu_config_file;
+
+    OV_EXPECT_OK(ov_core_set_property(core, device_name.c_str(), key_config, TEST_CUSTOM_OP_CONFIG_PATH));
+
+    char* property_value_config = nullptr;
+    OV_EXPECT_OK(ov_core_get_property(core, device_name.c_str(), key_config, &property_value_config));
+    EXPECT_STREQ(TEST_CUSTOM_OP_CONFIG_PATH, property_value_config);
+
+    ov_core_free(core);
+}
+
 using ov_util_test = ov_core_test;
 INSTANTIATE_TEST_SUITE_P(ov_capi_test, ov_util_test, ::testing::Values("CPU"));
 
@@ -705,6 +886,139 @@ TEST_P(ov_util_test, ov_get_last_err_msg_check_empty_msg) {
 
     auto err_msg = ov_get_last_err_msg();
     EXPECT_EQ(nullptr, err_msg);
+    ov_core_free(core);
+}
+
+TEST_P(ov_core_test, ov_core_set_properties) {
+    auto device_name = GetParam();
+    ov_core_t* core = nullptr;
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    const ov_property_t props[] = {{ov_property_key_log_level, "WARNING"}};
+    OV_EXPECT_OK(ov_core_set_properties(core, device_name.c_str(), 1, props));
+    ov_core_free(core);
+}
+
+TEST_P(ov_core_test, ov_core_set_properties_same_as_variadic) {
+    auto device_name = GetParam();
+    ov_core_t* core = nullptr;
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    const char* key = ov_property_key_hint_performance_mode;
+    const char* val = "LATENCY";
+
+    const ov_property_t props[] = {{key, val}};
+    OV_EXPECT_OK(ov_core_set_properties(core, device_name.c_str(), 1, props));
+
+    char* result = nullptr;
+    OV_EXPECT_OK(ov_core_get_property(core, device_name.c_str(), key, &result));
+    EXPECT_STREQ(val, result);
+    ov_free(result);
+    ov_core_free(core);
+}
+
+TEST_P(ov_core_test, ov_core_set_properties_null_args) {
+    ov_core_t* core = nullptr;
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    OV_EXPECT_NOT_OK(ov_core_set_properties(nullptr, "CPU", 0, nullptr));
+    OV_EXPECT_NOT_OK(ov_core_set_properties(core, "CPU", 1, nullptr));
+    OV_EXPECT_NOT_OK(ov_core_set_properties(core, "CPU", 0, nullptr));
+    ov_core_free(core);
+}
+
+TEST_P(ov_core_test, ov_core_compile_model_props) {
+    auto device_name = GetParam();
+    ov_core_t* core = nullptr;
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    ov_model_t* model = nullptr;
+    OV_EXPECT_OK(ov_core_read_model(core, xml_file_name.c_str(), bin_file_name.c_str(), &model));
+    EXPECT_NE(nullptr, model);
+
+    const char* key = ov_property_key_hint_performance_mode;
+    const char* val = "LATENCY";
+    const ov_property_t props[] = {{key, val}};
+
+    ov_compiled_model_t* compiled_model = nullptr;
+    OV_EXPECT_OK(ov_core_compile_model_props(core, model, device_name.c_str(), 1, props, &compiled_model));
+    EXPECT_NE(nullptr, compiled_model);
+
+    char* result = nullptr;
+    OV_EXPECT_OK(ov_compiled_model_get_property(compiled_model, key, &result));
+    EXPECT_STREQ(val, result);
+    ov_free(result);
+
+    ov_compiled_model_free(compiled_model);
+    ov_model_free(model);
+    ov_core_free(core);
+}
+
+TEST_P(ov_core_test, ov_core_compile_model_props_same_as_variadic) {
+    auto device_name = GetParam();
+    ov_core_t* core = nullptr;
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    ov_model_t* model = nullptr;
+    OV_EXPECT_OK(ov_core_read_model(core, xml_file_name.c_str(), bin_file_name.c_str(), &model));
+    EXPECT_NE(nullptr, model);
+
+    const char* key = ov_property_key_hint_performance_mode;
+    const char* val = "LATENCY";
+
+    // variadic path
+    ov_compiled_model_t* cm_variadic = nullptr;
+    OV_EXPECT_OK(ov_core_compile_model(core, model, device_name.c_str(), 2, &cm_variadic, key, val));
+    char* res_variadic = nullptr;
+    OV_EXPECT_OK(ov_compiled_model_get_property(cm_variadic, key, &res_variadic));
+
+    // struct-array path
+    const ov_property_t props[] = {{key, val}};
+    ov_compiled_model_t* cm_array = nullptr;
+    OV_EXPECT_OK(ov_core_compile_model_props(core, model, device_name.c_str(), 1, props, &cm_array));
+    char* res_array = nullptr;
+    OV_EXPECT_OK(ov_compiled_model_get_property(cm_array, key, &res_array));
+
+    EXPECT_STREQ(res_variadic, res_array);
+
+    ov_free(res_variadic);
+    ov_free(res_array);
+    ov_compiled_model_free(cm_variadic);
+    ov_compiled_model_free(cm_array);
+    ov_model_free(model);
+    ov_core_free(core);
+}
+
+TEST_P(ov_core_test, ov_core_compile_model_from_file_props) {
+    auto device_name = GetParam();
+    ov_core_t* core = nullptr;
+    OV_EXPECT_OK(ov_core_create(&core));
+    EXPECT_NE(nullptr, core);
+
+    const char* key = ov_property_key_hint_performance_mode;
+    const char* val = "THROUGHPUT";
+    const ov_property_t props[] = {{key, val}};
+
+    ov_compiled_model_t* compiled_model = nullptr;
+    OV_EXPECT_OK(ov_core_compile_model_from_file_props(core,
+                                                       xml_file_name.c_str(),
+                                                       device_name.c_str(),
+                                                       1,
+                                                       props,
+                                                       &compiled_model));
+    EXPECT_NE(nullptr, compiled_model);
+
+    char* result = nullptr;
+    OV_EXPECT_OK(ov_compiled_model_get_property(compiled_model, key, &result));
+    EXPECT_STREQ(val, result);
+    ov_free(result);
+
+    ov_compiled_model_free(compiled_model);
     ov_core_free(core);
 }
 

@@ -1,4 +1,4 @@
-// Copyright (C) 2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,13 +6,55 @@
 #include "kernel_selector_utils.h"
 #include <string>
 
+namespace {
+    std::vector<kernel_selector::fused_operation_desc>::const_iterator get_dq_it(const kernel_selector::rms_params& params) {
+        return std::find_if(params.fused_ops.begin(), params.fused_ops.end(), [](const kernel_selector::fused_operation_desc& f) {
+            return f.GetType() == kernel_selector::KernelType::DYNAMIC_QUANTIZE;
+        });
+    }
+
+    bool has_dynamic_quantize_post_op(const kernel_selector::rms_params& params) {
+        return get_dq_it(params) != params.fused_ops.end();
+    }
+} // namespace
+
 namespace kernel_selector {
+static constexpr size_t subgroup_size = 16;
+
+static bool is_feature_axis_normalization(const rms_params& params) {
+    const auto axis = params.axis < 0 ? params.axis + params.ov_input_rank : params.axis;
+    return axis == 1 && (params.ov_input_rank == 4 || params.ov_input_rank == 5);
+}
+
+// Compute maximum possible LWS that does not exceed device capabilities and optimizes number of global memory reads
+static std::pair<size_t, size_t> get_item_num_and_lws(const rms_params params, size_t data_size) {
+    size_t lws = 1;
+    size_t itemsNum = data_size;
+    const auto& input = params.inputs[0];
+    auto local_mem_per_wi = 2 * BytesPerElement(input.GetDType());
+    auto max_lws = std::min(params.engineInfo.maxWorkGroupSize, params.engineInfo.maxLocalMemSize / local_mem_per_wi);
+
+    while ((itemsNum > 8 || lws < itemsNum) && (2 * lws <= max_lws)) {
+        if (has_dynamic_quantize_post_op(params) && (itemsNum / 2) % 2 == 1) {
+            break;
+        }
+        lws *= 2;
+        itemsNum /= 2;
+    }
+    return {itemsNum, lws};
+}
+
 ParamsKey RMSKernelBfyxOpt::GetSupportedKey() const {
     ParamsKey k;
     k.EnableInputDataType(Datatype::F16);
+    k.EnableInputDataType(Datatype::BF16);
     k.EnableInputDataType(Datatype::F32);
     k.EnableOutputDataType(Datatype::F16);
+    k.EnableOutputDataType(Datatype::BF16);
     k.EnableOutputDataType(Datatype::F32);
+    k.EnableOutputDataType(Datatype::F8E4M3);
+    k.EnableOutputDataType(Datatype::F8E5M2);
+    k.EnableOutputDataType(Datatype::F8E8M0);
     k.EnableInputLayout(DataLayout::bfyx);
     k.EnableInputLayout(DataLayout::bfzyx);
     k.EnableOutputLayout(DataLayout::bfyx);
@@ -25,54 +67,136 @@ ParamsKey RMSKernelBfyxOpt::GetSupportedKey() const {
     return k;
 }
 
+DeviceFeaturesKey RMSKernelBfyxOpt::get_required_device_features_key(const Params& params) const {
+    DeviceFeaturesKey k;
+    k.requires_subgroups();
+    k.requires_subgroup_reduce();
+    k.requires_reqd_subgroup_size();
+
+    return k;
+}
+
 JitConstants RMSKernelBfyxOpt::GetJitConstants(const rms_params& params, DispatchData dispatchData) const {
     auto jit = Parent::GetJitConstants(params, dispatchData);
 
+    bool gamma_is_scalar = false;
+    if (params.elementwise_affine && !params.inputs[1].is_dynamic()) {
+        gamma_is_scalar = params.inputs[1].LogicalSize() == 1;
+    }
+    jit.AddConstant(MakeJitConstant("RMS_GAMMA_IS_SCALAR", gamma_is_scalar));
+
+    const bool feature_axis = is_feature_axis_normalization(params);
+    jit.AddConstant(MakeJitConstant("RMS_FEATURE_AXIS", feature_axis));
+    if (feature_axis) {
+        if (!params.fused_ops.empty()) {
+            std::vector<std::string> idx_order;
+            if (params.inputs[0].GetDims().size() == 5) {
+                idx_order = {"(b_idx)", "(f_idx)", "(z_idx)", "(y_idx)", "(x_idx)"};
+            } else {
+                idx_order = {"(b_idx)", "(f_idx)", "(y_idx)", "(x_idx)"};
+            }
+            auto conf = FusedOpsConfiguration("", idx_order, "normalized", params.outputs[0].GetDType(), 1);
+            jit.Merge(MakeFusedOpsJitConstants(params, {conf}));
+        }
+    }
+
+    // Check for any padding (dynamic or static) on input dimensions.
+    // The flat addressing path (data_idx * data_size) assumes contiguous memory,
+    // which breaks when padding introduces gaps between slices (e.g., from in-place crop).
+    // Switch to per-dimension indexed addressing via get_input_index() in that case.
+    bool has_padding = false;
+    for (const auto& dim : params.inputs[0].GetDims()) {
+        if (dim.pad.is_dynamic || dim.pad.before != 0 || dim.pad.after != 0) {
+            has_padding = true;
+            break;
+        }
+    }
+
+    if (has_padding) {
+        jit.AddConstant(MakeJitConstant("HAS_PADDING", 1));
+    }
+
     if (params.has_dynamic_tensors()) {
         const auto& input = params.inputs[0];
-        DimensionAccessHelper dims(input);
+        DimensionAccessHelperJit dims(input);
         std::string data_size;
-        switch (params.ov_input_rank) {
-            case 1 :
+        if (feature_axis) {
+            data_size = dims.f();
+        } else {
+            switch (params.ov_input_rank) {
+            case 1:
                 data_size = dims.b();
                 break;
-            case 2 :
+            case 2:
                 data_size = dims.f();
                 break;
-            case 3 :
+            case 3:
                 data_size = dims.y();
                 break;
             default:
                 data_size = dims.x();
                 break;
+            }
         }
 
         const std::string lws_0 = "get_local_size(0)";
+        // data_size string starts digit when it has static dim.
+        bool is_static_data_size = std::isdigit(data_size[0]) != 0;
+        size_t stack_size = 33;
+        if (is_static_data_size) {
+            auto item_num_and_lws = get_item_num_and_lws(params, stoi(data_size));
+            stack_size = cldnn::ceil_div(std::stoi(data_size), item_num_and_lws.second);
+        }
         jit.AddConstants({
             MakeJitConstant("DATA_SIZE", data_size),
             MakeJitConstant("LWS", lws_0),
-            MakeJitConstant("SLM_SIZE", dispatchData.maxSlmSize)
+            MakeJitConstant("SLM_SIZE", dispatchData.maxSlmSize),
+            MakeJitConstant("STACK_SIZE", stack_size)
         });
     } else {
         jit.AddConstants({
             MakeJitConstant("DATA_SIZE", dispatchData.dataSize),
-            MakeJitConstant("LWS", dispatchData.slmSize),
-            MakeJitConstant("SLM_SIZE", dispatchData.slmSize),
-            MakeJitConstant("LEFTOVERS", dispatchData.leftovers)
+            MakeJitConstant("LWS", dispatchData.lws[0]),
+            MakeJitConstant("SLM_SIZE", dispatchData.lws[0]),
+            MakeJitConstant("STACK_SIZE", dispatchData.itemsNum + 1)
         });
     }
-    jit.AddConstants({
-        MakeJitConstant("VEC_SIZE", vec_size),
-        MakeJitConstant("VLOAD", "CAT(vload, VEC_SIZE)"),
-        MakeJitConstant("VSTORE", "CAT(vstore, VEC_SIZE)"),
-        MakeJitConstant("INPUT_VEC_TYPE", "MAKE_VECTOR_TYPE(INPUT0_TYPE, VEC_SIZE)"),
-        MakeJitConstant("ACCUMULATOR_VEC_TYPE", "MAKE_VECTOR_TYPE(ACCUMULATOR_TYPE, VEC_SIZE)"),
-        MakeJitConstant("OUTPUT_VEC_TYPE", "MAKE_VECTOR_TYPE(OUTPUT_TYPE, VEC_SIZE)"),
-        MakeJitConstant("AS_INPUT_VEC_TYPE", "CAT(as_, INPUT_VEC_TYPE)"),
-        MakeJitConstant("AS_ACCUMULATOR_VEC_TYPE", "CAT(as_, ACCUMULATOR_VEC_TYPE)"),
-        MakeJitConstant("TO_ACCUMULATOR_VEC_TYPE", "CAT(convert_, ACCUMULATOR_VEC_TYPE)"),
-        MakeJitConstant("TO_OUTPUT_VEC_TYPE", "CAT(convert_, OUTPUT_VEC_TYPE)"),
-    });
+    jit.AddConstant(MakeJitConstant("SUB_GROUP_SIZE", subgroup_size));
+    jit.AddConstant(MakeJitConstant("SUBGROUP_BLOCK_SIZE", dispatchData.subgroupBlockSize));
+    if (!params.fused_ops.empty() && !feature_axis) {
+        switch (params.ov_input_rank) {
+            case 1 :
+                jit.AddConstant(MakeJitConstant("LAST_DIM", "b"));
+                break;
+            case 2 :
+                jit.AddConstant(MakeJitConstant("LAST_DIM", "f"));
+                break;
+            case 3 :
+                jit.AddConstant(MakeJitConstant("LAST_DIM", "y"));
+                break;
+            default:
+                jit.AddConstant(MakeJitConstant("LAST_DIM", "x"));
+                break;
+        }
+
+        std::vector<std::string> idx_order;
+        if (params.inputs[0].GetDims().size() == 5) {
+            idx_order = { "(b)", "(f)", "(z)", "(y)", "(x)" };
+        } else if (params.inputs[0].GetDims().size() <= 4) {
+            idx_order = { "(b)", "(f)", "(y)", "(x)" };
+        } else {
+            OPENVINO_THROW("rms_bfyx_opt doesn't support 5D or higher dims.");
+        }
+
+        const bool has_dynamic_quantize = has_dynamic_quantize_post_op(params);
+        const auto fused_output_type = has_dynamic_quantize ? Datatype::F32 : params.outputs[0].GetDType();
+        auto conf = FusedOpsConfiguration("", idx_order, "normalized", fused_output_type, 1);
+        jit.Merge(MakeFusedOpsJitConstants(params, { conf }));
+        if (has_dynamic_quantize) {
+            jit.AddConstant(MakeJitConstant("HAS_DYNAMIC_QUANTIZE", "1"));
+            jit.AddConstant(MakeJitConstant("OUTPUT1", get_dq_it(params)->output_tensors[1]));
+        }
+    }
 
     return jit;
 }
@@ -81,13 +205,16 @@ RMSKernelBase::DispatchData RMSKernelBfyxOpt::SetDefault(const rms_params& param
     DispatchData dispatchData;
     const auto& input = params.inputs[0];
 
-    auto local_mem_per_wi = 2 * BytesPerElement(params.inputs[0].GetDType());
+    auto local_mem_per_wi = 2 * BytesPerElement(input.GetDType());
     auto max_lws = std::min(params.engineInfo.maxWorkGroupSize, params.engineInfo.maxLocalMemSize / local_mem_per_wi);
     dispatchData.maxSlmSize = max_lws;
-
     if (!params.has_dynamic_tensors()) {
         // data size to be processed within a LWG
-        switch (params.ov_input_rank) {
+        if (is_feature_axis_normalization(params)) {
+            dispatchData.dataSize = input.Feature().v;
+            dispatchData.dataCount = input.Batch().v * input.Z().v * input.Y().v * input.X().v;
+        } else {
+            switch (params.ov_input_rank) {
             case 1:
                 dispatchData.dataSize = input.Batch().v;
                 dispatchData.dataCount = 1;
@@ -104,42 +231,56 @@ RMSKernelBase::DispatchData RMSKernelBfyxOpt::SetDefault(const rms_params& param
                 dispatchData.dataSize = input.X().v;
                 dispatchData.dataCount = input.Batch().v * input.Feature().v * input.Z().v * input.Y().v;
                 break;
+            }
         }
-
-        dispatchData.slmSize = dispatchData.dataSize / vec_size;
-        dispatchData.leftovers = dispatchData.dataSize % vec_size;
-
-        dispatchData.gws[0] = dispatchData.slmSize;
+        dispatchData.gws[0] = 1;
         dispatchData.gws[1] = dispatchData.dataCount;
         dispatchData.gws[2] = 1;
 
-        dispatchData.lws[0] = dispatchData.slmSize;
+        dispatchData.lws[0] = 1;
         dispatchData.lws[1] = 1;
         dispatchData.lws[2] = 1;
+
+        auto item_num_and_lws = get_item_num_and_lws(params, dispatchData.dataSize);
+        dispatchData.itemsNum = item_num_and_lws.first;
+        dispatchData.lws[0] = item_num_and_lws.second;
+        dispatchData.gws[0] = dispatchData.lws[0];
+        dispatchData.leftovers = dispatchData.dataSize % dispatchData.lws[0];
+
+        if (dispatchData.itemsNum >> 3) {
+            dispatchData.subgroupBlockSize = 8;
+        } else if (dispatchData.itemsNum >> 2) {
+            dispatchData.subgroupBlockSize = 4;
+        } else if (dispatchData.itemsNum >> 1) {
+            dispatchData.subgroupBlockSize = 2;
+        } else {
+            dispatchData.subgroupBlockSize = 1;
+        }
+    } else {
+        dispatchData.subgroupBlockSize = 8;
+    }
+    if (has_dynamic_quantize_post_op(params)) {
+        OPENVINO_ASSERT(dispatchData.subgroupBlockSize != 1 && dispatchData.leftovers == 0 && subgroup_size == 16);
     }
     return dispatchData;
 }
 
 bool RMSKernelBfyxOpt::Validate(const Params& p) const {
-    if (!Parent::Validate(p))
-        return false;
-
-    const rms_params& params = static_cast<const rms_params&>(p);
-    const auto& gamma = params.inputs[1];
-
-    if (!gamma.is_dynamic()) {
-        size_t data_size = gamma.LogicalSize();
-        if (data_size < vec_size) {
-            return false;
-        }
-        auto local_mem_per_wi = 2 * BytesPerElement(params.inputs[0].GetDType());
-        auto max_lws = std::min(params.engineInfo.maxWorkGroupSize, params.engineInfo.maxLocalMemSize / local_mem_per_wi);
-        auto slm_size = data_size / vec_size;
-        if (slm_size > max_lws) {
-            return false;
-        }
+    if (!Parent::Validate(p)) {
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
+    const rms_params& params = static_cast<const rms_params&>(p);
+    if (params.elementwise_affine) {
+        const auto& gamma = params.inputs[1];
+
+        if (!gamma.is_dynamic()) {
+            size_t data_size = gamma.LogicalSize();
+            if (data_size != 1 && data_size < subgroup_size) {
+                DO_NOT_USE_THIS_KERNEL(p.layerID);
+            }
+        }
+    }
     return true;
 }
 

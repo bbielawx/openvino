@@ -1,10 +1,10 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import defaultdict
 from datetime import timedelta
 import enum
-from openvino.runtime import Core, Model, PartialShape, Dimension, Layout, Type, serialize, properties, OVAny
+from openvino import Core, Model, PartialShape, Dimension, Layout, Type, serialize, properties, OVAny
 from openvino.preprocess import PrePostProcessor
 
 from .constants import DEVICE_DURATION_IN_SECS, UNKNOWN_DEVICE_TYPE, \
@@ -290,6 +290,9 @@ def parse_devices(device_string):
     if device_string.find(":") != -1:
         hw_devices_str = device_string.partition(":")[-1]
         for hw_device in hw_devices_str.split(','):
+            hw_device = hw_device.strip()
+            if not hw_device:
+                continue
             if hw_device[0] == '-':
                 hw_device = hw_device[1:]
             result.append(hw_device)
@@ -467,13 +470,15 @@ def get_command_line_arguments(argv):
     arg_name = ''
     arg_value = ''
     for arg in argv[1:]:
-        if '=' in arg:
-            arg_name, arg_value = arg.split('=')
+        if arg.startswith('-') and '=' in arg:
+            if arg_name != '':
+                parameters.append((arg_name, arg_value))
+            arg_name, arg_value = arg.split('=', 1)
             parameters.append((arg_name, arg_value))
             arg_name = ''
             arg_value = ''
         else:
-          if arg[0] == '-':
+          if arg.startswith('-'):
               if arg_name != '':
                 parameters.append((arg_name, arg_value))
                 arg_value = ''
@@ -486,7 +491,7 @@ def get_command_line_arguments(argv):
 
 
 def get_input_output_names(ports):
-    return [port.any_name for port in ports]
+    return [port.any_name if port.get_names() else port.node.get_friendly_name() for port in ports]
 
 def get_node_names(ports):
     return [port.node.friendly_name for port in ports]
@@ -764,8 +769,6 @@ def device_properties_to_string(config):
             for sk, sv in v.items():
                 if isinstance(sv, bool):
                     sv = "YES" if sv else "NO"
-                if isinstance(sv, properties.Affinity):
-                    sv = sv.name
                 sub_str += "{0}:{1},".format(sk, sv)
             sub_str = sub_str[:-1]
             sub_str += "}"
@@ -806,7 +809,7 @@ def dump_config(filename, config):
         for key, value in device_config.items():
             if isinstance(value, OVAny) and (isinstance(value.value, dict)):
                 value_string = device_properties_to_string(value.get())
-            elif isinstance(value, (properties.hint.PerformanceMode, properties.Affinity)):
+            elif isinstance(value, properties.hint.PerformanceMode):
                 value_string = value.name
             elif isinstance(value, OVAny):
                 value_string = str(value.value)

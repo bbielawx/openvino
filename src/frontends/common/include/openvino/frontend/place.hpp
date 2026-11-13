@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,8 +10,7 @@
 
 #include "openvino/frontend/visibility.hpp"
 
-namespace ov {
-namespace frontend {
+namespace ov::frontend {
 /// \brief An interface for identifying a place in a graph and iterate over it; can refer to
 /// an operation node, tensor, port etc.
 ///
@@ -61,7 +60,7 @@ class FRONTEND_API Place {
 public:
     typedef std::shared_ptr<Place> Ptr;
 
-    virtual ~Place() = 0;
+    virtual ~Place();
 
     /// \brief All associated names (synonyms) that identify this place in the graph in a
     /// framework specific way
@@ -302,5 +301,4 @@ public:
     /// \param another Another place object
     virtual bool is_equal_data(const Ptr& another) const;
 };
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend

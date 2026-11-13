@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -18,6 +18,7 @@ ParamsKey PoolingKernelGPUInt8Ref::GetSupportedKey() const {
     k.EnableInputLayout(DataLayout::bfzyx);
     k.EnableInputLayout(DataLayout::yxfb);
     k.EnableInputLayout(DataLayout::byxf);
+    k.EnableInputLayout(DataLayout::fs_b_yx_fsv32);
     k.EnableInputLayout(DataLayout::b_fs_yx_fsv4);
     k.EnableInputLayout(DataLayout::b_fs_yx_fsv32);
     k.EnableInputLayout(DataLayout::b_fs_zyx_fsv32);
@@ -30,6 +31,7 @@ ParamsKey PoolingKernelGPUInt8Ref::GetSupportedKey() const {
     k.EnableOutputLayout(DataLayout::bfzyx);
     k.EnableOutputLayout(DataLayout::yxfb);
     k.EnableOutputLayout(DataLayout::byxf);
+    k.EnableOutputLayout(DataLayout::fs_b_yx_fsv32);
     k.EnableOutputLayout(DataLayout::b_fs_yx_fsv4);
     k.EnableOutputLayout(DataLayout::b_fs_yx_fsv32);
     k.EnableOutputLayout(DataLayout::b_fs_zyx_fsv32);
@@ -84,20 +86,21 @@ JitConstants PoolingKernelGPUInt8Ref::GetJitConstants(const pooling_params& para
 
 bool PoolingKernelGPUInt8Ref::Validate(const Params& params) const {
     if (!PoolingKernelBase::Validate(params)) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(params.layerID);
     }
     auto p = dynamic_cast<const pooling_params&>(params);
 
     if (p.inputs[0].GetDType() == Datatype::INT8 || p.inputs[0].GetDType() == Datatype::UINT8) {
         // Max pooling doesn't change quantization ranges, so output data type should be the same as input
         if (p.poolType == PoolType::MAX && p.outputs[0].GetDType() != p.inputs[0].GetDType() &&
-            p.quantization == QuantizationType::NONE)
-            return false;
+            p.quantization == QuantizationType::NONE) {
+            DO_NOT_USE_THIS_KERNEL(params.layerID);
+        }
 //         Average pooling should produce FP by default. (u)int8 is possible when quantize op is fused.
 //        if (p.poolType == PoolType::AVG &&
 //            !((p.outputs[0].GetDType() == p.inputs[0].GetDType() && !p.fused_ops.empty()) ||
 //              (p.outputs[0].GetDType() == Datatype::F32 || p.outputs[0].GetDType() == Datatype::F16)))
-//            return false;
+//            DO_NOT_USE_THIS_KERNEL(params.layerID);
     }
 
     return true;

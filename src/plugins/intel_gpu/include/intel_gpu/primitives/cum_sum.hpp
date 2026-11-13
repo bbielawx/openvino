@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -21,9 +21,8 @@ struct cum_sum : public primitive_base<cum_sum> {
             const input_info& input,
             const int64_t axis = 0,
             const bool exclusive = false,
-            const bool reverse = false,
-            const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}), axis(axis), exclusive(exclusive), reverse(reverse)
+            const bool reverse = false)
+        : primitive_base(id, {input}), axis(axis), exclusive(exclusive), reverse(reverse)
     {}
 
     /// @brief Scalar axis.
@@ -42,8 +41,9 @@ struct cum_sum : public primitive_base<cum_sum> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const cum_sum>(rhs);
 

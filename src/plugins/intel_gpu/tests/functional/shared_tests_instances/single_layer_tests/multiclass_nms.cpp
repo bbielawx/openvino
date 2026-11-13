@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,6 +10,7 @@
 #include "common_test_utils/ov_tensor_utils.hpp"
 #include "common_test_utils/test_enums.hpp"
 #include "common_test_utils/data_utils.hpp"
+#include "openvino/op/multiclass_nms.hpp"
 
 namespace ov {
 namespace test {
@@ -65,25 +66,13 @@ TEST_P(MulticlassNmsLayerTestGPU8, Inference) {
 };
 
 std::string MulticlassNmsLayerTestGPU::getTestCaseName(const testing::TestParamInfo<MulticlassNmsParamsGPU>& obj) {
-    std::vector<ov::test::InputShape> shapes;
-    InputTypes input_types;
-    int32_t nmsTopK, backgroundClass, keepTopK;
-    ov::element::Type outType;
-    op::util::MulticlassNmsBase::SortResultType sortResultType;
-    InputfloatVar inFloatVar;
-    InputboolVar inboolVar;
-    std::string targetDevice;
+    const auto& [shapes, input_types, nmsTopK, inFloatVar, backgroundClass, keepTopK, outType, sortResultType, inboolVar, targetDevice] = obj.param;
 
-    std::tie(shapes, input_types, nmsTopK, inFloatVar, backgroundClass, keepTopK, outType, sortResultType, inboolVar, targetDevice) = obj.param;
+    const auto& [paramsPrec, roisnumPrec] = input_types;
 
-    ov::test::ElementType paramsPrec, roisnumPrec;
-    std::tie(paramsPrec, roisnumPrec) = input_types;
+    const auto& [iouThr, scoreThr, nmsEta] = inFloatVar;
 
-    float iouThr, scoreThr, nmsEta;
-    std::tie(iouThr, scoreThr, nmsEta) = inFloatVar;
-
-    bool sortResCB, normalized;
-    std::tie(sortResCB, normalized) = inboolVar;
+    const auto& [sortResCB, normalized] = inboolVar;
 
     std::ostringstream result;
     result << "IS=(";
@@ -237,8 +226,8 @@ void MulticlassNmsLayerTestGPU::compare(const std::vector<ov::Tensor> &expectedO
     for (int outputIndex = static_cast<int>(expectedOutputs.size()) - 1; outputIndex >= 0; outputIndex--) {
         const auto& expected = expectedOutputs[outputIndex];
         const auto& actual = actualOutputs[outputIndex];
-        const auto actualBuffer = static_cast<uint8_t*>(actual.data());
-        const auto expectedBuffer = static_cast<uint8_t*>(expected.data());
+        const auto actualBuffer = static_cast<const uint8_t*>(actual.data());
+        const auto expectedBuffer = static_cast<const uint8_t*>(expected.data());
 
         const auto expected_shape = expected.get_shape();
         const auto actual_shape = actual.get_shape();
@@ -270,7 +259,7 @@ void MulticlassNmsLayerTestGPU::compare(const std::vector<ov::Tensor> &expectedO
                         break;
                     }
 
-                    const auto fBuffer = static_cast<float*>(actual.data());
+                    const auto fBuffer = static_cast<const float*>(actual.data());
                     for (size_t tailing = validNums * 6; tailing < maxOutputBoxesPerBatch * 6; tailing++) {
                         ASSERT_TRUE(std::abs(fBuffer[(actual_offset * 6 + tailing)] - -1.f) < 1e-5)
                             << "Invalid default value: " << fBuffer[i] << " at index: " << i;
@@ -341,29 +330,17 @@ void MulticlassNmsLayerTestGPU::compare(const std::vector<ov::Tensor> &expectedO
 }
 
 void MulticlassNmsLayerTestGPU::SetUp() {
-    std::vector<InputShape> shapes;
-    InputTypes input_types;
-    size_t maxOutBoxesPerClass, backgroundClass, keepTopK;
-    element::Type outType;
-
-    op::util::MulticlassNmsBase::SortResultType sortResultType;
-
-    InputfloatVar inFloatVar;
-    InputboolVar inboolVar;
-
-    std::tie(shapes, input_types, maxOutBoxesPerClass, inFloatVar, backgroundClass, keepTopK, outType, sortResultType, inboolVar, targetDevice)
-        = this->GetParam();
+    const auto& [shapes, input_types, maxOutBoxesPerClass, inFloatVar, backgroundClass, keepTopK, outType, sortResultType, inboolVar, _targetDevice] =
+        this->GetParam();
+    targetDevice = _targetDevice;
 
     init_input_shapes(shapes);
 
-    ElementType paramsPrec, roisnumPrec;
-    std::tie(paramsPrec, roisnumPrec) = input_types;
+    const auto& [paramsPrec, roisnumPrec] = input_types;
 
-    float iouThr, scoreThr, nmsEta;
-    std::tie(iouThr, scoreThr, nmsEta) = inFloatVar;
+    const auto& [iouThr, scoreThr, nmsEta] = inFloatVar;
 
-    bool sortResCB, normalized;
-    std::tie(sortResCB, normalized) = inboolVar;
+    const auto& [sortResCB, normalized] = inboolVar;
 
     ov::ParameterVector params {std::make_shared<ov::op::v0::Parameter>(paramsPrec, inputDynamicShapes.at(0)),
                                 std::make_shared<ov::op::v0::Parameter>(paramsPrec, inputDynamicShapes.at(1))};
@@ -430,61 +407,50 @@ const std::vector<bool> sortResDesc = {true, false};
 const std::vector<float> nmsEta = {0.6f, 1.0f};
 const std::vector<bool> normalized = {true, false};
 
-const auto params_v9_2Inputs = ::testing::Combine(
-    ::testing::ValuesIn(ov::test::static_shapes_to_test_representation(shapes2Inputs)),
-    ::testing::Combine(::testing::Values(ov::element::f32),
-                       ::testing::Values(ov::element::i32)),
-    ::testing::ValuesIn(nmsTopK),
-    ::testing::Combine(::testing::ValuesIn(iouThreshold), ::testing::ValuesIn(scoreThreshold), ::testing::ValuesIn(nmsEta)),
-    ::testing::ValuesIn(backgroundClass),
-    ::testing::ValuesIn(keepTopK),
-    ::testing::ValuesIn(outType),
-    ::testing::ValuesIn(sortResultType),
-    ::testing::Combine(::testing::ValuesIn(sortResDesc), ::testing::ValuesIn(normalized)),
-    ::testing::Values(ov::test::utils::DEVICE_GPU));
+INSTANTIATE_TEST_SUITE_P(
+    smoke_MulticlassNmsLayerTest_v9_2inputs,
+    MulticlassNmsLayerTestGPU,
+    ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(shapes2Inputs)),
+                       ::testing::Combine(::testing::Values(ov::element::f32), ::testing::Values(ov::element::i32)),
+                       ::testing::ValuesIn(nmsTopK),
+                       ::testing::Combine(::testing::ValuesIn(iouThreshold), ::testing::ValuesIn(scoreThreshold), ::testing::ValuesIn(nmsEta)),
+                       ::testing::ValuesIn(backgroundClass),
+                       ::testing::ValuesIn(keepTopK),
+                       ::testing::ValuesIn(outType),
+                       ::testing::ValuesIn(sortResultType),
+                       ::testing::Combine(::testing::ValuesIn(sortResDesc), ::testing::ValuesIn(normalized)),
+                       ::testing::Values(ov::test::utils::DEVICE_GPU)),
+    MulticlassNmsLayerTestGPU::getTestCaseName);
 
+INSTANTIATE_TEST_SUITE_P(
+    smoke_MulticlassNmsLayerTest_v9_3inputs,
+    MulticlassNmsLayerTestGPU,
+    ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(shapes3Inputs)),
+                       ::testing::Combine(::testing::Values(ov::element::f32), ::testing::Values(ov::element::i32)),
+                       ::testing::ValuesIn(nmsTopK),
+                       ::testing::Combine(::testing::ValuesIn(iouThreshold), ::testing::ValuesIn(scoreThreshold), ::testing::ValuesIn(nmsEta)),
+                       ::testing::ValuesIn(backgroundClass),
+                       ::testing::ValuesIn(keepTopK),
+                       ::testing::ValuesIn(outType),
+                       ::testing::ValuesIn(sortResultType),
+                       ::testing::Combine(::testing::ValuesIn(sortResDesc), ::testing::ValuesIn(normalized)),
+                       ::testing::Values(ov::test::utils::DEVICE_GPU)),
+    MulticlassNmsLayerTestGPU::getTestCaseName);
 
-INSTANTIATE_TEST_SUITE_P(smoke_MulticlassNmsLayerTest_v9_2inputs,
-                         MulticlassNmsLayerTestGPU,
-                         params_v9_2Inputs,
-                         MulticlassNmsLayerTestGPU::getTestCaseName);
-
-const auto params_v9_3Inputs = ::testing::Combine(
-    ::testing::ValuesIn(ov::test::static_shapes_to_test_representation(shapes3Inputs)),
-    ::testing::Combine(::testing::Values(ov::element::f32),
-                       ::testing::Values(ov::element::i32)),
-    ::testing::ValuesIn(nmsTopK),
-    ::testing::Combine(::testing::ValuesIn(iouThreshold), ::testing::ValuesIn(scoreThreshold), ::testing::ValuesIn(nmsEta)),
-    ::testing::ValuesIn(backgroundClass),
-    ::testing::ValuesIn(keepTopK),
-    ::testing::ValuesIn(outType),
-    ::testing::ValuesIn(sortResultType),
-    ::testing::Combine(::testing::ValuesIn(sortResDesc), ::testing::ValuesIn(normalized)),
-    ::testing::Values(ov::test::utils::DEVICE_GPU));
-
-INSTANTIATE_TEST_SUITE_P(smoke_MulticlassNmsLayerTest_v9_3inputs,
-                         MulticlassNmsLayerTestGPU,
-                         params_v9_3Inputs,
-                         MulticlassNmsLayerTestGPU::getTestCaseName);
-
-const auto params_v8 = ::testing::Combine(
-    ::testing::ValuesIn(ov::test::static_shapes_to_test_representation(shapes2Inputs)),
-    ::testing::Combine(::testing::Values(ov::element::f32),
-                       ::testing::Values(ov::element::i32)),
-    ::testing::ValuesIn(nmsTopK),
-    ::testing::Combine(::testing::ValuesIn(iouThreshold), ::testing::ValuesIn(scoreThreshold), ::testing::ValuesIn(nmsEta)),
-    ::testing::ValuesIn(backgroundClass),
-    ::testing::ValuesIn(keepTopK),
-    ::testing::ValuesIn(outType),
-    ::testing::ValuesIn(sortResultType),
-    ::testing::Combine(::testing::ValuesIn(sortResDesc), ::testing::ValuesIn(normalized)),
-    ::testing::Values(ov::test::utils::DEVICE_GPU));
-
-
-INSTANTIATE_TEST_SUITE_P(smoke_MulticlassNmsLayerTest_v8,
-                         MulticlassNmsLayerTestGPU8,
-                         params_v8,
-                         MulticlassNmsLayerTestGPU8::getTestCaseName);
+INSTANTIATE_TEST_SUITE_P(
+    smoke_MulticlassNmsLayerTest_v8,
+    MulticlassNmsLayerTestGPU8,
+    ::testing::Combine(::testing::ValuesIn(ov::test::static_shapes_to_test_representation(shapes2Inputs)),
+                       ::testing::Combine(::testing::Values(ov::element::f32), ::testing::Values(ov::element::i32)),
+                       ::testing::ValuesIn(nmsTopK),
+                       ::testing::Combine(::testing::ValuesIn(iouThreshold), ::testing::ValuesIn(scoreThreshold), ::testing::ValuesIn(nmsEta)),
+                       ::testing::ValuesIn(backgroundClass),
+                       ::testing::ValuesIn(keepTopK),
+                       ::testing::ValuesIn(outType),
+                       ::testing::ValuesIn(sortResultType),
+                       ::testing::Combine(::testing::ValuesIn(sortResDesc), ::testing::ValuesIn(normalized)),
+                       ::testing::Values(ov::test::utils::DEVICE_GPU)),
+    MulticlassNmsLayerTestGPU8::getTestCaseName);
 
 }  // namespace
 }  // namespace GPULayerTestsDefinitions

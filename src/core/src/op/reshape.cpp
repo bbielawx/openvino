@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -67,8 +67,7 @@ bool Reshape::evaluate_reshape(TensorVector& outputs, const TensorVector& inputs
     } else {
         ov::reference::reshape(static_cast<const char*>(inputs[0].data()),
                                static_cast<char*>(outputs[0].data()),
-                               inputs[0].get_shape(),
-                               inputs[0].get_element_type().size());
+                               inputs[0].get_byte_size());
     }
     return true;
 }
@@ -97,16 +96,20 @@ bool Reshape::evaluate_symbol(TensorSymbolVector& output_symbols) const {
 }
 
 bool Reshape::constant_fold(OutputVector& output_values, const OutputVector& inputs_values) {
-    if (get_output_partial_shape(0).is_dynamic() || is_const_fold_disabled()) {
+    if (!can_constant_fold(inputs_values)) {
         return false;
     }
 
-    if (auto data_const = std::dynamic_pointer_cast<v0::Constant>(inputs_values[0].get_node_shared_ptr())) {
+    if (auto data_const = ov::as_type_ptr<v0::Constant>(inputs_values[0].get_node_shared_ptr())) {
         output_values[0] = std::make_shared<v0::Constant>(*data_const, get_output_shape(0));
         return true;
     } else {
         return false;
     }
+}
+
+bool Reshape::can_constant_fold(const OutputVector& input_values) const {
+    return get_output_partial_shape(0).is_static() && !is_const_fold_disabled();
 }
 }  // namespace v1
 }  // namespace op

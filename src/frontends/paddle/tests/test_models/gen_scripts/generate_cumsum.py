@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 #
@@ -13,7 +13,7 @@ data_type = 'float32'
 
 def cumsum(name:str, x, axis, dtype=None):
     paddle.enable_static()
-    
+
     with paddle.static.program_guard(paddle.static.Program(), paddle.static.Program()):
         data = paddle.static.data(name='x', shape=x.shape, dtype = data_type)
         out = paddle.cumsum(data, axis, dtype=dtype)
@@ -28,7 +28,7 @@ def cumsum(name:str, x, axis, dtype=None):
             feed={'x': x},
             fetch_list=[out])
 
-        saveModel(name, exe, feedkeys=['x'], fetchlist=[out], inputs=[x], outputs=[outs[0]], target_dir=sys.argv[1])
+        saveModel(name, exe, feed_vars=[data], fetchlist=[out], inputs=[x], outputs=[outs[0]], target_dir=sys.argv[1])
 
     return outs[0]
 

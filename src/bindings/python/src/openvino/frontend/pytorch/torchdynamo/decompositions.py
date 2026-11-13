@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# flake8: noqa
 # mypy: ignore-errors
 
 import torch
@@ -30,12 +29,24 @@ def convolution_backward(
 
     # Compute the gradient of the input tensor
     grad_input = torch.nn.functional.conv_transpose2d(
-        grad_output, weight, stride=stride, padding=padding, dilation=dilation, groups=groups, output_padding=output_padding
+        grad_output,
+        weight,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+        output_padding=output_padding,
     )
 
     # Compute the gradient of the weight tensor
     grad_weight = torch.nn.functional.conv_transpose2d(
-        inp, weight.transpose(0, 1), stride=stride, padding=padding, dilation=dilation, groups=groups, output_padding=output_padding
+        inp,
+        weight.transpose(0, 1),
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+        output_padding=output_padding,
     )
 
     # Compute the gradient of the bias tensor
@@ -46,7 +57,9 @@ def convolution_backward(
 
     return grad_input, grad_weight, grad_bias
 
+
 if len(get_decompositions([aten._scaled_dot_product_flash_attention.default])) == 0:
+
     @register_decomposition(aten._scaled_dot_product_flash_attention.default)
     def scaled_dot_product_flash_attention(
         query,
@@ -101,16 +114,19 @@ if len(get_decompositions([aten._scaled_dot_product_flash_attention.default])) =
 
 
 def get_aot_decomposition_list():
-    return ([torch.ops.aten._scaled_dot_product_flash_attention.default,
-             torch.ops.aten._softmax.default,
-             torch.ops.aten._softmax_backward_data.default,
-             torch.ops.aten.convolution_backward.default,
-             torch.ops.aten.gelu_backward.default,
-             torch.ops.aten.native_group_norm.default,
-             torch.ops.aten.native_group_norm_backward.default,
-             torch.ops.aten.native_layer_norm.default,
-             torch.ops.aten.native_layer_norm_backward.default,
-             torch.ops.aten.slice_backward.default])
+    return [
+        torch.ops.aten._scaled_dot_product_flash_attention.default,
+        torch.ops.aten._softmax.default,
+        torch.ops.aten._softmax_backward_data.default,
+        torch.ops.aten.convolution_backward.default,
+        torch.ops.aten.gelu_backward.default,
+        torch.ops.aten.native_group_norm.default,
+        torch.ops.aten.native_group_norm_backward.default,
+        torch.ops.aten.native_layer_norm.default,
+        torch.ops.aten.native_layer_norm_backward.default,
+        torch.ops.aten.slice_backward.default,
+    ]
+
 
 def get_inf_decomposition_list():
-    return ([torch.ops.aten.nll_loss_forward.default])
+    return [torch.ops.aten.nll_loss_forward.default]

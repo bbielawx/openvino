@@ -1,28 +1,28 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "test_utils.h"
-#include "random_generator.hpp"
+#include <memory>
 
-#include "intel_gpu/runtime/engine.hpp"
-
-#include "intel_gpu/graph/network.hpp"
-#include "intel_gpu/graph/program.hpp"
+#include "convolution_inst.h"
 #include "data_inst.h"
+#include "depth_to_space_inst.h"
 #include "eltwise_inst.h"
-#include "reduce_inst.h"
-#include "reshape_inst.h"
 #include "fully_connected_inst.h"
 #include "gemm_inst.h"
-#include "convolution_inst.h"
-#include "depth_to_space_inst.h"
+#include "intel_gpu/graph/network.hpp"
+#include "intel_gpu/graph/program.hpp"
+#include "intel_gpu/primitives/concatenation.hpp"
+#include "intel_gpu/primitives/permute.hpp"
+#include "intel_gpu/primitives/scatter_update.hpp"
+#include "intel_gpu/runtime/engine.hpp"
 #include "pass_manager.h"
-#include "to_string_utils.h"
-
 #include "program_wrapper.h"
-
-#include <memory>
+#include "random_generator.hpp"
+#include "reduce_inst.h"
+#include "reshape_inst.h"
+#include "test_utils.h"
+#include "to_string_utils.h"
 
 using namespace cldnn;
 using namespace ::tests;
@@ -43,12 +43,74 @@ TEST(prepare_primitive_fusing, fuse_activation_to_fc_dyn) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_FALSE(has_node_with_type<activation>(*prog));
+}
+
+// fp8 concatenation/scatter_update take a byte-copy kernel path that cannot run fused ops, so
+// prepare_primitive_fusing must not fuse an activation into an f8e4m3 scatter_update (unlike a
+// regular f16 cache, where the activation is fused).
+TEST(prepare_primitive_fusing, dont_fuse_activation_into_fp8_scatter_update) {
+    auto& engine = get_test_engine();
+
+    auto activation_survives_fusing = [&](data_types kv_dt) -> bool {
+        auto indices = engine.allocate_memory({ov::PartialShape{2}, data_types::f32, format::bfyx});
+        auto updates = engine.allocate_memory({ov::PartialShape{2, 4}, kv_dt, format::bfyx});
+        auto in_layout = layout{ov::PartialShape{4, 4}, kv_dt, format::bfyx};
+
+        topology topology;
+        topology.add(input_layout("input", in_layout));
+        topology.add(data("indices", indices));
+        topology.add(data("updates", updates));
+        topology.add(scatter_update("scatter", input_info("input"), input_info("indices"), input_info("updates"), 0));
+        topology.add(activation("act", input_info("scatter"), activation_func::abs));
+        topology.add(reorder("reorder", input_info("act"), format::bfyx, data_types::f32));
+
+        ExecutionConfig config = get_test_default_config(engine);
+        config.set_property(ov::intel_gpu::optimize_data(true));
+        config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+        auto prog = program::build_program(engine, topology, config, false, true);
+
+        program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
+        return has_node(*prog, "act");
+    };
+
+    // Control: a regular f16 KV cache fuses the activation into scatter_update (node is removed).
+    ASSERT_FALSE(activation_survives_fusing(data_types::f16));
+    // fp8 scatter_update byte-copies; fusion is blocked so the activation stays a separate node.
+    ASSERT_TRUE(activation_survives_fusing(data_types::f8e4m3));
+}
+
+// Same byte-copy concern for concatenation: activation must not be fused into an f8e4m3 concat.
+TEST(prepare_primitive_fusing, dont_fuse_activation_into_fp8_concatenation) {
+    auto& engine = get_test_engine();
+
+    auto activation_survives_fusing = [&](data_types kv_dt) -> bool {
+        auto in0_layout = layout{ov::PartialShape{1, 2, 4}, kv_dt, format::bfyx};
+        auto in1_layout = layout{ov::PartialShape{1, 2, 4}, kv_dt, format::bfyx};
+
+        topology topology;
+        topology.add(input_layout("in0", in0_layout));
+        topology.add(input_layout("in1", in1_layout));
+        topology.add(concatenation("concat", {input_info("in0"), input_info("in1")}, 1));
+        topology.add(activation("act", input_info("concat"), activation_func::abs));
+        topology.add(reorder("reorder", input_info("act"), format::bfyx, data_types::f32));
+
+        ExecutionConfig config = get_test_default_config(engine);
+        config.set_property(ov::intel_gpu::optimize_data(true));
+        config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+        auto prog = program::build_program(engine, topology, config, false, true);
+
+        program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
+        return has_node(*prog, "act");
+    };
+
+    // Control: a regular f16 concat fuses the activation (node is removed).
+    ASSERT_FALSE(activation_survives_fusing(data_types::f16));
+    // fp8 concat byte-copies; fusion is blocked so the activation stays a separate node.
+    ASSERT_TRUE(activation_survives_fusing(data_types::f8e4m3));
 }
 
 TEST(prepare_primitive_fusing, dont_fuse_incompatible_eltwise) {
@@ -69,9 +131,7 @@ TEST(prepare_primitive_fusing, dont_fuse_incompatible_eltwise) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_TRUE(has_node(*prog, "eltw"));
@@ -96,9 +156,7 @@ TEST(prepare_primitive_fusing, fuse_eltwise_to_fc_dyn_legal) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_FALSE(has_node_with_type<eltwise>(*prog));
@@ -138,9 +196,7 @@ TEST(prepare_primitive_fusing, fuse_eltwise_to_fc_dyn_illegal) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_FALSE(has_node_with_type<eltwise>(*prog));
@@ -194,9 +250,7 @@ TEST(prepare_primitive_fusing, fuse_eltwise_to_fc_dyn_illegal_const) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_FALSE(has_node_with_type<eltwise>(*prog));
@@ -248,9 +302,7 @@ TEST(prepare_primitive_fusing, fuse_eltwise_to_fc_dyn_legal_scalar_const_broadca
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_FALSE(has_node_with_type<eltwise>(*prog));
@@ -305,9 +357,7 @@ TEST(prepare_primitive_fusing, fuse_eltwise_to_fc_dyn_illegal_1) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_FALSE(has_node_with_type<eltwise>(*prog));
@@ -374,9 +424,7 @@ TEST(prepare_primitive_fusing, fuse_eltwise_to_fc_dyn_illegal_2) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_FALSE(has_node_with_type<eltwise>(*prog));
@@ -385,7 +433,7 @@ TEST(prepare_primitive_fusing, fuse_eltwise_to_fc_dyn_illegal_2) {
 
     auto input_memory = engine.allocate_memory(layout{ ov::PartialShape{1, 10}, data_types::i8, format::bfyx });
     auto extra_input_memory = engine.allocate_memory(layout{ ov::PartialShape{4, 4}, data_types::f32, format::bfyx });
-    set_values<int8_t>(input_memory, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -10});
+    set_values<int8_t>(input_memory, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
     set_values<float>(extra_input_memory, {1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4});
 
     net.set_input_data("input", input_memory);
@@ -437,9 +485,7 @@ TEST(prepare_primitive_fusing, dont_remove_only_dep_reshape) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_TRUE(has_node(*prog, "reshape2"));
@@ -485,9 +531,7 @@ TEST(prepare_primitive_fusing, eltwise_fusing_residual_connection) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
     ASSERT_NE(prog, nullptr);
     ASSERT_FALSE(has_node_with_type<eltwise>(*prog));
 
@@ -544,9 +588,8 @@ TEST(prepare_primitive_fusing, fuse_constant_transposes_removal_check) {
 
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-    lo.set_implementation_forcing(config.get_property(ov::intel_gpu::force_implementations));
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    prog->get_layout_optimizer().set_implementation_forcing(config.get_force_implementations());
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_TRUE(!has_node(*prog, "permute"));
     ASSERT_EQ(prog->get_node("weights").get_output_layout().format, format::fbyx);
@@ -606,6 +649,89 @@ TEST(prepare_primitive_fusing, fuse_constant_transposes_accuracy_test) {
     }
 }
 
+TEST(prepare_primitive_fusing, fuse_constant_transposes_multiple_users) {
+    auto& engine = get_test_engine();
+    if (!engine.get_device_info().supports_immad) {
+        GTEST_SKIP() << "The weights format reorder is only inserted for oneDNN fully connected";
+    }
+
+    auto input = engine.allocate_memory({{2, 32}, data_types::f16, format::bfyx});
+    auto weights = engine.allocate_memory({{32, 2}, data_types::f16, format::bfyx});
+
+    topology topology(input_layout("input", input->get_layout()),
+                      data("weights", weights),
+                      permute("permute", input_info("weights"), {1, 0}),
+                      fully_connected("fc0", input_info("input"), {"permute"}, "", data_types::f16),
+                      fully_connected("fc1", input_info("input"), {"permute"}, "", data_types::f16),
+                      fully_connected("fc2", input_info("input"), {"permute"}, "", data_types::f16));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::optimize_data(true));
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    ov::intel_gpu::ImplementationDesc fc_impl = {format::bfyx, "", impl_types::onednn};
+    config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{{"fc0", fc_impl}, {"fc1", fc_impl}, {"fc2", fc_impl}}));
+
+    auto prog = program::build_program(engine, topology, config, false, true);
+    prog->get_layout_optimizer().set_implementation_forcing(config.get_force_implementations());
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
+
+    ASSERT_FALSE(has_node(*prog, "permute"));
+    for (const auto& fc_id : {"fc0", "fc1", "fc2"}) {
+        const auto& fc_weights = prog->get_node(fc_id).get_dependency(1);
+        ASSERT_TRUE(fc_weights.is_type<reorder>()) << fc_id << " reads weights from " << fc_weights.id();
+        ASSERT_EQ(fc_weights.get_output_layout().format, format::bfyx) << fc_id;
+    }
+}
+
+TEST(prepare_primitive_fusing, fuse_constant_transposes_multiple_users_accuracy_test) {
+    auto& engine = get_test_engine();
+
+    const int64_t m = 4, k = 64, n = 16;
+    auto input = engine.allocate_memory({{m, k}, data_types::f16, format::bfyx});
+    auto weights = engine.allocate_memory({{k, n}, data_types::f16, format::bfyx});
+
+    tests::random_generator rg(GET_SUITE_NAME);
+    auto input_data = rg.generate_random_2d<ov::float16>(m, k, -1, 1);
+    auto weights_data = rg.generate_random_2d<ov::float16>(k, n, -1, 1);
+
+    set_values(input, flatten_2d(format::bfyx, input_data));
+    set_values(weights, flatten_2d(format::bfyx, weights_data));
+
+    topology topology(input_layout("input", input->get_layout()),
+                      data("weights", weights),
+                      permute("permute", input_info("weights"), {1, 0}),
+                      activation("act1", input_info("input"), activation_func::negative),
+                      activation("act2", input_info("input"), activation_func::abs),
+                      fully_connected("fc0", input_info("input"), {"permute"}, "", data_types::f16),
+                      fully_connected("fc1", input_info("act1"), {"permute"}, "", data_types::f16),
+                      fully_connected("fc2", input_info("act2"), {"permute"}, "", data_types::f16));
+
+    auto run = [&](bool optimize) {
+        ExecutionConfig config = get_test_default_config(engine);
+        config.set_property(ov::intel_gpu::optimize_data(optimize));
+        config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+        cldnn::network network(engine, topology, config);
+        network.set_input_data("input", input);
+        auto outputs = network.execute();
+        std::vector<std::vector<ov::float16>> results;
+        for (const auto& id : {"fc0", "fc1", "fc2"}) {
+            cldnn::mem_lock<ov::float16> ptr(outputs.at(id).get_memory(), get_test_stream());
+            results.emplace_back(ptr.begin(), ptr.end());
+        }
+        return results;
+    };
+
+    auto results = run(true);
+    auto results_ref = run(false);
+
+    for (size_t fc = 0; fc < results_ref.size(); ++fc) {
+        ASSERT_EQ(results[fc].size(), results_ref[fc].size());
+        for (size_t i = 0; i < results_ref[fc].size(); ++i) {
+            ASSERT_NEAR(results[fc][i], results_ref[fc][i], 1e-2f) << "fc" << fc << " index " << i;
+        }
+    }
+}
+
 TEST(prepare_primitive_fusing, can_profiling_data_when_fuse_illegal) {
     auto& engine = get_test_engine();
     auto weights = engine.allocate_memory({ov::PartialShape{2, 10}, data_types::u8, format::bfyx});
@@ -629,9 +755,7 @@ TEST(prepare_primitive_fusing, can_profiling_data_when_fuse_illegal) {
     config.set_property(ov::enable_profiling(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_FALSE(has_node_with_type<eltwise>(*prog));
@@ -682,10 +806,136 @@ TEST(prepare_primitive_fusing, dont_fuse_eltwise_to_dyn_dts) {
     config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
     auto prog = program::build_program(engine, topology, config, false, true);
 
-    layout_optimizer lo(true);
-
-    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog, lo);
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
 
     ASSERT_NE(prog, nullptr);
     ASSERT_TRUE(has_node(*prog, "scale1"));
+}
+
+static void move_next(program& p, primitive_id node_id, primitive_id key_id) {
+    auto n = &p.get_node(node_id);
+    p.get_processing_order().erase(&p.get_node(node_id));
+    p.get_processing_order().insert_next(&p.get_node(key_id), n);
+}
+
+TEST(prepare_primitive_fusing, fuse_by_priotizing_to_parent_in_fusing_history) {
+    //    in1    in2                   in1   in2
+    //     |      |                     |     |
+    //   conv1  conv2                   |   conv2
+    //     |      |                     |    /
+    //   actv1  eltw1                   |   /
+    //    /   \   |                     |  /
+    //  eltw2   eltw3      ----->     conv1 (actv1, eltw2, eltw3, eltw4, eltw5, eltw6)
+    //    |       |                     |
+    //  eltw4     |                     |
+    //    |       |                     |
+    //  eltw6 -- eltw5                  |
+    //            |                     |
+    //           eltw7                eltw7
+    //
+    auto& engine = get_test_engine();
+    tests::random_generator rg(GET_SUITE_NAME);
+
+    auto in_layout      = layout{ ov::PartialShape{32, 96, -1, -1}, data_types::f32, format::bfyx };
+    auto weights_layout = layout{ ov::PartialShape{32, 96, 1, 1}, data_types::f32, format::bfyx};
+    auto eltwise_layout = layout{ ov::PartialShape{1, 1, 1, 1}, data_types::f32, format::bfyx };
+
+    auto weights_memory = engine.allocate_memory(weights_layout);
+    auto eltwise_memory = engine.allocate_memory(eltwise_layout);
+
+    auto weights_data   = rg.generate_random_4d<ov::float16>(32, 96, 1, 1, 1, 1);
+    auto eltwise_data   = rg.generate_random_1d<ov::float16>(1, 1, 1, 1);
+
+    topology topology(
+        input_layout("input1", in_layout),
+        input_layout("input2", in_layout),
+        data("weight1", weights_memory),
+        data("weight2", weights_memory),
+        data("data1", eltwise_memory),
+        data("data2", eltwise_memory),
+        data("data3", eltwise_memory),
+        data("data4", eltwise_memory),
+        data("data5", eltwise_memory),
+        convolution("conv1", input_info("input1"), "weight1", "", 1, {1, 1}, {1, 1}, {0, 0}, {0, 0}, false),
+        convolution("conv2", input_info("input2"), "weight2", "", 1, {1, 1}, {1, 1}, {0, 0}, {0, 0}, false),
+        activation("actv1", input_info("conv1"), activation_func::hard_sigmoid),
+        eltwise("eltw1", { input_info("conv2"), input_info("data1") }, eltwise_mode::sum, data_types::f32),
+        eltwise("eltw2", { input_info("actv1"), input_info("data2") }, eltwise_mode::prod, data_types::f32),
+        eltwise("eltw3", { input_info("actv1"), input_info("eltw1") }, eltwise_mode::sub, data_types::f32),
+        eltwise("eltw4", { input_info("eltw2"), input_info("data3") }, eltwise_mode::prod, data_types::f32),
+        eltwise("eltw5", { input_info("eltw3"), input_info("eltw6") }, eltwise_mode::prod, data_types::f32),
+        eltwise("eltw6", { input_info("eltw4"), input_info("data4") }, eltwise_mode::sum, data_types::f32),
+        eltwise("eltw7", { input_info("eltw5"), input_info("data5") }, eltwise_mode::prod, data_types::f32)
+    );
+
+
+    set_values(weights_memory, weights_data);
+    set_values(eltwise_memory, eltwise_data);
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+
+    auto program = program::build_program(engine, topology, config, false, true);
+    ASSERT_NE(program, nullptr);
+
+    int32_t process_number_conv1 = program->get_processing_order().get_processing_number(&program->get_node("conv1"));
+    int32_t process_number_conv2 = program->get_processing_order().get_processing_number(&program->get_node("conv2"));
+
+    if (process_number_conv1 > process_number_conv2) {
+        // Change the processing order to create a expected test case,
+        // where fused_idx < peer_idx and the processing order of parents[0] is lower than parents[1].
+        //
+        // index  : 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 |
+        // before : w2| w1| i2| c2| i1| c1| a1| d5| d4| d3| d2 | e2 | e4 | e6 | d1 | e1 | e3 | e5 | e7 |
+        // after  : w1| w2| i1| c1| a1| i2| c2| d5| d4| d3| d2 | d1 | e1 | e2 | e3 | e4 | e6 | e5 | e7 |
+        //
+        // w : weights
+        // i : input
+        // c : convolution
+        // a : activation
+        // d : data
+        // e : eltwise
+        //
+        move_next(*program, "weight2", "weight1");
+        move_next(*program, "input1" , "weight2");
+        move_next(*program, "conv1"  , "input1" );
+        move_next(*program, "actv1"  , "conv1"  );
+        move_next(*program, "data1"  , "data2"  );
+        move_next(*program, "eltw1"  , "data1"  );
+        move_next(*program, "eltw3"  , "eltw2"  );
+    }
+
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*program);
+
+    ASSERT_FALSE(has_node(*program, "actv1"));
+    ASSERT_FALSE(has_node(*program, "eltw3"));
+    ASSERT_FALSE(has_node(*program, "eltw4"));
+    ASSERT_FALSE(has_node(*program, "eltw5"));
+    ASSERT_FALSE(has_node(*program, "eltw6"));
+}
+
+TEST(prepare_primitive_fusing, dont_fuse_bias_when_multiple_users) {
+    auto& engine = get_test_engine();
+    auto in_layout = layout{ ov::PartialShape{1, 1, 1, 1}, data_types::f32, format::bfyx };
+    auto weights = engine.allocate_memory({ ov::PartialShape{1, 1, 1, 1}, data_types::f32, format::bfyx });
+    auto bias = engine.allocate_memory({ ov::PartialShape{1, 1, 1, 1}, data_types::f32, format::bfyx });
+
+    topology topology;
+    topology.add(input_layout("input", in_layout));
+    topology.add(data("weights", weights));
+    topology.add(data("bias", bias));
+    topology.add(convolution("conv", input_info("input"), "weights", "", 1, {1, 1}, {1, 1}, {0, 0}, {0, 0}, false));
+    topology.add(activation("act", input_info("conv"), activation_func::relu));
+    topology.add(eltwise("eltw", { input_info("conv"), input_info("bias") }, eltwise_mode::sum));
+    topology.add(reorder("reorder_act", input_info("act"), format::bfyx, data_types::f32));
+    topology.add(reorder("reorder_eltw", input_info("eltw"), format::bfyx, data_types::f32));
+
+    ExecutionConfig config = get_test_default_config(engine);
+    config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+    auto prog = program::build_program(engine, topology, config, false, true);
+
+    program_wrapper::apply_opt_pass<prepare_primitive_fusing>(*prog);
+
+    ASSERT_TRUE(has_node(*prog, "eltw"));
+    ASSERT_TRUE(has_node(*prog, "conv"));
 }

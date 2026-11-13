@@ -1,9 +1,10 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include "common_test_utils/ov_tensor_utils.hpp"
 #include "common_test_utils/node_builders/activation.hpp"
 #include "common_test_utils/node_builders/convolution.hpp"
+#include "common_test_utils/node_builders/eltwise.hpp"
 #include "shared_test_classes/base/ov_subgraph.hpp"
 #include "shared_test_classes/single_op/convolution.hpp"
 
@@ -29,18 +30,9 @@ class ConvolutionLayerGPUTestDynamic : public testing::WithParamInterface<convLa
                                        virtual public ov::test::SubgraphBaseTest {
 public:
     static std::string getTestCaseName(const testing::TestParamInfo<convLayerTestParamsSet>& obj) {
-        convSpecificParams convParams;
-        ov::element::Type model_type;
-        InputShape inputShape;
-        std::string targetDevice;
-        bool activationFusing;
-        std::tie(convParams, model_type, inputShape, targetDevice, activationFusing) = obj.param;
+        const auto& [convParams, model_type, inputShape, targetDevice, activationFusing] = obj.param;
 
-        ov::op::PadType padType;
-        std::vector<size_t> kernel, stride, dilation;
-        std::vector<ptrdiff_t> padBegin, padEnd;
-        size_t convOutChannels;
-        std::tie(kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType) = convParams;
+        const auto& [kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType] = convParams;
 
         std::ostringstream result;
         result << "IS=";
@@ -66,19 +58,12 @@ public:
 
 protected:
     void SetUp() override {
-        convSpecificParams convParams;
-        InputShape inputShape;
-        auto model_type = ov::element::undefined;
-        bool activationFusing;
-        std::tie(convParams, model_type, inputShape, targetDevice, activationFusing) = this->GetParam();
+        const auto& [convParams, model_type, inputShape, _targetDevice, activationFusing] = this->GetParam();
+        targetDevice = _targetDevice;
 
         init_input_shapes({inputShape});
 
-        ov::op::PadType padType;
-        std::vector<size_t> kernel, stride, dilation;
-        std::vector<ptrdiff_t> padBegin, padEnd;
-        size_t convOutChannels;
-        std::tie(kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType) = convParams;
+        const auto& [kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType] = convParams;
 
         ov::ParameterVector inputParams;
         for (auto&& shape : inputDynamicShapes)
@@ -101,7 +86,12 @@ protected:
 
                 function = std::make_shared<ov::Model>(results, inputParams, "Convolution");
         }
-    }
+
+        if (model_type == ov::element::f16) {
+            abs_threshold = 0.05;
+            rel_threshold = 0.05;
+        }
+}
 };
 
 TEST_P(ConvolutionLayerGPUTestDynamic, Inference) {
@@ -131,6 +121,27 @@ INSTANTIATE_TEST_SUITE_P(smoke_ConvolutionLayerGPUTest_dynamic1DSymPad, Convolut
                 ::testing::Values<std::string>(ov::test::utils::DEVICE_GPU),
                 ::testing::Values(false)),
                 ConvolutionLayerGPUTestDynamic::getTestCaseName);
+
+const std::vector<InputShape> dynInputShapes1DSamePad = {
+    {{1, 1, ov::Dimension::dynamic()},
+     // Alternate SAME padding sizes, revisit an odd length, and include inputs smaller than the kernel.
+     {{1, 1, 6}, {1, 1, 7}, {1, 1, 8}, {1, 1, 7}, {1, 1, 1}, {1, 1, 2}}},
+};
+
+INSTANTIATE_TEST_SUITE_P(smoke_ConvolutionLayerGPUTest_SamePad_dynamic1D,
+                         ConvolutionLayerGPUTestDynamic,
+                         ::testing::Combine(::testing::Combine(::testing::Values(std::vector<size_t>{3}),
+                                                               ::testing::Values(std::vector<size_t>{2}),
+                                                               ::testing::Values(std::vector<ptrdiff_t>{0}),
+                                                               ::testing::Values(std::vector<ptrdiff_t>{0}),
+                                                               ::testing::Values(std::vector<size_t>{1}),
+                                                               ::testing::Values(1),
+                                                               ::testing::ValuesIn({ov::op::PadType::SAME_UPPER, ov::op::PadType::SAME_LOWER})),
+                                            ::testing::Values(ov::element::f32, ov::element::f16),
+                                            ::testing::ValuesIn(dynInputShapes1DSamePad),
+                                            ::testing::Values<std::string>(ov::test::utils::DEVICE_GPU),
+                                            ::testing::Values(false)),
+                         ConvolutionLayerGPUTestDynamic::getTestCaseName);
 
 const std::vector<std::vector<size_t>> kernels1D = { {3}, {1} };
 const std::vector<std::vector<size_t>> strides1D = { {1} };
@@ -181,6 +192,10 @@ const std::vector<ov::test::InputShape> dynInputShapes2D = {
         {1, 10, ov::Dimension::dynamic(), ov::Dimension::dynamic()},
         {{1, 10, 20, 20}, {1, 10, 30, 30}, {1, 10, 40, 20}}
     },
+    {
+        {1, 3, {224, 448}, {224, 448}},
+        {{1, 3, 224, 224}, {1, 3, 448, 448}}
+    }
 };
 
 // Specific range causes output static shapeS
@@ -218,7 +233,7 @@ INSTANTIATE_TEST_SUITE_P(smoke_ConvolutionLayerGPUTest_dynamic2DSymAutoPad, Conv
                         ::testing::Values(std::vector<size_t>{1, 1}),
                         ::testing::Values(10),
                         ::testing::ValuesIn({ov::op::PadType::SAME_LOWER, ov::op::PadType::SAME_UPPER})),
-                ::testing::Values(ov::element::f16),
+                ::testing::ValuesIn({ov::element::f16, ov::element::f32}),
                 ::testing::ValuesIn(dynInputShapes2D),
                 ::testing::Values<std::string>(ov::test::utils::DEVICE_GPU),
                 ::testing::Values(false)),
@@ -258,6 +273,27 @@ INSTANTIATE_TEST_SUITE_P(smoke_ConvolutionLayerGPUTest_dynamic2D_static_output, 
                 ::testing::Values(true)),
                 ConvolutionLayerGPUTestDynamic::getTestCaseName);
 
+const std::vector<ov::test::InputShape> dynInputShapes2D_onednn = {
+    {
+        {1, 14, ov::Dimension::dynamic(), ov::Dimension::dynamic()},
+        {{1, 14, 101, 176}}
+    }
+};
+INSTANTIATE_TEST_SUITE_P(smoke_ConvolutionLayerGPUTest_onednn_dynamic2DSymAutoPad_test, ConvolutionLayerGPUTestDynamic,
+        ::testing::Combine(
+                ::testing::Combine(
+                        ::testing::Values(std::vector<size_t>{7, 7}),
+                        ::testing::Values(std::vector<size_t>{2, 2}),
+                        ::testing::Values(std::vector<ptrdiff_t>{0, 0}),
+                        ::testing::Values(std::vector<ptrdiff_t>{0, 0}),
+                        ::testing::Values(std::vector<size_t>{1, 1}),
+                        ::testing::Values(64),
+                        ::testing::ValuesIn({ov::op::PadType::SAME_LOWER, ov::op::PadType::SAME_UPPER})),
+                ::testing::ValuesIn({ov::element::f16}),
+                ::testing::ValuesIn(dynInputShapes2D_onednn),
+                ::testing::Values<std::string>(ov::test::utils::DEVICE_GPU),
+                ::testing::Values(true)),
+                ConvolutionLayerGPUTestDynamic::getTestCaseName);
 // ======== 3D convolutions
 const std::vector<ov::test::InputShape> dynInputShapes3D = {
     {
@@ -317,4 +353,240 @@ INSTANTIATE_TEST_SUITE_P(smoke_ConvolutionLayerGPUTest_dynamic3DAsymPad, Convolu
                 ::testing::Values(false)),
                 ConvolutionLayerGPUTestDynamic::getTestCaseName);
 
+typedef std::tuple<
+        convSpecificParams,
+        ov::element::Type,              // Model type
+        std::vector<InputShape>,        // Input shapes
+        std::string,                    // Device name
+        bool                            // activation fusing
+> convLayerFusingTestParamsSet;
+
+
+class ConvolutionLayerGPUTestDynamicEltwiseFusing : public testing::WithParamInterface<convLayerFusingTestParamsSet>,
+                                                    virtual public ov::test::SubgraphBaseTest {
+public:
+    static std::string getTestCaseName(const testing::TestParamInfo<convLayerFusingTestParamsSet>& obj) {
+        const auto& [convParams, model_type, inputShapes, targetDevice, activationFusing] = obj.param;
+
+        const auto& [kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType] = convParams;
+
+        std::ostringstream result;
+        for (const auto& inputShape : inputShapes) {
+                result << "IS=";
+                result  << ov::test::utils::partialShape2str({inputShape.first}) << "_";
+                result << "TS=(";
+                for (const auto& shape : inputShape.second) {
+                result << ov::test::utils::vec2str(shape) << "_";
+                }
+        }
+        result << ")_";
+        result << "K" << ov::test::utils::vec2str(kernel) << "_";
+        result << "S" << ov::test::utils::vec2str(stride) << "_";
+        result << "PB" << ov::test::utils::vec2str(padBegin) << "_";
+        result << "PE" << ov::test::utils::vec2str(padEnd) << "_";
+        result << "D=" << ov::test::utils::vec2str(dilation) << "_";
+        result << "O=" << convOutChannels << "_";
+        result << "AP=" << padType << "_";
+        result << "netPRC=" << model_type << "_";
+        result << "trgDev=" << targetDevice << "_";
+        result << "activationFusing=" << activationFusing;
+
+        return result.str();
+    }
+
+protected:
+    void SetUp() override {
+        const auto& [convParams, model_type, inputShapes, _targetDevice, activationFusing] = this->GetParam();
+        targetDevice = _targetDevice;
+
+        init_input_shapes({inputShapes});
+
+        const auto& [kernel, stride, padBegin, padEnd, dilation, convOutChannels, padType] = convParams;
+
+        ov::ParameterVector inputParams;
+        for (auto&& shape : inputDynamicShapes)
+            inputParams.push_back(std::make_shared<ov::op::v0::Parameter>(model_type, shape));
+
+        auto convolutionNode = ov::test::utils::make_convolution(inputParams.front(), model_type, kernel, stride, padBegin,
+                                                                 padEnd, dilation, padType, convOutChannels);
+        if (activationFusing) {
+                auto activationNode = ov::test::utils::make_activation(convolutionNode, model_type, ov::test::utils::ActivationTypes::Relu);
+                auto eltwiseNode = ov::test::utils::make_eltwise(inputParams.back(), activationNode, ov::test::utils::EltwiseTypes::ADD);
+
+                ov::ResultVector results;
+                for (size_t i = 0; i < eltwiseNode->get_output_size(); i++)
+                        results.push_back(std::make_shared<ov::op::v0::Result>(eltwiseNode->output(i)));
+
+                function = std::make_shared<ov::Model>(results, inputParams, "Convolution");
+        } else {
+                auto eltwiseNode = ov::test::utils::make_eltwise(inputParams.back(), convolutionNode, ov::test::utils::EltwiseTypes::ADD);
+
+                ov::ResultVector results;
+                for (size_t i = 0; i < eltwiseNode->get_output_size(); i++)
+                        results.push_back(std::make_shared<ov::op::v0::Result>(eltwiseNode->output(i)));
+
+                function = std::make_shared<ov::Model>(results, inputParams, "Convolution");
+        }
+    }
+};
+
+TEST_P(ConvolutionLayerGPUTestDynamicEltwiseFusing, Inference) {
+    run();
+}
+const std::vector<std::vector<ov::test::InputShape>> dynInputShapes1D_test = {
+        {
+        {
+                {1, 192, ov::Dimension::dynamic()},
+                {{1, 192, 191}}
+        },
+        {
+                {1, 192, ov::Dimension::dynamic()},
+                {{1, 192, 1}}
+        }
+        },
+        {
+        {
+                {ov::Dimension::dynamic(), 192, ov::Dimension::dynamic()},
+                {{1, 192, 257}}
+        },
+        {
+                {1, 1, ov::Dimension::dynamic()},
+                {{1, 1, 257}}
+        }
+        },
+        {
+        {
+                {ov::Dimension::dynamic(), 192, ov::Dimension::dynamic()},
+                {{1, 192, 257}}
+        },
+        {
+                {1, ov::Dimension::dynamic(), ov::Dimension::dynamic()},
+                {{1, 1, 1}}
+        }
+        },
+        {
+        {
+                {ov::Dimension::dynamic(), 192, ov::Dimension::dynamic()},
+                {{1, 192, 1}}
+        },
+        {
+                {1, ov::Dimension::dynamic(), ov::Dimension::dynamic()},
+                {{1, 1, 1}}
+        }
+        },
+};
+
+INSTANTIATE_TEST_SUITE_P(smoke_ConvolutionLayerGPUTest_dynamic1D_test_0, ConvolutionLayerGPUTestDynamicEltwiseFusing,
+        ::testing::Combine(
+                ::testing::Combine(
+                        ::testing::Values(std::vector<size_t>{1}),
+                        ::testing::Values(std::vector<size_t>{1}),
+                        ::testing::Values(std::vector<ptrdiff_t>{0}),
+                        ::testing::Values(std::vector<ptrdiff_t>{0}),
+                        ::testing::Values(std::vector<size_t>{1}),
+                        ::testing::Values(192),
+                        ::testing::Values(ov::op::PadType::EXPLICIT)),
+                ::testing::Values(ov::element::f32),
+                ::testing::ValuesIn(dynInputShapes1D_test),
+                ::testing::Values<std::string>(ov::test::utils::DEVICE_GPU),
+                ::testing::Values(false)),
+                ConvolutionLayerGPUTestDynamicEltwiseFusing::getTestCaseName);
+
+const std::vector<std::vector<ov::test::InputShape>> dynInputShapes1D_test1 = {
+        {
+        {
+                {1, 512, ov::Dimension::dynamic()},
+                {{1, 512, 191}}
+        },
+        {
+                {1, 512, ov::Dimension::dynamic()},
+                {{1, 512, 1}}
+        }
+        },
+        {
+        {
+                {ov::Dimension::dynamic(), 512, ov::Dimension::dynamic()},
+                {{1, 512, 191}}
+        },
+        {
+                {1, 1, ov::Dimension::dynamic()},
+                {{1, 1, 191}}
+        }
+        },
+        {
+        {
+                {ov::Dimension::dynamic(), 512, ov::Dimension::dynamic()},
+                {{1, 512, 191}}
+        },
+        {
+                {1, 1, ov::Dimension::dynamic()},
+                {{1, 1, 1}}
+        }
+        },
+};
+
+INSTANTIATE_TEST_SUITE_P(smoke_ConvolutionLayerGPUTest_dynamic1D_test_1, ConvolutionLayerGPUTestDynamicEltwiseFusing,
+        ::testing::Combine(
+                ::testing::Combine(
+                        ::testing::Values(std::vector<size_t>{1}),
+                        ::testing::Values(std::vector<size_t>{1}),
+                        ::testing::Values(std::vector<ptrdiff_t>{0}),
+                        ::testing::Values(std::vector<ptrdiff_t>{0}),
+                        ::testing::Values(std::vector<size_t>{1}),
+                        ::testing::Values(512),
+                        ::testing::Values(ov::op::PadType::EXPLICIT)),
+                ::testing::Values(ov::element::f32),
+                ::testing::ValuesIn(dynInputShapes1D_test1),
+                ::testing::Values<std::string>(ov::test::utils::DEVICE_GPU),
+                ::testing::Values(false)),
+                ConvolutionLayerGPUTestDynamicEltwiseFusing::getTestCaseName);
+
+const std::vector<std::vector<ov::test::InputShape>> dynInputShapes1D_test2 = {
+        {
+        {
+                {1, 2048, ov::Dimension::dynamic()},
+                {{1, 2048, 191}}
+        },
+        {
+                {1, 2048, ov::Dimension::dynamic()},
+                {{1, 2048, 1}}
+        }
+        },
+        {
+        {
+                {1, 2048, ov::Dimension::dynamic()},
+                {{1, 2048, 191}}
+        },
+        {
+                {ov::Dimension::dynamic(), 1, ov::Dimension::dynamic()},
+                {{1, 1, 191}}
+        }
+        },
+        {
+        {
+                {1, 2048, ov::Dimension::dynamic()},
+                {{1, 2048, 191}}
+        },
+        {
+                {ov::Dimension::dynamic(), 1, ov::Dimension::dynamic()},
+                {{1, 1, 1}}
+        }
+        },
+};
+
+INSTANTIATE_TEST_SUITE_P(smoke_ConvolutionLayerGPUTest_dynamic1D_test_2, ConvolutionLayerGPUTestDynamicEltwiseFusing,
+        ::testing::Combine(
+                ::testing::Combine(
+                        ::testing::Values(std::vector<size_t>{1}),
+                        ::testing::Values(std::vector<size_t>{1}),
+                        ::testing::Values(std::vector<ptrdiff_t>{0}),
+                        ::testing::Values(std::vector<ptrdiff_t>{0}),
+                        ::testing::Values(std::vector<size_t>{1}),
+                        ::testing::Values(2048),
+                        ::testing::Values(ov::op::PadType::EXPLICIT)),
+                ::testing::Values(ov::element::f32),
+                ::testing::ValuesIn(dynInputShapes1D_test2),
+                ::testing::Values<std::string>(ov::test::utils::DEVICE_GPU),
+                ::testing::Values(false)),
+                ConvolutionLayerGPUTestDynamicEltwiseFusing::getTestCaseName);
 }  // namespace

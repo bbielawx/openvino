@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,10 +15,7 @@ using namespace std;
 using namespace ov;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 shared_ptr<Node> compute_sequence_lengths(const Output<Node>& input_shape, int64_t batch_axis, int64_t seq_axis) {
     auto batch_axis_const = make_shared<v0::Constant>(element::i32, Shape{1}, batch_axis);
     auto seq_axis_const = make_shared<v0::Constant>(element::i32, Shape{1}, seq_axis);
@@ -68,9 +65,9 @@ OutputVector translate_reverse_base_op(const NodeContext& node,
     }
 
     auto input_shape = make_shared<v3::ShapeOf>(batched_input, element::i32);
-    auto seq_lenghts = compute_sequence_lengths(input_shape, batch_axis, seq_axis);
+    auto seq_lengths = compute_sequence_lengths(input_shape, batch_axis, seq_axis);
     auto reverse_sequence =
-        make_shared<v0::ReverseSequence>(batched_input, seq_lenghts, batch_axis, seq_axis)->output(0);
+        make_shared<v0::ReverseSequence>(batched_input, seq_lengths, batch_axis, seq_axis)->output(0);
 
     if (unsqueeze_axes.size() > 0) {
         // remove earlier added additional dimensions from the result
@@ -106,7 +103,7 @@ OutputVector translate_reverse_op(const NodeContext& node) {
 OutputVector translate_reverse_v2_op(const NodeContext& node) {
     // The second input of ReverseV2 is a vector of axes along which
     // elements of the input tensor are reversed
-    default_op_checks(node, 2, {"ReverseV2"});
+    default_op_checks(node, 2, {"ReverseV2", "REVERSE_V2"});
     auto input = node.get_input(0);
 
     // the translator is able to convert ReverseV2 only
@@ -118,7 +115,4 @@ OutputVector translate_reverse_v2_op(const NodeContext& node) {
 
     return translate_reverse_base_op(node, input, axes);
 }
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op

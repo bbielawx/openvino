@@ -1,17 +1,16 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import os
 import sys
 import re
-from typing import Dict, List
 import numpy as np
 from collections import defaultdict
 from pathlib import Path
 from importlib.util import find_spec
 
-from openvino.runtime import Tensor, PartialShape
-from openvino.runtime.utils.types import get_dtype
+from openvino import Tensor, PartialShape, Type
+from openvino.utils.types import get_dtype
 
 from .constants import IMAGE_EXTENSIONS, NUMPY_EXTENSIONS, BINARY_EXTENSIONS
 from .logging import logger
@@ -68,7 +67,7 @@ def get_group_batch_sizes(app_input_info):
     return batch_sizes
 
 
-def get_batch_sizes_per_input_map(app_input_info: List[AppInputInfo]):
+def get_batch_sizes_per_input_map(app_input_info: list[AppInputInfo]):
     batch_sizes_map = {}
     for info in app_input_info:
         if info.layout.has_name('N'):
@@ -80,7 +79,7 @@ def get_batch_sizes_per_input_map(app_input_info: List[AppInputInfo]):
             batch_sizes_map[info.name] = [1] * len(info.shapes)
     return batch_sizes_map
 
-def verify_objects_to_be_used(objects_to_be_used_map: Dict[str, List[str]], info: AppInputInfo, total_frames: int, input_type_name: str):
+def verify_objects_to_be_used(objects_to_be_used_map: dict[str, list[str]], info: AppInputInfo, total_frames: int, input_type_name: str):
         if objects_to_be_used_map[info.name] > total_frames and objects_to_be_used_map[info.name] % total_frames != 0:
             objects_to_be_used_map[info.name] = objects_to_be_used_map[info.name] - objects_to_be_used_map[info.name] % total_frames
             logger.warning(f"Number of provided {input_type_name} for input '{info.name}' is not a multiple of the number of "
@@ -144,7 +143,7 @@ def get_input_data(paths_to_input, app_input_info):
     return DataQueue(data, get_group_batch_sizes(app_input_info))
 
 
-def get_image_tensors(image_paths: List[str], info: AppInputInfo, batch_sizes: List[int]) -> List[Tensor]:
+def get_image_tensors(image_paths: list[str], info: AppInputInfo, batch_sizes: list[int]) -> list[Tensor]:
     if 'cv2' not in sys.modules:
         logger.error("Loading images requires the opencv-python or opencv-python-headless package. "
                      "Please install it before continuing or run benchmark without "
@@ -215,7 +214,7 @@ def get_image_tensors(image_paths: List[str], info: AppInputInfo, batch_sizes: L
     return tensors
 
 
-def get_numpy_tensors(numpy_paths: List[str], info: AppInputInfo, batch_sizes: List[int]) -> List[Tensor]:
+def get_numpy_tensors(numpy_paths: list[str], info: AppInputInfo, batch_sizes: list[int]) -> list[Tensor]:
 
     num_shapes = len(info.shapes)
     num_arrays = len(numpy_paths)
@@ -266,7 +265,7 @@ def get_numpy_tensors(numpy_paths: List[str], info: AppInputInfo, batch_sizes: L
                 else:
                     try:
                         if info.layout.has_name("N"):
-                            numpy_arrays[[None] * info.layout.get_index_by_name("N") + [b]] = numpy_arr
+                            numpy_arrays[[None] * info.layout.get_index_by_name("N") + [b]] = numpy_arr[b]
                         else:
                             numpy_arrays = numpy_arr
                     except ValueError:
@@ -283,7 +282,7 @@ def get_numpy_tensors(numpy_paths: List[str], info: AppInputInfo, batch_sizes: L
 
     return tensors
 
-def get_binary_tensors(binary_paths: List[str], info: AppInputInfo, batch_sizes: List[int]) -> List[Tensor]:
+def get_binary_tensors(binary_paths: list[str], info: AppInputInfo, batch_sizes: list[int]) -> list[Tensor]:
     num_shapes = len(info.shapes)
     num_binaries = len(binary_paths)
     niter = max(num_shapes, num_binaries)
@@ -291,7 +290,7 @@ def get_binary_tensors(binary_paths: List[str], info: AppInputInfo, batch_sizes:
     tensors = []
     for i in range(niter):
         shape_id = i % num_shapes
-        dtype = get_dtype(info.element_type)
+        dtype = np.uint8() if info.element_type.bitwidth < 8 else get_dtype(info.element_type)
         shape = list(info.shapes[shape_id])
         binaries = np.ndarray(shape=shape, dtype=dtype)
         binary_index = processed_frames
@@ -301,14 +300,14 @@ def get_binary_tensors(binary_paths: List[str], info: AppInputInfo, batch_sizes:
             binary_filename: str = binary_paths[binary_index]
             extension = binary_filename.lower().split('.')[-1]
             if extension == "bin":
-                binary_file_size = os.path.getsize(binary_filename)
-                blob_size = dtype.itemsize * int(np.prod(shape))
-                if blob_size != binary_file_size:
+                binary_file_bit_size = os.path.getsize(binary_filename) * 8
+                blob_bit_size = info.element_type.bitwidth * int(np.prod(shape))
+                if blob_bit_size != binary_file_bit_size:
                     raise Exception(
-                        f"File {binary_filename} contains {binary_file_size} bytes but model expects {blob_size}")
-                from_file = np.reshape(np.fromfile(binary_filename, dtype), shape)
+                        f"File {binary_filename} contains {binary_file_bit_size} bites but model expects {blob_bit_size}")
+                from_file = np.fromfile(binary_filename, dtype)
                 if info.layout.has_name("N"):
-                    binaries[[None] * info.layout.get_index_by_name("N") + [b]] = from_file
+                    binaries[[None] * info.layout.get_index_by_name("N") + [b]] = from_file[b]
                 else:
                     binaries = from_file
             else:
@@ -317,7 +316,7 @@ def get_binary_tensors(binary_paths: List[str], info: AppInputInfo, batch_sizes:
 
             binary_index += 1
         processed_frames += current_batch_size
-        tensors.append(Tensor(binaries))
+        tensors.append(Tensor(binaries, shape, info.element_type))
     return tensors
 
 
@@ -345,21 +344,56 @@ def get_image_info_tensors(image_sizes, layer):
         im_infos.append(Tensor(im_info))
     return im_infos
 
+def get_random_4bit_tensor(shape, element_type, rs):
+    pack_shape = [x for x in shape]
+    pack_shape[-1] = pack_shape[-1]*element_type.bitwidth
+    rand_data = (rs.uniform(0, 15, list(pack_shape)) >= 7).astype(int).flatten()
+    rr = np.packbits(rand_data)
+    return Tensor(rr, shape, element_type)
+
+
+def float_to_bf16_bits(values: np.ndarray) -> np.ndarray:
+    """
+    Convert float values to bf16 bit patterns using round-to-nearest-even.
+    Mirrors ov::bfloat16::round_to_nearest_even.
+    """
+    f32 = np.ascontiguousarray(values, dtype=np.float32)
+    bits = f32.view(np.uint32)
+    rounding_bias = (bits & np.uint32(0x00010000)) >> np.uint32(1)
+    return ((bits + rounding_bias) >> np.uint32(16)).astype(np.uint16)
+
+
+def get_random_bf16_tensor(shape, rand_min, rand_max, rs):
+    floats = rs.uniform(rand_min, rand_max, list(shape))
+    bf16_bits = float_to_bf16_bits(floats)
+    return Tensor(bf16_bits, list(shape), Type.bf16)
+
 
 def fill_tensors_with_random(layer):
-    dtype = get_dtype(layer.element_type)
+    is_4bit = layer.element_type.bitwidth == 4
+    is_bf16 = layer.element_type == Type.bf16
+    dtype = np.uint8 if is_4bit else get_dtype(layer.element_type)
     rand_min, rand_max = (0, 1) if dtype == bool else (np.iinfo(np.uint8).min, np.iinfo(np.uint8).max)
-    # np.random.uniform excludes high: add 1 to have it generated
-    if np.dtype(dtype).kind in ['i', 'u', 'b']:
+    if not is_bf16 and np.dtype(dtype).kind in ['i', 'u', 'b']:
         rand_max += 1
     rs = np.random.RandomState(np.random.MT19937(np.random.SeedSequence(0)))
     input_tensors = []
     for shape in layer.shapes:
         if shape:
-            input_tensors.append(Tensor(rs.uniform(rand_min, rand_max, list(shape)).astype(dtype)))
+            if is_4bit:
+                ov_tensor = get_random_4bit_tensor(shape, layer.element_type, rs)
+            elif is_bf16:
+                ov_tensor = get_random_bf16_tensor(shape, rand_min, rand_max, rs)
+            else:
+                ov_tensor = Tensor(rs.uniform(rand_min, rand_max, list(shape)).astype(dtype))
         else:
-            scalar = rs.uniform(rand_min, rand_max)
-            input_tensors.append(Tensor(np.ndarray([], dtype, np.array(scalar).astype(dtype))))
+            if is_4bit:
+                ov_tensor = get_random_4bit_tensor([1], layer.element_type, rs)
+            elif is_bf16:
+                ov_tensor = get_random_bf16_tensor([1], rand_min, rand_max, rs)
+            else:
+                ov_tensor = Tensor(np.ndarray([], dtype, np.array(rs.uniform(rand_min, rand_max)).astype(dtype)))
+        input_tensors.append(ov_tensor)
     return input_tensors
 
 

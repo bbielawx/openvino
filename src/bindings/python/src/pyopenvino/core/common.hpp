@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -12,11 +12,13 @@
 #include <string>
 #include <iterator>
 #include <climits>
+#include <variant>
 
 #include "Python.h"
 #include "openvino/core/type/element_type.hpp"
 #include "openvino/runtime/compiled_model.hpp"
 #include "openvino/runtime/infer_request.hpp"
+#include "openvino/runtime/shared_buffer.hpp"
 #include "openvino/runtime/tensor.hpp"
 #include "openvino/pass/serialize.hpp"
 #include "pyopenvino/graph/any.hpp"
@@ -47,7 +49,9 @@ const std::map<ov::element::Type, py::dtype>& ov_type_to_dtype();
 
 py::dtype get_dtype(const ov::element::Type& ov_type);
 
-const std::map<std::string, ov::element::Type>& dtype_to_ov_type();
+std::map<int, ov::element::Type> init_num_to_ov_type();
+
+const std::map<int, ov::element::Type>& dtype_num_to_ov_type();
 
 ov::element::Type get_ov_type(const py::array& array);
 
@@ -82,7 +86,47 @@ py::array as_contiguous(py::array& array, ov::element::Type type);
 
 py::array array_from_tensor(ov::Tensor&& t, bool is_shared);
 
+template <typename T>
+py::array array_from_constant_cast_bool(ov::op::v0::Constant&& c, py::dtype& dst_dtype) {
+    std::vector<char> result;
+    size_t size = c.get_byte_size() / sizeof(T);
+
+    result.reserve(size);
+
+    for(size_t i = 0; i < size; i++) {
+        result.emplace_back(*(static_cast<const T*>(c.get_data_ptr()) + i) != 0 ? 1 : 0);
+    }
+
+    return py::array(dst_dtype, c.get_shape(), result.data());
+}
+
+template <typename T>
+py::array array_from_constant_cast(ov::op::v0::Constant&& c, py::dtype& dst_dtype) {
+    auto tmp = c.cast_vector<T>();
+    return py::array(dst_dtype, c.get_shape(), tmp.data());
+}
+
+py::array array_from_constant_copy(ov::op::v0::Constant&& c);
+
+py::array array_from_constant_copy(ov::op::v0::Constant&& c, py::dtype& dst_dtype);
+
+py::array array_from_constant_view(ov::op::v0::Constant&& c);
+
 }; // namespace array_helpers
+
+namespace constant_helpers {
+std::vector<size_t> _get_byte_strides(const ov::Shape& s, size_t element_byte_size);
+
+template <typename T>
+std::vector<size_t> _get_byte_strides(const ov::Shape& s) {
+    return _get_byte_strides(s, sizeof(T));
+}
+
+std::vector<size_t> _get_strides(const ov::op::v0::Constant& self);
+
+std::shared_ptr<ov::SharedBuffer<py::array>> get_shared_memory(py::array& array);
+
+}; // namespace constant_helpers
 
 // Helpers for shapes
 namespace shape_helpers {
@@ -135,7 +179,7 @@ ov::pass::Serialize::Version convert_to_version(const std::string& version);
 
 template <typename T>
 std::string get_class_name(const T& obj) {
-    return py::str(py::cast(obj).get_type().attr("__name__"));
+    return py::str(py::type::handle_of(py::cast(obj)).attr("__name__"));
 }
 
 template <typename T>
@@ -143,6 +187,10 @@ std::string get_simple_repr(const T& obj) {
     std::string class_name = get_class_name(obj);
     return "<" + class_name + ">";
 }
+
+typedef std::variant<std::shared_ptr<ov::Node>, int64_t, double, py::array> NodeInput;
+
+std::shared_ptr<ov::Node> node_from_input_value(NodeInput& input);
 
 // Use only with classes that are not creatable by users on Python's side, because
 // Objects created in Python that are wrapped with such wrapper will cause memory leaks.

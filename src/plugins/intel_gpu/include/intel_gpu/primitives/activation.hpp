@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -56,7 +56,9 @@ enum class activation_func {
     gelu,                      // (0.5*val*(1 + erf(val / sqrt(2)))
     gelu_tanh,                 // x⋅0.5⋅(1+tanh[sqrt(2/pi)*val(1 + 0.044715⋅val^2)])
     round_half_to_even,        // round halfs to the nearest even integer
-    round_half_away_from_zero  // round the number so it's further away from zero
+    round_half_away_from_zero, // round the number so it's further away from zero
+    erfinv,                    // inverse Gauss error function (erfinv)
+    swoosh                     // softplus(val - a) - 0.08 * val - b
 };
 
 /// @brief activation additional params
@@ -90,9 +92,8 @@ struct activation : public primitive_base<activation> {
     activation(const primitive_id& id,
                const input_info& input,
                activation_func activation_function,
-               activation_additional_params additional_params = {0.f, 0.f},
-               const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}),
+               activation_additional_params additional_params = {0.f, 0.f})
+        : primitive_base(id, {input}),
           activation_function(activation_function),
           additional_params(additional_params),
           additional_params_input("") {}
@@ -106,9 +107,8 @@ struct activation : public primitive_base<activation> {
     activation(const primitive_id& id,
                const input_info& input,
                const primitive_id& additional_params_input,
-               activation_func activation_function,
-               const padding& output_padding = padding())
-        : primitive_base(id, {input}, {output_padding}),
+               activation_func activation_function)
+        : primitive_base(id, {input}),
           activation_function(activation_function),
           additional_params({0, 0}),
           additional_params_input(additional_params_input) {}
@@ -122,27 +122,28 @@ struct activation : public primitive_base<activation> {
     /// @brief PRelu activation slope input primitive id.
     /// Input x dimension should be equal to input feature size (one slope per channel).
     /// All other dimensions should be 1.
-    primitive_id additional_params_input;
+    input_info additional_params_input;
 
     size_t hash() const override {
         size_t seed = primitive::hash();
         seed = hash_combine(seed, activation_function);
         seed = hash_combine(seed, additional_params.a);
         seed = hash_combine(seed, additional_params.b);
-        seed = hash_combine(seed, additional_params_input.empty());
+        seed = hash_combine(seed, additional_params_input.is_valid());
         return seed;
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const activation>(rhs);
 
         return activation_function == rhs_casted.activation_function &&
                additional_params.a == rhs_casted.additional_params.a &&
                additional_params.b == rhs_casted.additional_params.b &&
-               additional_params_input.empty() == rhs_casted.additional_params_input.empty();
+               additional_params_input.is_valid() == rhs_casted.additional_params_input.is_valid();
     }
 
     void save(BinaryOutputBuffer& ob) const override {
@@ -160,10 +161,15 @@ struct activation : public primitive_base<activation> {
     }
 
 protected:
-    std::vector<input_info> get_dependencies() const override {
-        if (additional_params_input.empty())
-            return {};
-        return {additional_params_input};
+    std::map<size_t, const input_info*> get_dependencies_map() const override {
+        auto ret = std::map<size_t, const input_info*>{};
+        auto idx = input.size();
+
+        if (additional_params_input.is_valid()) {
+            ret[idx++] = &additional_params_input;
+        }
+
+        return ret;
     }
 };
 }  // namespace cldnn

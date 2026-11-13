@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2024 Intel Corporation
+# Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -50,8 +50,12 @@ endif()
 unset(_onecoreuap_arch)
 
 # compile flags
+if(CMAKE_GENERATOR MATCHES "Ninja")
+    set(includes "/I\"\$\$\(UniversalCRT_IncludePath\)\"")
+else()
+    set(includes "/I\"\$\(UniversalCRT_IncludePath\)\"")
+endif()
 
-set(includes "/I\"\$\(UniversalCRT_IncludePath\)\"")
 set(CMAKE_C_FLAGS_INIT "${CMAKE_C_FLAGS_INIT} ${includes}")
 set(CMAKE_CXX_FLAGS_INIT "${CMAKE_CXX_FLAGS_INIT} ${includes}")
 unset(includes)
@@ -66,7 +70,6 @@ set(CMAKE_SHARED_LINKER_FLAGS_INIT "${CMAKE_SHARED_LINKER_FLAGS_INIT} ${linker_f
 set(CMAKE_MODULE_LINKER_FLAGS_INIT "${CMAKE_MODULE_LINKER_FLAGS_INIT} ${linker_flags}")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "${CMAKE_EXE_LINKER_FLAGS_INIT} ${linker_flags}")
 unset(linker_flags)
-
 #
 # Static runtime to overcome apiValidator tool restrictions
 #

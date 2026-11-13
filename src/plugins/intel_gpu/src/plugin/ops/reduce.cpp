@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -20,8 +20,7 @@
 #include "intel_gpu/primitives/reorder.hpp"
 #include "intel_gpu/primitives/reshape.hpp"
 
-namespace ov {
-namespace intel_gpu {
+namespace ov::intel_gpu {
 
 static void CreateReduceOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op, cldnn::reduce_mode mode, bool keep_dims) {
     validate_inputs_count(op, {2});
@@ -30,16 +29,18 @@ static void CreateReduceOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& o
     auto input_pshape = op->get_input_partial_shape(0);
     int64_t rank = input_pshape.size();
 
-    auto axes_constant = std::dynamic_pointer_cast<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
+    auto axes_constant = ov::as_type_ptr<ov::op::v0::Constant>(op->get_input_node_shared_ptr(1));
     OPENVINO_ASSERT(axes_constant != nullptr, "[GPU] Unsupported parameter nodes type in ", op->get_friendly_name(), " (", op->get_type_name(), ")");
 
     std::vector<int64_t> axes = axes_constant->cast_vector<int64_t>();
     for (size_t i = 0; i < axes.size(); i++) {
-        if (axes[i] < 0)
+        if (axes[i] < 0) {
             axes[i] += rank;
+        }
 
-        if (axes[i] >= static_cast<int64_t>(rank) || axes[i] < 0)
+        if (axes[i] >= static_cast<int64_t>(rank) || axes[i] < 0) {
             OPENVINO_THROW("[GPU] Unsupported axis value in ", op->get_friendly_name(), " (", axes[i], ")");
+        }
     }
 
     auto reducePrim = cldnn::reduce(layerName,
@@ -79,12 +80,13 @@ static void CreateReduceOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& o
     cldnn::format out_format = cldnn::format::any;
     auto out_dt = cldnn::element_type_to_data_type(op->get_output_element_type(0));
     if (!keep_dims && rank > 4) {
-        if (rank - axes.size() == 6)
+        if (rank - axes.size() == 6) {
             out_format = cldnn::format::bfwzyx;
-        else if (rank - axes.size() == 5)
+        } else if (rank - axes.size() == 5) {
             out_format = cldnn::format::bfzyx;
-        else if (rank - axes.size() <= 4)
+        } else if (rank - axes.size() <= 4) {
             out_format = cldnn::format::bfyx;
+        }
 
         auto reorder_prim = cldnn::reorder(reorderLayerName,
                                            cldnn::input_info(resultLayerName),
@@ -140,5 +142,4 @@ REGISTER_FACTORY_IMPL(v1, ReduceSum);
 REGISTER_FACTORY_IMPL(v4, ReduceL1);
 REGISTER_FACTORY_IMPL(v4, ReduceL2);
 
-}  // namespace intel_gpu
-}  // namespace ov
+}  // namespace ov::intel_gpu

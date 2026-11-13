@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,7 +7,6 @@
 #include "common_test_utils/common_utils.hpp"
 #include "common_test_utils/test_constants.hpp"
 #include "openvino/runtime/threading/executor_manager.hpp"
-#include "precomp.hpp"
 
 #ifdef ENABLE_CONFORMANCE_PGQL
 #    include "common_test_utils/postgres_link.hpp"
@@ -31,9 +30,12 @@ TestsCommon::TestsCommon()
 #endif
 {
 #ifndef __APPLE__  // TODO: add getVmSizeInKB() for Apple platform
-    auto memsize = ov::test::utils::getVmSizeInKB();
-    if (memsize != 0) {
-        std::cout << "\nMEM_USAGE=" << memsize << "KB\n";
+    static const bool print_mem_usage = std::getenv("OV_TEST_PRINT_MEM_USAGE") != nullptr;
+    if (print_mem_usage) {
+        auto memsize = ov::test::utils::getVmSizeInKB();
+        if (memsize != 0) {
+            std::cout << "\nMEM_USAGE=" << memsize << "KB\n";
+        }
     }
 #endif
     ov::threading::executor_manager()->clear();

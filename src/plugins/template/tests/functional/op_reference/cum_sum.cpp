@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -70,8 +70,7 @@ struct CumSumParams {
 class ReferenceCumSumLayerTest : public testing::TestWithParam<CumSumParams>, public CommonReferenceTest {
 public:
     void SetUp() override {
-        legacy_compare = true;
-        auto params = GetParam();
+        const auto& params = GetParam();
         if (params.testDefaults) {
             function = CreateFunction(params.inShape, params.inType);
             inputData = {params.inputData};
@@ -88,7 +87,7 @@ public:
         }
     }
     static std::string getTestCaseName(const testing::TestParamInfo<CumSumParams>& obj) {
-        auto param = obj.param;
+        const auto& param = obj.param;
         std::ostringstream result;
         result << "testDefaults=" << param.testDefaults << "_";
         result << "axisValue=" << param.axisValue << "_";
@@ -111,13 +110,13 @@ private:
         const auto data_param = std::make_shared<op::v0::Parameter>(data_type, data_shape);
         const auto axis_param = std::make_shared<op::v0::Parameter>(axis_type, axis_shape);
         const auto cum_sum = std::make_shared<op::v0::CumSum>(data_param, axis_param, execlusive, reverse);
-        return std::make_shared<ov::Model>(NodeVector{cum_sum}, ParameterVector{data_param, axis_param});
+        return std::make_shared<ov::Model>(OutputVector{cum_sum}, ParameterVector{data_param, axis_param});
     }
 
     static std::shared_ptr<Model> CreateFunction(const Shape& data_shape, const element::Type& data_type) {
         const auto data_param = std::make_shared<op::v0::Parameter>(data_type, data_shape);
         const auto cum_sum = std::make_shared<op::v0::CumSum>(data_param);
-        return std::make_shared<ov::Model>(NodeVector{cum_sum}, ParameterVector{data_param});
+        return std::make_shared<ov::Model>(OutputVector{cum_sum}, ParameterVector{data_param});
     }
 };
 
@@ -162,7 +161,7 @@ std::vector<CumSumParams> generateCumSumParams(const element::Type& type) {
                      false,
                      true,
                      element::i64,
-                     int64_t(0),
+                     int64_t(-1),
                      Shape{}),
         CumSumParams(Shape{6},
                      type,
@@ -190,7 +189,7 @@ std::vector<CumSumParams> generateCumSumParams(const element::Type& type) {
                      false,
                      false,
                      element::i32,
-                     int32_t(0),
+                     int32_t(-2),
                      Shape{}),
         CumSumParams(Shape{2, 4},
                      type,
@@ -274,7 +273,7 @@ std::vector<CumSumParams> generateCumSumParams(const element::Type& type) {
             false,
             false,
             element::i32,
-            int32_t(1),
+            int32_t(-2),
             Shape{}),
         CumSumParams(
             Shape{3, 2, 4},

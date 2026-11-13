@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -7,7 +7,7 @@
 #include "common_test_utils/ov_test_utils.hpp"
 #include "gtest/gtest.h"
 #include "openvino/frontend/manager.hpp"
-#include "openvino/opsets/opset12.hpp"
+#include "openvino/op/ops.hpp"
 #include "openvino/pass/manager.hpp"
 #include "ts_test_utils.hpp"
 
@@ -34,20 +34,13 @@ using TestParams = std::tuple<FactoryPtr,
 class TransposeSinkingUnaryTestFixture : public ::testing::WithParamInterface<TestParams>, public TransformationTestsF {
 public:
     static std::string get_test_name(const ::testing::TestParamInfo<TestParams>& obj) {
-        FactoryPtr unary_factory;
-        PassFactoryPtr pass_factory;
-        size_t num_unary_ops;
-        CreateGraphF model_factory;
-        CreateGraphF reference_model_factory;
-        Shape input_shape;
-        element::Type input_type;
-        std::tie(unary_factory,
-                 pass_factory,
-                 num_unary_ops,
-                 model_factory,
-                 reference_model_factory,
-                 input_shape,
-                 input_type) = obj.param;
+        const auto& [unary_factory,
+                     pass_factory,
+                     num_unary_ops,
+                     model_factory,
+                     reference_model_factory,
+                     input_shape,
+                     input_type] = obj.param;
 
         std::ostringstream test_name;
         test_name << "unaryFactory=" << unary_factory->getTypeName() << "/";
@@ -423,20 +416,13 @@ std::vector<FactoryPtr> unary_factories = {
     CREATE_UNARY_FACTORY(ConvertLike)};
 
 TEST_P(TransposeSinkingUnaryTestFixture, CompareFunctions) {
-    FactoryPtr unary_factory;
-    PassFactoryPtr pass_factory;
-    size_t num_unary_ops;
-    CreateGraphF model_factory;
-    CreateGraphF reference_model_factory;
-    Shape input_shape;
-    element::Type input_type;
-    std::tie(unary_factory,
-             pass_factory,
-             num_unary_ops,
-             model_factory,
-             reference_model_factory,
-             input_shape,
-             input_type) = this->GetParam();
+    const auto& [unary_factory,
+                 pass_factory,
+                 num_unary_ops,
+                 model_factory,
+                 reference_model_factory,
+                 input_shape,
+                 input_type] = this->GetParam();
 
     model = model_factory(unary_factory, num_unary_ops, input_shape, input_type);
     model_ref = reference_model_factory(unary_factory, num_unary_ops, input_shape, input_type);
@@ -636,6 +622,30 @@ INSTANTIATE_TEST_SUITE_P(TSUnaryForwardMultTransposeConsumersTestSuiteFirstNode,
                          TransposeSinkingUnaryTestFixture,
                          transpose_sinking::testing::unary::test_forward_multiple_consumers_first_node(),
                          TransposeSinkingUnaryTestFixture::get_test_name);
+
+TEST_F(TransformationTestsF, TSUnaryForwardDynamic) {
+    {
+        auto X = std::make_shared<Parameter>(element::f32, PartialShape::dynamic());
+        auto ts_order = std::make_shared<Constant>(element::u64, Shape{0}, Shape{});
+        auto transpose = std::make_shared<Transpose>(X, ts_order);
+
+        auto tanh = std::make_shared<Tanh>(transpose);
+
+        model = std::make_shared<Model>(ov::OutputVector{tanh}, ov::ParameterVector{X});
+
+        manager.register_pass<TSUnaryForward>();
+    }
+    {
+        auto X = std::make_shared<Parameter>(element::f32, PartialShape::dynamic());
+
+        auto tanh = std::make_shared<Tanh>(X);
+
+        auto ts_order = std::make_shared<Constant>(element::u64, Shape{0}, Shape{});
+        auto transpose = std::make_shared<Transpose>(tanh, ts_order);
+
+        model_ref = std::make_shared<Model>(ov::OutputVector{transpose}, ov::ParameterVector{X});
+    }
+}
 
 }  // namespace unary
 }  // namespace testing

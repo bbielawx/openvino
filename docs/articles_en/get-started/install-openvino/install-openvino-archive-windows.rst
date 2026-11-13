@@ -1,5 +1,3 @@
-.. {#openvino_docs_install_guides_installing_openvino_from_archive_windows}
-
 Install OpenVINO™ Runtime on Windows from an Archive File
 ===========================================================
 
@@ -17,43 +15,8 @@ Install OpenVINO™ Runtime on Windows from an Archive File
    * additionally includes code samples
    * is dedicated to Windows users (archives for other systems are also available)
 
-
-System Requirements
-####################
-
-.. tab-set::
-
-   .. tab-item:: System Requirements
-      :sync: system-requirements
-
-      | Full requirement listing is available in:
-      | :doc:`System Requirements Page <../../../about-openvino/system-requirements>`
-
-   .. tab-item:: Processor Notes
-      :sync: processor-notes
-
-      | To see if your processor includes the integrated graphics technology and supports iGPU inference, refer to:
-      | `Product Specifications <https://ark.intel.com/>`__
-
-   .. tab-item:: Software
-      :sync: software
-
-      * `Microsoft Visual Studio 2019 with MSBuild <https://visualstudio.microsoft.com/vs/older-downloads/>`__ or `Microsoft Visual Studio 2022 <http://visualstudio.microsoft.com/  downloads/>`__
-      * `CMake 3.14 or higher, 64-bit <https://cmake.org/download/>`__ (optional, only required for building sample applications)
-      * `Python 3.8 - 3.11, 64-bit <https://www.python.org/downloads/windows/>`__
-
-      .. note::
-
-         To install Microsoft Visual Studio 2019, follow the `Microsoft Visual Studio installation guide <https://docs.microsoft.com/en-us/visualstudio/install/install-visual-studio?view=vs-2019>`__. You can choose to download the Community version. During installation in the **Workloads** tab, choose **Desktop development with C++**.
-
-      .. note::
-
-         You can either use `cmake<version>.msi` which is the installation wizard or `cmake<version>.zip` where you have to go into the `bin` folder and then manually add the path to environmental variables.
-
-      .. important::
-
-         When installing Python, make sure you click the option **Add Python 3.x to PATH** to `add Python <https://docs.python.org/3/using/windows.html#installation-steps>`__ to your `PATH` environment variable.
-
+   Before installing OpenVINO, see the
+   :doc:`System Requirements page <../../../about-openvino/release-notes-openvino/system-requirements>`.
 
 
 Installing OpenVINO Runtime
@@ -78,19 +41,38 @@ Step 1: Download and Install OpenVINO Core Components
       ``C:\Program Files (x86)\Intel`` is the recommended folder. You may also use a different path if desired or if you don't have administrator privileges on your computer.
 
 
-2. Download the `OpenVINO Runtime archive file for Windows <https://storage.openvinotoolkit.org/repositories/openvino/packages/2024.0/windows/>`__ to your local ``Downloads`` folder.
+2. Download the `OpenVINO Runtime archive file for Windows <https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.4.1/windows/>`__ to your local ``Downloads`` folder.
 
    If you prefer using command-lines, run the following commands in the command prompt window you opened:
 
    .. code-block:: sh
 
       cd <user_home>/Downloads
-      curl -L https://storage.openvinotoolkit.org/repositories/openvino/packages/2024.0/windows/w_openvino_toolkit_windows_2024.0.0.14509.34caeefd078_x86_64.zip --output openvino_2024.0.0.zip
-
+      curl -L https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.4.1/windows/openvino_toolkit_windows_2026.4.1.22982.07f9c262b05_x86_64.zip --output openvino_2026.4.1.zip
 
    .. note::
 
-      A ``.sha256`` file is provided together with the archive file to validate your download process. To do that, download the ``.sha256`` file from the same repository and run ``CertUtil -hashfile openvino_2024.0.0.zip SHA256``. Compare the returned value in the output with what's in the ``.sha256`` file: if the values are the same, you have downloaded the correct file successfully; if not, create a Support ticket `here <https://www.intel.com/content/www/us/en/support/contact-intel.html>`__.
+      A ``.sha256`` file is provided together with the archive file to validate your download
+      process. To do that, download the ``.sha256`` file from the same repository and run
+      ``CertUtil -hashfile openvino_2026.4.1.zip SHA256``. Compare the returned value in the
+      output with what's in the ``.sha256`` file: if the values are the same, you have
+      downloaded the correct file successfully; if not, create a Support ticket
+      `here <https://www.intel.com/content/www/us/en/support/contact-intel.html>`__.
+
+   .. note::
+
+      If your system does not have the Microsoft Visual C++ Redistributable installed, use the
+      statically-linked VC++ runtime archive instead. Replace the download command above with:
+
+      .. code-block:: sh
+
+         curl -L https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.4.1/windows_vc_mt/openvino_toolkit_windows_vc_mt_2026.4.1.22982.07f9c262b05_x86_64.zip --output openvino_2026.4.1.zip
+
+      When following step 3, replace its ``ren`` command with:
+
+      .. code-block:: sh
+
+         ren openvino_toolkit_windows_vc_mt_2026.4.1.22982.07f9c262b05_x86_64 openvino_2026.4.1
 
 
 3. Use your favorite tool to extract the archive file, rename the extracted folder, and move it to the ``C:\Program Files (x86)\Intel`` directory.
@@ -99,9 +81,9 @@ Step 1: Download and Install OpenVINO Core Components
 
    .. code-block:: sh
 
-      tar -xf openvino_2024.0.0.zip
-      ren w_openvino_toolkit_windows_2024.0.0.14509.34caeefd078_x86_64 openvino_2024.0.0
-      move openvino_2024.0.0 "C:\Program Files (x86)\Intel"
+      tar -xf openvino_2026.4.1.zip
+      ren openvino_toolkit_windows_2026.4.1.22982.07f9c262b05_x86_64 openvino_2026.4.1
+      move openvino_2026.4.1 "C:\Program Files (x86)\Intel"
 
 
 4. (Optional) Install *numpy* Python Library:
@@ -110,11 +92,11 @@ Step 1: Download and Install OpenVINO Core Components
 
       This step is required only when you decide to use Python API.
 
-   You can use the ``requirements.txt`` file from the ``C:\Program Files (x86)\Intel\openvino_2024.0.0\python`` folder:
+   You can use the ``requirements.txt`` file from the ``C:\Program Files (x86)\Intel\openvino_2026.4.1\python`` folder:
 
    .. code-block:: sh
 
-      cd "C:\Program Files (x86)\Intel\openvino_2024.0.0"
+      cd "C:\Program Files (x86)\Intel\openvino_2026.4.1"
       python -m pip install -r .\python\requirements.txt
 
 
@@ -123,24 +105,27 @@ Step 1: Download and Install OpenVINO Core Components
    .. code-block:: sh
 
       cd C:\Program Files (x86)\Intel
-      mklink /D openvino_2024 openvino_2024.0.0
+      mklink /D openvino_2026 openvino_2026.4.1
 
 
    .. note::
 
-      If you have already installed a previous release of OpenVINO 2024, a symbolic link to the ``openvino_2024`` folder may already exist. If you want to override it, navigate to the ``C:\Program Files (x86)\Intel`` folder and delete the existing linked folder before running the ``mklink`` command.
+      If you have already installed a previous release of OpenVINO 2026, a symbolic link to the
+      ``openvino_2026`` folder may already exist. If you want to override it, navigate to the
+      ``C:\Program Files (x86)\Intel`` folder and delete the existing linked folder before
+      running the ``mklink`` command.
 
 
 Congratulations, you have finished the installation! For some use cases you may still
 need to install additional components. Check the description below, as well as the
-:doc:`list of additional configurations <../configurations>`
+:doc:`list of additional configurations <./configurations>`
 to see if your case needs any of them.
 
-The ``C:\Program Files (x86)\Intel\openvino_2024`` folder now contains the core components for OpenVINO.
-If you used a different path in Step 1, you will find the ``openvino_2024`` folder there.
-The path to the ``openvino_2024`` directory is also referred as ``<INSTALL_DIR>``
+The ``C:\Program Files (x86)\Intel\openvino_2026`` folder now contains the core components
+for OpenVINO.
+If you used a different path in Step 1, you will find the ``openvino_2026`` folder there.
+The path to the ``openvino_2026`` directory is also referred as ``<INSTALL_DIR>``
 throughout the OpenVINO documentation.
-
 
 
 .. _set-the-environment-variables-windows:
@@ -148,14 +133,16 @@ throughout the OpenVINO documentation.
 Step 2: Configure the Environment
 +++++++++++++++++++++++++++++++++
 
-You must update several environment variables before you can compile and run OpenVINO™ applications.
+You must update several environment variables before you can compile and run OpenVINO™
+applications.
 
 .. tab-set::
 
    .. tab-item:: PowerShell
       :sync: powershell
 
-      Open the PowerShell, and run the ``setupvars.ps1`` file to temporarily set your environment variables.
+      Open the PowerShell, and run the ``setupvars.ps1`` file to temporarily set your
+      environment variables.
 
       .. code-block:: sh
 
@@ -164,12 +151,13 @@ You must update several environment variables before you can compile and run Ope
    .. tab-item:: Command Prompt
       :sync: cmd
 
-      Open the Command Prompt, and run the ``setupvars.bat`` batch file to temporarily set your environment variables.
-      If your ``<INSTALL_DIR>`` is not ``C:\Program Files (x86)\Intel\openvino_2024``, use the correct directory instead.
+      Open the Command Prompt, and run the ``setupvars.bat`` batch file to temporarily set
+      your environment variables. If your ``<INSTALL_DIR>`` is not
+      ``C:\Program Files (x86)\Intel\openvino_2026``, use the correct directory instead.
 
       .. code-block:: sh
 
-         "C:\Program Files (x86)\Intel\openvino_2024\setupvars.bat"
+         "C:\Program Files (x86)\Intel\openvino_2026\setupvars.bat"
 
       .. important::
 
@@ -194,29 +182,29 @@ Now that you've installed OpenVINO Runtime, you're ready to run your own machine
    .. tab-item:: Get started with Python
       :sync: get-started-py
 
-      Try the `Python Quick Start Example <../../notebooks/201-vision-monodepth-with-output.html>`__ to estimate depth in a scene using an OpenVINO monodepth model in a Jupyter Notebook inside your web browser.
+      Try the `Python Quick Start Example <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/vision-monodepth>`__ to estimate depth in a scene using an OpenVINO monodepth model in a Jupyter Notebook inside your web browser.
 
       .. image:: https://user-images.githubusercontent.com/15709723/127752390-f6aa371f-31b5-4846-84b9-18dd4f662406.gif
          :width: 400
 
-      Visit the :doc:`Tutorials <../../../learn-openvino/interactive-tutorials-python>` page for more Jupyter Notebooks to get you started with OpenVINO, such as:
+      Visit the :doc:`Tutorials <../../../get-started/learn-openvino/interactive-tutorials-python>` page for more Jupyter Notebooks to get you started with OpenVINO, such as:
 
-      * `OpenVINO Python API Tutorial <../../notebooks/002-openvino-api-with-output.html>`__
-      * `Basic image classification program with Hello Image Classification <../../notebooks/001-hello-world-with-output.html>`__
-      * `Convert a PyTorch model and use it for image background removal <../../notebooks/205-vision-background-removal-with-output.html>`__
+      * `OpenVINO Python API Tutorial <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/openvino-api>`__
+      * `Basic image classification program with Hello Image Classification <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/hello-world>`__
+      * `Convert a PyTorch model and use it for image background removal <https://github.com/openvinotoolkit/openvino_notebooks/tree/latest/notebooks/vision-background-removal>`__
 
    .. tab-item:: Get started with C++
       :sync: get-started-cpp
 
-      Try the :doc:`C++ Quick Start Example <../../../learn-openvino/openvino-samples/get-started-demos>` for step-by-step instructions on building and running a basic image classification C++ application.
+      Try the :doc:`C++ Quick Start Example <../../../get-started/learn-openvino/openvino-samples/get-started-demos>` for step-by-step instructions on building and running a basic image classification C++ application.
 
       .. image:: https://user-images.githubusercontent.com/36741649/127170593-86976dc3-e5e4-40be-b0a6-206379cd7df5.jpg
          :width: 400
 
       Visit the :ref:`Samples <code samples>` page for other C++ example applications to get you started with OpenVINO, such as:
 
-      * :doc:`Basic object detection with the Hello Reshape SSD C++ sample <../../../learn-openvino/openvino-samples/hello-reshape-ssd>`
-      * :doc:`Object classification sample <../../../learn-openvino/openvino-samples/hello-classification>`
+      * :doc:`Basic object detection with the Hello Reshape SSD C++ sample <../../../get-started/learn-openvino/openvino-samples/hello-reshape-ssd>`
+      * :doc:`Object classification sample <../../../get-started/learn-openvino/openvino-samples/hello-classification>`
 
 
 .. _uninstall-from-windows:
@@ -224,8 +212,9 @@ Now that you've installed OpenVINO Runtime, you're ready to run your own machine
 Uninstalling OpenVINO Runtime
 #############################
 
-If you have installed OpenVINO Runtime from archive files, you can uninstall it by deleting the archive files and the extracted folders.
-Uninstallation removes all Intel® Distribution of OpenVINO™ Toolkit component files but does not affect user files in the installation directory.
+If you have installed OpenVINO Runtime from archive files, you can uninstall it by deleting
+the archive files and the extracted folders. Uninstallation removes all Intel® Distribution
+of OpenVINO™ Toolkit component files but does not affect user files in the installation directory.
 
 If you have created the symbolic link, remove the link first.
 
@@ -249,8 +238,6 @@ Additional Resources
 
 * :doc:`Troubleshooting Guide for OpenVINO Installation & Configuration <../install-openvino>`
 * :doc:`Convert models for use with OpenVINO™ <../../../openvino-workflow/model-preparation/convert-model-to-ir>`
-* :doc:`Write your own OpenVINO™ applications <../../../openvino-workflow/running-inference/integrate-openvino-with-your-application>`
-* Sample applications: :doc:`OpenVINO™ Toolkit Samples Overview <../../../learn-openvino/openvino-samples>`
-* Pre-trained deep learning models: :doc:`Overview of OpenVINO™ Toolkit Pre-Trained Models <../../../documentation/legacy-features/model-zoo>`
-* IoT libraries and code samples in the GitHUB repository: `Intel® IoT Developer Kit <https://github.com/intel-iot-devkit>`__
-
+* :doc:`Write your own OpenVINO™ applications <../../../openvino-workflow/running-inference>`
+* Sample applications: :doc:`OpenVINO™ Toolkit Samples Overview <../../../get-started/learn-openvino/openvino-samples>`
+* Pre-trained deep learning models on `Hugging Face <https://huggingface.co/OpenVINO>`__.

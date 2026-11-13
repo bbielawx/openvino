@@ -1,12 +1,17 @@
+# Copyright (C) 2018-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 import re
 import argparse
-import subprocess
+import platform
+# Local dev tool: pipes addresses to addr2line via fixed argv (no shell); paths from maintainer CLI args.
+import subprocess  # nosec B404
 import sys
 from colorama import Fore
 
-def addr2line(exefile, addrs):
-    proc = subprocess.Popen(["addr2line", "-C", "-e", exefile, "-f", "-s", "-p"],
+def addr2line(exefile, addrs, addr2line_path):
+    proc = subprocess.Popen([addr2line_path, "-C", "-e", exefile, "-f", "-s", "-p"],
                             stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8")
     line_info = {}
     for i, addr in enumerate(addrs):
@@ -24,6 +29,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=f"jit dump disassmbler")
     parser.add_argument("--filter", type=list, default=["xbyak.h","jit_generator.hpp","primitive.hpp","xbyak_mnemonic.h"])
     parser.add_argument("--maxcnt", type=int, help="Maximum number of entries from call stack to show", default=3)
+    parser.add_argument("--addr2line", type=str, help="path to addr2line tool", default="addr2line")
     parser.add_argument("trace", type=str)
     parser.add_argument("bin", type=str)
 
@@ -38,8 +44,8 @@ if __name__ == "__main__":
     print(f"load {args.trace}...")
     addr2check = {}
     offset2addr = {}
-    pattern = re.compile("(.*)\(\+(0x[0-9a-f]*)\).*")  # xxx.so(+0x1234) [] 
-    pattern2 = re.compile("(.*)\(\) \[(0x[0-9a-f]*)\].*") # xxx() [0x1234]
+    pattern = re.compile(r'(.*)\(\+(0x[0-9a-f]*)\).*')  # xxx.so(+0x1234) [] 
+    pattern2 = re.compile(r'(.*)\(\) \[(0x[0-9a-f]*)\].*') # xxx() [0x1234]
     with open(args.trace, "r") as f:
         for line in f.readlines():
             offset, traces = line.split(":")
@@ -61,15 +67,24 @@ if __name__ == "__main__":
     print(f"extract debug info with addr2line...")
     traces={}
     for exefile, addrs in addr2check.items():
-        traces[exefile] = addr2line(exefile, addrs)
+        traces[exefile] = addr2line(exefile, addrs, args.addr2line)
 
     print("objdump...")
-    disassemble = subprocess.check_output(f"objdump -D -b binary -mi386:x86-64 -M intel {args.bin}", shell=True, encoding="utf-8")
+    if platform.machine() == "x86_64":
+        disassemble = subprocess.check_output(f"objdump -D -b binary -mi386:x86-64 -M intel {args.bin}", shell=True, encoding="utf-8")
+    elif platform.machine() == "aarch64":
+        disassemble = subprocess.check_output(f"objdump -D -b binary -m aarch64 {args.bin}", shell=True, encoding="utf-8")
+    else:
+        print(f"Unsupported platform for objdump: {platform.machine()}")
+        sys.exit(1)
 
-    pattern = re.compile("^\s*([\da-f]*):.*")
+    pattern = re.compile(r'^\s*([\da-f]*):.*')
     print("parsing...")
 
-    rm_prefix = "dnnl::impl::cpu::x64::"
+    rm_prefixes = [
+        "dnnl::impl::cpu::x64::",
+        "dnnl::impl::cpu::aarch64::",
+    ]
     for line in disassemble.splitlines():
         m = pattern.match(line)
         debug_info = []
@@ -78,8 +93,9 @@ if __name__ == "__main__":
             if offset in offset2addr:
                 for exefile, addr in offset2addr[offset]:
                     t = traces[exefile][addr]
-                    if t.startswith(rm_prefix):
-                        t = t[len(rm_prefix):]
+                    for rm_prefix in rm_prefixes:
+                        if t.startswith(rm_prefix):
+                            t = t[len(rm_prefix):]
                     file_lino = t.split(" at ")[1]
                     if not skip_src_file(file_lino):
                         debug_info.append(file_lino)

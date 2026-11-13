@@ -1,18 +1,12 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/is_inf.hpp"
-
+#include "core/operator_set.hpp"
 #include "openvino/opsets/opset10.hpp"
-
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
-namespace op {
-namespace set_1 {
+namespace ov::frontend::onnx::ai_onnx::opset_1 {
 ov::OutputVector is_inf(const ov::frontend::onnx::Node& node) {
     const auto data = node.get_ov_inputs().at(0);
 
@@ -22,8 +16,5 @@ ov::OutputVector is_inf(const ov::frontend::onnx::Node& node) {
 
     return {std::make_shared<v10::IsInf>(data, attributes)};
 }
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("IsInf", OPSET_SINCE(1), ai_onnx::opset_1::is_inf);
+}  // namespace ov::frontend::onnx::ai_onnx::opset_1

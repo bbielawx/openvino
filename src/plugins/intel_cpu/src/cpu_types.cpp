@@ -1,13 +1,29 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 #include "cpu_types.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
-namespace ov {
-namespace intel_cpu {
+#include "cpu_shape.h"
+#include "openvino/util/common_util.hpp"
+#include "utils/caseless.hpp"
+
+namespace ov::intel_cpu {
+
+std::string dim2str(Dim dim) {
+    return dim == Shape::UNDEFINED_DIM ? "?" : std::to_string(dim);
+}
+
+std::string dims2str(const VectorDims& dims) {
+    std::vector<std::string> dimStrings(dims.size());
+    std::transform(dims.begin(), dims.end(), dimStrings.begin(), [](Dim dim) {
+        return dim2str(dim);
+    });
+    return "{" + ov::util::join(dimStrings) + "}";
+}
 
 using TypeToNameMap = ov::intel_cpu::caseless_unordered_map<std::string, Type>;
 
@@ -21,6 +37,9 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"GroupConvolution", Type::Convolution},
         {"MatMul", Type::MatMul},
         {"FullyConnected", Type::FullyConnected},
+        {"FullyConnectedCompressed", Type::FullyConnected},
+        {"FullyConnectedQuantizedLegacy", Type::FullyConnected},
+        {"FullyConnectedQuantized", Type::FullyConnected},
         {"MaxPool", Type::Pooling},
         {"AvgPool", Type::Pooling},
         {"AdaptiveMaxPool", Type::AdaptivePooling},
@@ -68,12 +87,17 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"Erf", Type::Eltwise},
         {"SoftPlus", Type::Eltwise},
         {"SoftSign", Type::Eltwise},
+        {"ErfInv", Type::Eltwise},
+        {"SegmentMax", Type::SegmentMax},
+        {"Histc", Type::Histc},
         {"Select", Type::Eltwise},
         {"Log", Type::Eltwise},
         {"BitwiseAnd", Type::Eltwise},
         {"BitwiseNot", Type::Eltwise},
         {"BitwiseOr", Type::Eltwise},
         {"BitwiseXor", Type::Eltwise},
+        {"BitwiseLeftShift", Type::Eltwise},
+        {"BitwiseRightShift", Type::Eltwise},
         {"Reshape", Type::Reshape},
         {"Squeeze", Type::Reshape},
         {"Unsqueeze", Type::Reshape},
@@ -85,6 +109,7 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"SpaceToBatch", Type::SpaceToBatch},
         {"DepthToSpace", Type::DepthToSpace},
         {"SpaceToDepth", Type::SpaceToDepth},
+        {"SparseFillEmptyRows", Type::SparseFillEmptyRows},
         {"Roll", Type::Roll},
         {"LRN", Type::Lrn},
         {"Split", Type::Split},
@@ -94,8 +119,10 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"GroupConvolutionBackpropData", Type::Deconvolution},
         {"StridedSlice", Type::StridedSlice},
         {"Slice", Type::StridedSlice},
+        {"SliceScatter", Type::StridedSlice},
         {"Tile", Type::Tile},
         {"ROIAlign", Type::ROIAlign},
+        {"ROIAlignRotated", Type::ROIAlignRotated},
         {"ROIPooling", Type::ROIPooling},
         {"PSROIPooling", Type::PSROIPooling},
         {"DeformablePSROIPooling", Type::PSROIPooling},
@@ -116,16 +143,20 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"Loop", Type::TensorIterator},
         {"ReadValue", Type::MemoryInput},  // for construction from name ctor, arbitrary name is used
         {"Assign", Type::MemoryOutput},    // for construction from layer ctor
+        {"ReadValueWithSubgraph", Type::MemoryInput},
         {"Convert", Type::Convert},
         {"NV12toRGB", Type::ColorConvert},
         {"NV12toBGR", Type::ColorConvert},
         {"I420toRGB", Type::ColorConvert},
         {"I420toBGR", Type::ColorConvert},
+        {"Col2Im", Type::Col2Im},
         {"MVN", Type::MVN},
         {"NormalizeL2", Type::NormalizeL2},
         {"ScatterUpdate", Type::ScatterUpdate},
         {"ScatterElementsUpdate", Type::ScatterElementsUpdate},
         {"ScatterNDUpdate", Type::ScatterNDUpdate},
+        {"StringTensorPack", Type::StringTensorPack},
+        {"StringTensorUnpack", Type::StringTensorUnpack},
         {"Interpolate", Type::Interpolate},
         {"RandomUniform", Type::RandomUniform},
         {"ReduceL1", Type::Reduce},
@@ -142,8 +173,8 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"ReduceSumSquare", Type::Reduce},
         {"Broadcast", Type::Broadcast},
         {"EmbeddingSegmentsSum", Type::EmbeddingSegmentsSum},
-        {"EmbeddingBagPackedSum", Type::EmbeddingBagPackedSum},
-        {"EmbeddingBagOffsetsSum", Type::EmbeddingBagOffsetsSum},
+        {"EmbeddingBagPackedSum", Type::EmbeddingBagPacked},
+        {"EmbeddingBagOffsetsSum", Type::EmbeddingBagOffsets},
         {"Gather", Type::Gather},
         {"GatherElements", Type::GatherElements},
         {"GatherND", Type::GatherND},
@@ -155,6 +186,8 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"IDFT", Type::DFT},
         {"RDFT", Type::RDFT},
         {"IRDFT", Type::RDFT},
+        {"ISTFT", Type::ISTFT},
+        {"STFT", Type::STFT},
         {"Abs", Type::Math},
         {"Acos", Type::Math},
         {"Acosh", Type::Math},
@@ -163,13 +196,13 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"Atan", Type::Math},
         {"Atanh", Type::Math},
         {"Ceil", Type::Math},
-        {"Ceiling", Type::Math},
+        {"Ceiling", Type::Eltwise},
+        {"Negative", Type::Eltwise},
         {"Cos", Type::Math},
         {"Cosh", Type::Math},
-        {"Floor", Type::Math},
+        {"Floor", Type::Eltwise},
         {"HardSigmoid", Type::Math},
         {"If", Type::If},
-        {"Neg", Type::Math},
         {"Reciprocal", Type::Math},
         {"Selu", Type::Math},
         {"Sign", Type::Math},
@@ -199,6 +232,7 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"ExperimentalDetectronGenerateProposalsSingleImage", Type::ExperimentalDetectronGenerateProposalsSingleImage},
         {"ExtractImagePatches", Type::ExtractImagePatches},
         {"GenerateProposals", Type::GenerateProposals},
+        {"Identity", Type::Identity},
         {"Inverse", Type::Inverse},
         {"NonMaxSuppression", Type::NonMaxSuppression},
         {"NonMaxSuppressionIEInternal", Type::NonMaxSuppression},
@@ -209,19 +243,39 @@ static const TypeToNameMap& get_type_to_name_tbl() {
         {"Multinomial", Type::Multinomial},
         {"Reference", Type::Reference},
         {"Subgraph", Type::Subgraph},
+        {"SubModel", Type::SubModel},
         {"PriorBox", Type::PriorBox},
         {"PriorBoxClustered", Type::PriorBoxClustered},
         {"Interaction", Type::Interaction},
-        {"MHA", Type::MHA},
         {"Unique", Type::Unique},
         {"Ngram", Type::Ngram},
         {"ScaledDotProductAttention", Type::ScaledDotProductAttention},
         {"ScaledDotProductAttentionWithKVCache", Type::ScaledDotProductAttention},
-        {"PagedAttentionExtension", Type::ScaledDotProductAttention},
+        {"SDPAWithTransposeReshape", Type::ScaledDotProductAttention},
+        {"PagedAttentionExtension", Type::PagedAttention},
+        {"PaKVReorder", Type::PaKVReorder},
         {"RoPE", Type::RoPE},
         {"GatherCompressed", Type::Gather},
         {"CausalMaskPreprocess", Type::CausalMaskPreprocess},
-    };
+        {"EmbeddingBagPacked", Type::EmbeddingBagPacked},
+        {"EmbeddingBagOffsets", Type::EmbeddingBagOffsets},
+        {"LLMMLP", Type::LLMMLP},
+        {"QKVProjection", Type::QKVProjection},
+        {"RMS", Type::RMS},
+        {"SearchSorted", Type::SearchSorted},
+        {"LoraSubgraph", Type::LoRA},
+        {"GatherMatmul", Type::GatherMatmul},
+        {"GatherMatmulCompressed", Type::GatherMatmul},
+        {"GatedDeltaNet", Type::GatedDeltaNet},
+        {"PagedGatedDeltaNet", Type::PagedGatedDeltaNet},
+        {"SelectiveSSM", Type::SelectiveSSM},
+        {"PagedSelectiveSSM", Type::PagedSelectiveSSM},
+        {"PagedCausalConv1D", Type::PagedCausalConv1D},
+        {"QSAIndexer", Type::QSAIndexer},
+        {"SparseAttention", Type::SparseSDPA},
+        {"SparseAttentionWithKVCache", Type::SparseSDPA},
+        {"PagedQSAIndexer", Type::PagedQSAIndexer},
+        {"PagedSparseAttention", Type::SparsePA}};
     return type_to_name_tbl;
 }
 
@@ -230,9 +284,8 @@ Type TypeFromName(const std::string& type) {
     auto itType = type_to_name_tbl.find(type);
     if (type_to_name_tbl.end() != itType) {
         return itType->second;
-    } else {
-        return Type::Unknown;
     }
+    return Type::Unknown;
 }
 
 std::string NameFromType(const Type type) {
@@ -260,6 +313,7 @@ std::string NameFromType(const Type type) {
         CASE(NonZero);
         CASE(Tile);
         CASE(ROIAlign);
+        CASE(ROIAlignRotated);
         CASE(ROIPooling);
         CASE(PSROIPooling);
         CASE(DepthToSpace);
@@ -268,6 +322,7 @@ std::string NameFromType(const Type type) {
         CASE(Transpose);
         CASE(SpaceToDepth);
         CASE(SpaceToBatch);
+        CASE(SparseFillEmptyRows);
         CASE(MemoryOutput);
         CASE(MemoryInput);
         CASE(RNNSeq);
@@ -279,16 +334,21 @@ std::string NameFromType(const Type type) {
         CASE(MVN);
         CASE(TensorIterator);
         CASE(Convert);
+        CASE(Col2Im);
         CASE(ColorConvert);
         CASE(NormalizeL2);
         CASE(ScatterUpdate);
         CASE(ScatterElementsUpdate);
         CASE(ScatterNDUpdate);
+        CASE(StringTensorPack);
+        CASE(StringTensorUnpack);
         CASE(Interaction);
         CASE(Interpolate);
         CASE(Reduce);
         CASE(Broadcast);
         CASE(EmbeddingSegmentsSum);
+        CASE(EmbeddingBagPacked);
+        CASE(EmbeddingBagOffsets);
         CASE(EmbeddingBagPackedSum);
         CASE(EmbeddingBagOffsetsSum);
         CASE(Gather);
@@ -301,6 +361,8 @@ std::string NameFromType(const Type type) {
         CASE(ShuffleChannels);
         CASE(DFT);
         CASE(RDFT);
+        CASE(STFT);
+        CASE(ISTFT);
         CASE(Math);
         CASE(CTCLoss);
         CASE(Bucketize);
@@ -323,6 +385,7 @@ std::string NameFromType(const Type type) {
         CASE(ExperimentalDetectronPriorGridGenerator);
         CASE(ExperimentalDetectronGenerateProposalsSingleImage);
         CASE(GenerateProposals);
+        CASE(Identity);
         CASE(Inverse);
         CASE(ExtractImagePatches);
         CASE(NonMaxSuppression);
@@ -331,15 +394,34 @@ std::string NameFromType(const Type type) {
         CASE(Multinomial);
         CASE(Reference);
         CASE(Subgraph);
+        CASE(SubModel);
         CASE(PriorBox);
         CASE(PriorBoxClustered)
-        CASE(MHA);
         CASE(RandomUniform);
         CASE(Unique);
         CASE(Ngram);
         CASE(ScaledDotProductAttention);
+        CASE(PagedAttention);
+        CASE(PaKVReorder);
         CASE(RoPE);
         CASE(CausalMaskPreprocess);
+        CASE(LLMMLP);
+        CASE(QKVProjection);
+        CASE(RMS);
+        CASE(SearchSorted);
+        CASE(SegmentMax);
+        CASE(Histc);
+        CASE(LoRA);
+        CASE(GatherMatmul);
+        CASE(GatedDeltaNet);
+        CASE(PagedGatedDeltaNet);
+        CASE(SelectiveSSM);
+        CASE(PagedSelectiveSSM);
+        CASE(PagedCausalConv1D);
+        CASE(QSAIndexer);
+        CASE(SparseSDPA);
+        CASE(PagedQSAIndexer);
+        CASE(SparsePA);
         CASE(Unknown);
     }
 #undef CASE
@@ -367,7 +449,10 @@ std::string algToString(const Algorithm alg) {
         CASE(EltwiseMultiply);
         CASE(EltwiseSubtract);
         CASE(EltwiseDivide);
+        CASE(EltwiseFloor);
+        CASE(EltwiseCeiling);
         CASE(EltwiseFloorMod);
+        CASE(EltwiseNegative);
         CASE(EltwiseMod);
         CASE(EltwiseMaximum);
         CASE(EltwiseMinimum);
@@ -406,14 +491,23 @@ std::string algToString(const Algorithm alg) {
         CASE(EltwiseRoundHalfAwayFromZero);
         CASE(EltwiseErf);
         CASE(EltwiseSoftSign);
+        CASE(EltwiseErfInv);
         CASE(EltwiseLog);
         CASE(EltwiseBitwiseAnd);
         CASE(EltwiseBitwiseNot);
         CASE(EltwiseBitwiseOr);
         CASE(EltwiseBitwiseXor);
+        CASE(EltwiseBitwiseLeftShift);
+        CASE(EltwiseBitwiseRightShift);
         CASE(FQCommon);
         CASE(FQQuantization);
         CASE(FQBinarization);
+        CASE(FullyConnectedCommon);
+        CASE(FullyConnectedCompressed);
+        CASE(FullyConnectedQuantized);
+        CASE(FullyConnectedQuantizedLegacy);
+        CASE(GatherMatmulDefault);
+        CASE(GatherMatmulCompressed);
         CASE(ROIPoolingMax);
         CASE(ROIPoolingBilinear);
         CASE(ROIAlignMax);
@@ -466,5 +560,4 @@ std::string algToString(const Algorithm alg) {
     return "Undefined";
 }
 
-}  // namespace intel_cpu
-}  // namespace ov
+}  // namespace ov::intel_cpu

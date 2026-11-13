@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -36,7 +36,7 @@ KernelsPriority MulticlassNmsKernelRef::GetKernelsPriority(const Params&) const 
 
 bool MulticlassNmsKernelRef::Validate(const Params& p) const {
     if (p.GetType() != KernelType::MULTICLASS_NMS) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     return true;
@@ -66,11 +66,13 @@ MulticlassNmsKernelRef::DispatchData SetDefault(const multiclass_nms_params& par
 
 void MulticlassNmsKernelRef::SetKernelArguments(const multiclass_nms_params& params,
                                                 size_t idx, cldnn::arguments_desc& arguments) const {
-    for (auto i = 0; i < 2 + params.has_roisnum + 2; ++i) {
+    for (auto i = 0; i < (params.has_roisnum ? 3 : 2); ++i) {
         arguments.push_back({ArgumentDescriptor::Types::INPUT, (uint32_t)i});
     }
     arguments.push_back({ArgumentDescriptor::Types::INTERNAL_BUFFER, 0});
     arguments.push_back({ArgumentDescriptor::Types::OUTPUT, 0});
+    arguments.push_back({ArgumentDescriptor::Types::OUTPUT, 1});
+    arguments.push_back({ArgumentDescriptor::Types::OUTPUT, 2});
 }
 
 JitConstants MulticlassNmsKernelRef::GetJitConstants(const multiclass_nms_params& params) const {
@@ -87,14 +89,15 @@ JitConstants MulticlassNmsKernelRef::GetJitConstants(const multiclass_nms_params
 
     int64_t max_output_boxes_per_class = 0;
     if (params.nms_top_k >= 0) {
-        max_output_boxes_per_class = std::min<int>(static_cast<int>(num_boxes), params.nms_top_k);
+        max_output_boxes_per_class = std::min<int64_t>(static_cast<int64_t>(num_boxes), params.nms_top_k);
     } else {
         max_output_boxes_per_class = num_boxes;
     }
 
     auto max_output_boxes_per_batch = max_output_boxes_per_class * real_num_classes;
-    if (params.keep_top_k >= 0)
-        max_output_boxes_per_batch = std::min<int>(max_output_boxes_per_batch, params.keep_top_k);
+    if (params.keep_top_k >= 0) {
+        max_output_boxes_per_batch = std::min<int64_t>(max_output_boxes_per_batch, params.keep_top_k);
+    }
 
     jit.AddConstants({
         MakeJitConstant("SORT_RESULT_TYPE", static_cast<int>(params.sort_result_type)),
@@ -113,8 +116,6 @@ JitConstants MulticlassNmsKernelRef::GetJitConstants(const multiclass_nms_params
 
         MakeJitConstant("MAX_OUTPUT_BOXES_PER_BATCH", max_output_boxes_per_batch),
     });
-
-    jit.Merge(MakeTypeJitConstants(params.indices_output_type, "OUTPUT_INDICES"));
 
     if (params.has_roisnum) {
         jit.AddConstant(MakeJitConstant("HAS_ROISNUM", 1));
@@ -138,11 +139,11 @@ KernelsData MulticlassNmsKernelRef::GetKernelsData(const Params& params) const {
 
     // buffer for BoxInfos
     kd.internalBufferDataType = Datatype::F32;
-    kd.internalBufferSizes.resize(1);
+    kd.internalBuffers.resize(1);
     // double: 4 coordinates + 1 score; long: 1 class_idx + 1 batch_idx + 1 index
     const auto box_size = (4 + 1) * sizeof(double) + 3 * sizeof(long);
     const auto total_boxes = num_batches * num_classes * num_boxes;
-    kd.internalBufferSizes[0] = box_size * total_boxes;
+    kd.internalBuffers[0] = box_size * total_boxes;
     const auto common_jit_constants = GetJitConstants(op_params);
 
     for (size_t i = 0; i < kKernelsNum; ++i) {
@@ -152,7 +153,7 @@ KernelsData MulticlassNmsKernelRef::GetKernelsData(const Params& params) const {
         cldnn_jit.AddConstant(MakeJitConstant("MULTICLASSNMS_STAGE_" + std::to_string(i), "true"));
 
         const auto jit = CreateJit(kernelName, cldnn_jit, entry_point);
-        KernelBase::CheckDispatchData(kernelName, dispatch_data, params.engineInfo.maxWorkGroupSize);
+        KernelBase::CheckDispatchData(kernelName, dispatch_data, params.engineInfo);
         auto& kernel = kd.kernels[i];
 
         kernel.params.workGroups.global = dispatch_data.gws;

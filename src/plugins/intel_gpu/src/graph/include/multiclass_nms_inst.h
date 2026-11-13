@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -32,8 +32,9 @@ public:
     }
 
     const program_node& roisnum() const {
-        if (!get_primitive()->has_roisnum)
+        if (!get_primitive()->has_roisnum) {
             throw std::runtime_error("there is no roisnum input");
+        }
         return get_dependency(2);
     }
 
@@ -58,6 +59,8 @@ class typed_primitive_inst<multiclass_nms> : public typed_primitive_inst_base<mu
     using parent::parent;
 
 public:
+    template<typename ShapeType>
+    static std::vector<layout> calc_output_layouts(multiclass_nms_node const& /*node*/, const kernel_impl_params& impl_param);
     static layout calc_output_layout(const multiclass_nms_node& node, const kernel_impl_params& impl_param);
     static std::string to_string(const multiclass_nms_node& node);
 

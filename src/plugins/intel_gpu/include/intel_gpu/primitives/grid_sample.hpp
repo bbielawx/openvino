@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -24,9 +24,8 @@ struct grid_sample : primitive_base<grid_sample> {
     /// @param attributes Structure which contains all GridSample attributes.
     grid_sample(const primitive_id& id,
                 const std::vector<input_info>& inputs,
-                const GridSampleOp::Attributes& attributes,
-                const padding& output_padding = {})
-        : primitive_base(id, inputs, {output_padding}),
+                const GridSampleOp::Attributes& attributes)
+        : primitive_base(id, inputs),
           attributes(attributes) {}
 
     GridSampleOp::Attributes attributes;
@@ -40,8 +39,9 @@ struct grid_sample : primitive_base<grid_sample> {
     }
 
     bool operator==(const primitive& rhs) const override {
-        if (!compare_common_params(rhs))
+        if (!compare_common_params(rhs)) {
             return false;
+        }
 
         auto rhs_casted = downcast<const grid_sample>(rhs);
 

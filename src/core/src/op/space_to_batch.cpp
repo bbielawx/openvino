@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -6,10 +6,12 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <numeric>
 
 #include "itt.hpp"
+#include "openvino/core/memory_util.hpp"
 #include "openvino/core/shape.hpp"
 #include "openvino/op/util/attr_types.hpp"
 #include "openvino/op/util/precision_sensitive_attribute.hpp"
@@ -55,8 +57,8 @@ void SpaceToBatch::validate_and_infer_types() {
                           "pads_end must be an integral number but got (",
                           pads_end_type,
                           ").");
-    const auto output_shape = shape_infer(this, ov::util::get_node_input_partial_shapes(*this)).front();
-    set_output_type(0, data_type, output_shape);
+    const auto output_shapes = shape_infer(this, ov::util::get_node_input_partial_shapes(*this));
+    set_output_type(0, data_type, output_shapes[0]);
 }
 
 std::shared_ptr<Node> SpaceToBatch::clone_with_new_inputs(const OutputVector& new_args) const {
@@ -74,7 +76,7 @@ namespace space_to_batch {
 namespace {
 bool evaluate(TensorVector& outputs, const TensorVector& inputs) {
     const auto& data = inputs[0];
-    const auto& out = outputs[0];
+    auto& out = outputs[0];
     const auto elem_size = data.get_element_type().size();
 
     auto data_shape = data.get_shape();
@@ -100,10 +102,29 @@ bool evaluate(TensorVector& outputs, const TensorVector& inputs) {
 
     Shape padded_shape(data_shape.size());
     for (size_t i = 0; i < data_shape.size(); ++i) {
-        padded_shape[i] = data_shape[i] + pads_begin_vec[i] + pads_end_vec[i];
+        OPENVINO_ASSERT(pads_begin_vec[i] >= 0,
+                        "SpaceToBatch: pads_begin[",
+                        i,
+                        "] must be non-negative, got ",
+                        pads_begin_vec[i]);
+        OPENVINO_ASSERT(pads_end_vec[i] >= 0,
+                        "SpaceToBatch: pads_end[",
+                        i,
+                        "] must be non-negative, got ",
+                        pads_end_vec[i]);
+        const auto pb = static_cast<size_t>(pads_begin_vec[i]);
+        const auto pe = static_cast<size_t>(pads_end_vec[i]);
+        OPENVINO_ASSERT(data_shape[i] <= std::numeric_limits<size_t>::max() - pb &&
+                            data_shape[i] + pb <= std::numeric_limits<size_t>::max() - pe,
+                        "SpaceToBatch: padded dimension ",
+                        i,
+                        " overflows");
+        padded_shape[i] = data_shape[i] + pb + pe;
     }
 
-    std::vector<char> padded_data(shape_size(padded_shape) * elem_size);
+    const auto padded_byte_size = ov::util::get_memory_size_safe(data.get_element_type(), padded_shape);
+    OPENVINO_ASSERT(padded_byte_size.has_value(), "SpaceToBatch: padded shape size overflows");
+    std::vector<char> padded_data(*padded_byte_size);
     reference::pad(static_cast<const char*>(data.data()),
                    pad_value,
                    padded_data.data(),
@@ -113,7 +134,7 @@ bool evaluate(TensorVector& outputs, const TensorVector& inputs) {
                    pads_begin_vec,
                    pads_end_vec,
                    op::PadMode::CONSTANT);
-    data_shape = padded_shape;
+    data_shape = std::move(padded_shape);
 
     Shape dispersed_shape(block_values_size + 1);
     std::vector<size_t> axes_order(block_values_size + 1);
@@ -122,8 +143,8 @@ bool evaluate(TensorVector& outputs, const TensorVector& inputs) {
     std::iota(plain_axes_order.begin(), plain_axes_order.end(), 0);
 
     std::vector<char> flat_data(padded_data.begin(), padded_data.end());
-    std::vector<char> dispersed_data(shape_size(data_shape) * elem_size);
-    std::vector<char> post_transpose_data(shape_size(data_shape) * elem_size);
+    std::vector<char> dispersed_data(*padded_byte_size);
+    std::vector<char> post_transpose_data(*padded_byte_size);
 
     for (int64_t block_idx = block_values_size - 1; block_idx >= 0; --block_idx) {
         int64_t sq_shape_idx = block_values_size - 1;

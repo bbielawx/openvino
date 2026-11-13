@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -53,7 +53,6 @@ TEST_P(ctc_greedy_decoder_seq_len_test, shape_infer) {
                                    input_prim_ids,
                                    p.blank_index[0],
                                    true,
-                                   padding(),
                                    data_types::i32,
                                    2);
 

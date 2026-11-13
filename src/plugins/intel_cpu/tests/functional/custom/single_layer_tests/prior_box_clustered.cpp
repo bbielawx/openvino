@@ -1,10 +1,12 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #include "openvino/core/partial_shape.hpp"
 #include "shared_test_classes/base/ov_subgraph.hpp"
 #include "utils/cpu_test_utils.hpp"
+#include "openvino/op/prior_box_clustered.hpp"
+#include "openvino/op/shape_of.hpp"
 
 using namespace CPUTestUtils;
 
@@ -34,13 +36,7 @@ class PriorBoxClusteredLayerCPUTest : public testing::WithParamInterface<priorBo
         virtual public SubgraphBaseTest, public CPUTestsBase {
 public:
     static std::string getTestCaseName(const testing::TestParamInfo<priorBoxClusteredLayerParams>& obj) {
-        ov::test::ElementType netPrecision;
-        ov::test::ElementType inPrc, outPrc;
-        ov::test::InputShape inputShapes, imageShapes;
-        std::string targetDevice;
-        priorBoxClusteredSpecificParams specParams;
-        std::tie(specParams, netPrecision, inPrc, outPrc, inputShapes, imageShapes, targetDevice) = obj.param;
-
+        const auto& [specParams, netPrecision, inPrc, outPrc, inputShapes, imageShapes, targetDevice] = obj.param;
         ov::op::v0::PriorBoxClustered::Attributes attributes;
         std::tie(
             attributes.widths,
@@ -78,14 +74,8 @@ public:
 
 protected:
     void SetUp() override {
-        priorBoxClusteredSpecificParams specParams;
-        ov::test::ElementType netPrecision;
-        ov::test::ElementType inPrc;
-        ov::test::ElementType outPrc;
-        ov::test::InputShape inputShapes;
-        ov::test::InputShape imageShapes;
-        std::tie(specParams, netPrecision, inPrc, outPrc, inputShapes, imageShapes, targetDevice) = GetParam();
-
+        const auto& [specParams, netPrecision, inPrc, outPrc, inputShapes, imageShapes, _targetDevice] = GetParam();
+        targetDevice = _targetDevice;
         selectedType = makeSelectedTypeStr("ref_any", ov::test::ElementType::i32);
         targetDevice = ov::test::utils::DEVICE_CPU;
 
@@ -189,17 +179,16 @@ const std::vector<ov::test::InputShape> imageShapes = {
         {{{50, 100}, {50, 100}}, {{50, 50}, {100, 100}}}
 };
 
-INSTANTIATE_TEST_SUITE_P(smoke_PriorBoxClustered, PriorBoxClusteredLayerCPUTest,
-    ::testing::Combine(
-        layerSpeficParams,
-        ::testing::ValuesIn(netPrecisions),
-        ::testing::Values(ov::test::ElementType::undefined),
-        ::testing::Values(ov::test::ElementType::undefined),
-        ::testing::ValuesIn(inputShapes),
-        ::testing::ValuesIn(imageShapes),
-        ::testing::Values(ov::test::utils::DEVICE_CPU)),
-    PriorBoxClusteredLayerCPUTest::getTestCaseName
-);
+INSTANTIATE_TEST_SUITE_P(smoke_PriorBoxClustered,
+                         PriorBoxClusteredLayerCPUTest,
+                         ::testing::Combine(layerSpeficParams,
+                                            ::testing::ValuesIn(netPrecisions),
+                                            ::testing::Values(ov::test::ElementType::dynamic),
+                                            ::testing::Values(ov::test::ElementType::dynamic),
+                                            ::testing::ValuesIn(inputShapes),
+                                            ::testing::ValuesIn(imageShapes),
+                                            ::testing::Values(ov::test::utils::DEVICE_CPU)),
+                         PriorBoxClusteredLayerCPUTest::getTestCaseName);
 
 }  // namespace
 }  // namespace test

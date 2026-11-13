@@ -1,26 +1,22 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "openvino/pass/graph_rewrite.hpp"
+#include "openvino/pass/matcher_pass.hpp"
 
-namespace ov {
-namespace intel_cpu {
-namespace pass {
+namespace ov::intel_cpu::pass {
 
 /**
  * @interface RemoveConverts
- * @brief Remove sequence of two ConvertSaturation operations for specific precisions: FP32 => BF16 => FP32
+ * @brief Remove sequence of two ConvertSaturation operations for specific precisions: FP32 => BF16 | FP16 => FP32
  * @ingroup snippets
  */
 class RemoveConverts : public ov::pass::MatcherPass {
 public:
-    OPENVINO_RTTI("RemoveConverts", "0");
+    OPENVINO_MATCHER_PASS_RTTI("RemoveConverts");
     RemoveConverts();
 };
 
-}  // namespace pass
-}  // namespace intel_cpu
-}  // namespace ov
+}  // namespace ov::intel_cpu::pass

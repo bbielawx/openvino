@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2018-2024 Intel Corporation
+﻿// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -10,16 +10,24 @@ namespace kernel_selector {
 ParamsKey EltwiseKernelRef::GetSupportedKey() const {
     ParamsKey k;
     k.EnableInputDataType(Datatype::F16);
+    k.EnableInputDataType(Datatype::BF16);
     k.EnableInputDataType(Datatype::F32);
     k.EnableInputDataType(Datatype::INT8);
     k.EnableInputDataType(Datatype::UINT8);
+    k.EnableInputDataType(Datatype::INT16);
+    k.EnableInputDataType(Datatype::UINT16);
     k.EnableInputDataType(Datatype::INT32);
+    k.EnableInputDataType(Datatype::UINT32);
     k.EnableInputDataType(Datatype::INT64);
     k.EnableOutputDataType(Datatype::F16);
+    k.EnableOutputDataType(Datatype::BF16);
     k.EnableOutputDataType(Datatype::F32);
     k.EnableOutputDataType(Datatype::INT8);
     k.EnableOutputDataType(Datatype::UINT8);
+    k.EnableOutputDataType(Datatype::INT16);
+    k.EnableOutputDataType(Datatype::UINT16);
     k.EnableOutputDataType(Datatype::INT32);
+    k.EnableOutputDataType(Datatype::UINT32);
     k.EnableOutputDataType(Datatype::INT64);
     k.EnableDifferentTypes();
     k.EnableAllInputLayout();
@@ -35,7 +43,7 @@ ParamsKey EltwiseKernelRef::GetSupportedKey() const {
 
 bool EltwiseKernelRef::Validate(const Params& p) const {
     if (!EltwiseKernelBase::Validate(p)) {
-        return false;
+        DO_NOT_USE_THIS_KERNEL(p.layerID);
     }
 
     return true;
@@ -59,7 +67,7 @@ JitConstants EltwiseKernelRef::GetJitConstants(const eltwise_params& params) con
         if (DataTensor::ChannelsCount(params.outputs[0].GetLayout()) == 4) {
             if (!params.layoutBased && !params.int8_quantization && !params.broadcast && !CheckInputsOutputNoPitchSameDims(params)) {
                 auto calc_dim = [&params](Tensor::DataChannelName channel) {
-                    size_t idx = DataTensor::Channelndex(params.outputs[0].GetLayout(), channel);
+                    int idx = DataTensor::Channelndex(params.outputs[0].GetLayout(), channel);
                     // We increment the index, because fusions dims ordering starts from one
                     return "d" + std::to_string(idx + 1);
                 };

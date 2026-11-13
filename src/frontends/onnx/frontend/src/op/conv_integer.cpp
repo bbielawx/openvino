@@ -1,9 +1,8 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op/conv_integer.hpp"
-
+#include "core/operator_set.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
 #include "openvino/op/range.hpp"
@@ -13,12 +12,9 @@
 #include "utils/conv_factory.hpp"
 #include "utils/convpool.hpp"
 #include "utils/reshape.hpp"
-
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace onnx {
+namespace ov::frontend::onnx {
 namespace {
 std::shared_ptr<ov::Node> get_filter_zero_point(const ov::OutputVector& inputs) {
     const auto& original_zero_point =
@@ -42,8 +38,7 @@ std::shared_ptr<ov::Node> get_filter_zero_point(const ov::OutputVector& inputs) 
     }
 }
 }  // namespace
-namespace op {
-namespace set_1 {
+namespace ai_onnx::opset_1 {
 
 ov::OutputVector conv_integer(const ov::frontend::onnx::Node& node) {
     const ov::OutputVector& inputs = node.get_ov_inputs();
@@ -80,8 +75,6 @@ ov::OutputVector conv_integer(const ov::frontend::onnx::Node& node) {
 
     return {conv_node};
 }
-}  // namespace set_1
-}  // namespace op
-}  // namespace onnx
-}  // namespace frontend
-}  // namespace ov
+ONNX_OP("ConvInteger", OPSET_SINCE(1), ai_onnx::opset_1::conv_integer);
+}  // namespace ai_onnx::opset_1
+}  // namespace ov::frontend::onnx

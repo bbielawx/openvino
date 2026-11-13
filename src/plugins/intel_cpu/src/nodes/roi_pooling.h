@@ -1,20 +1,33 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #pragma once
 
-#include "node.h"
+#include <cassert>
+#include <cstddef>
+#include <memory>
+#include <oneapi/dnnl/dnnl_common.hpp>
+#include <string>
+#include <tuple>
+#include <utility>
 
-namespace ov {
-namespace intel_cpu {
-namespace node {
+#include "cpu_memory.h"
+#include "cpu_types.h"
+#include "graph_context.h"
+#include "node.h"
+#include "openvino/core/node.hpp"
+#include "openvino/core/type/element_type.hpp"
+
+namespace ov::intel_cpu::node {
 
 struct jit_roi_pooling_params {
     int mb, c;
     int ih, iw, oh, ow;
 
     int c_block, nb_c, nb_c_blocking;
+
+    int b_num;
 
     double spatial_scale;
     int pooled_h;
@@ -29,8 +42,8 @@ struct jit_roi_pooling_params {
 };
 
 struct jit_roi_pooling_call_args {
-    const void *src;
-    void *dst;
+    const void* src;
+    void* dst;
 
     size_t kh;
     size_t kw;
@@ -46,15 +59,15 @@ struct jit_roi_pooling_call_args {
 };
 
 struct jit_uni_roi_pooling_kernel {
-    void (*ker_)(const jit_roi_pooling_call_args *);
+    void (*ker_)(const jit_roi_pooling_call_args*) = nullptr;
 
-    void operator()(const jit_roi_pooling_call_args *args) {
+    void operator()(const jit_roi_pooling_call_args* args) const {
         assert(ker_);
         ker_(args);
     }
 
-    explicit jit_uni_roi_pooling_kernel(jit_roi_pooling_params jpp) : ker_(nullptr), jpp_(jpp) {}
-    virtual ~jit_uni_roi_pooling_kernel() {}
+    explicit jit_uni_roi_pooling_kernel(jit_roi_pooling_params jpp) : jpp_(jpp) {}
+    virtual ~jit_uni_roi_pooling_kernel() = default;
 
     virtual void create_ker() = 0;
 
@@ -63,45 +76,59 @@ struct jit_uni_roi_pooling_kernel {
 
 class ROIPooling : public Node {
 public:
-    ROIPooling(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr context);
+    ROIPooling(const std::shared_ptr<ov::Node>& op, const GraphContext::CPtr& context);
 
     void getSupportedDescriptors() override;
     void initSupportedPrimitiveDescriptors() override;
     void createPrimitive() override;
-    void execute(dnnl::stream strm) override;
-    bool created() const override;
+    void execute(const dnnl::stream& strm) override;
+    [[nodiscard]] bool created() const override;
 
-    void executeDynamicImpl(dnnl::stream strm) override;
+    void executeDynamicImpl(const dnnl::stream& strm) override;
     void prepareParams() override;
 
 private:
     static bool isSupportedOperation(const std::shared_ptr<const ov::Node>& op, std::string& errorMessage) noexcept;
 
-    template<typename T> void execute();
-    template<typename T> struct ROIPoolingExecute;
+    template <typename T>
+    void execute();
+    template <typename T>
+    struct ROIPoolingExecute;
 
     jit_roi_pooling_params refParams = {};
-
-    std::string errorPrefix;
 
     class ROIPoolingExecutor {
     public:
         ROIPoolingExecutor() = default;
-        virtual void exec(
-            const ov::intel_cpu::IMemory& srcData,
-            const ov::intel_cpu::IMemory& srcRoi,
-            const ov::intel_cpu::IMemory& dst) = 0;
+        virtual void exec(const ov::intel_cpu::IMemory& srcData,
+                          const ov::intel_cpu::IMemory& srcRoi,
+                          const ov::intel_cpu::IMemory& dst,
+                          const CpuParallelPtr& cpuParallel) = 0;
         virtual ~ROIPoolingExecutor() = default;
 
         static std::shared_ptr<ROIPoolingExecutor> createROIPoolingNewExecutor(const jit_roi_pooling_params& jpp);
 
     protected:
-        std::tuple<int, int, int, int> getBordersForMaxMode(
-            const int roi_start_h, const int roi_end_h, const int roi_start_w, const int roi_end_w,
-            const int ih, const int oh, const int iw, const int ow, const int pooled_h, const int pooled_w);
-        std::pair<float, float> getXYForBilinearMode(
-            const float roi_start_h, const float roi_end_h, const float roi_start_w, const float roi_end_w,
-            const int ih, const int oh, const int iw, const int ow, const int pooled_h, const int pooled_w);
+        static std::tuple<int, int, int, int> getBordersForMaxMode(int roi_start_h,
+                                                                   int roi_end_h,
+                                                                   int roi_start_w,
+                                                                   int roi_end_w,
+                                                                   int ih,
+                                                                   int oh,
+                                                                   int iw,
+                                                                   int ow,
+                                                                   int pooled_h,
+                                                                   int pooled_w);
+        static std::pair<float, float> getXYForBilinearMode(float roi_start_h,
+                                                            float roi_end_h,
+                                                            float roi_start_w,
+                                                            float roi_end_w,
+                                                            int ih,
+                                                            int oh,
+                                                            int iw,
+                                                            int ow,
+                                                            int pooled_h,
+                                                            int pooled_w);
 
     private:
         template <typename T>
@@ -112,7 +139,7 @@ private:
             jit_roi_pooling_params jpp;
         };
 
-        template<typename T>
+        template <typename T>
         struct ROIPoolingExecutorCreation {
             void operator()(ROIPoolingContext& ctx) {
                 ctx.executor = ROIPoolingExecutor::makeExecutor<T>(ctx.jpp);
@@ -120,13 +147,13 @@ private:
         };
     };
 
-    template <typename T> class ROIPoolingJitExecutor;
-    template <typename T> class ROIPoolingRefExecutor;
+    template <typename T>
+    class ROIPoolingJitExecutor;
+    template <typename T>
+    class ROIPoolingRefExecutor;
 
     using executorPtr = std::shared_ptr<ROIPoolingExecutor>;
     executorPtr execPtr = nullptr;
 };
 
-}   // namespace node
-}   // namespace intel_cpu
-}   // namespace ov
+}  // namespace ov::intel_cpu::node

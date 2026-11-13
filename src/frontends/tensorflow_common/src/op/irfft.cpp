@@ -1,4 +1,4 @@
-// Copyright (C) 2018-2024 Intel Corporation
+// Copyright (C) 2018-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -15,10 +15,7 @@ using namespace std;
 using namespace ov;
 using namespace ov::op;
 
-namespace ov {
-namespace frontend {
-namespace tensorflow {
-namespace op {
+namespace ov::frontend::tensorflow::op {
 
 OutputVector translate_irfft_op(const NodeContext& node) {
     default_op_checks(node, 2, {"IRFFT", "IRFFT2D", "IRFFT3D"}, true);
@@ -43,13 +40,13 @@ OutputVector translate_irfft_op(const NodeContext& node) {
 
     // compute axes along which to compute inverse RFFT
     auto const_num_axes = make_shared<v0::Constant>(element::i32, Shape{}, num_axes);
-    auto data = complex_type_mark->input_value(0);
+    auto data = complex_type_mark->get_data();
     auto data_rank = compute_subgraph_scalar_rank(data, element::i32, true);
     auto const_one = make_shared<v0::Constant>(element::i32, Shape{}, 1);
     auto data_rank_minus_one = make_shared<v1::Subtract>(data_rank, const_one);
     auto start = make_shared<v1::Subtract>(data_rank_minus_one, const_num_axes);
     auto axes = make_shared<v4::Range>(start, data_rank_minus_one, const_one, element::i32);
-    auto irdft = make_shared<v9::IRDFT>(complex_type_mark->input_value(0), axes, fft_length)->output(0);
+    auto irdft = make_shared<v9::IRDFT>(data, axes, fft_length)->output(0);
 
     // no need to insert ComplexTypeMark because operation generates a floating-point tensor
     irdft = make_shared<v0::Convert>(irdft, treal);
@@ -58,7 +55,4 @@ OutputVector translate_irfft_op(const NodeContext& node) {
     return {irdft};
 }
 
-}  // namespace op
-}  // namespace tensorflow
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::tensorflow::op
